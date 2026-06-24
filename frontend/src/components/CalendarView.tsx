@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ChevronLeft, ChevronRight, CalendarDays,
-  Play, Camera, Music2, X, Plus, Check, Trash2,
+  Play, Camera, Music2, X, Plus, Check, Trash2, Clock,
 } from "lucide-react";
 import { videoService, syncService, DashboardVideo } from "../services/api";
 
@@ -487,23 +487,30 @@ export function CalendarView({ role: _role }: { role: string }) {
             </button>
           );
         })}
-        <div className="ml-auto flex items-center gap-3 flex-wrap">
+      </div>
+
+      {/* ── Intervalo de publicación (editable por plataforma) ─────────────── */}
+      <div className="bg-card border border-border rounded-xl p-3 sm:p-4">
+        <p className="text-xs font-semibold text-foreground mb-3 flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5 text-primary" /> Intervalo de publicación
+        </p>
+        <div className="flex items-center gap-4 flex-wrap">
           {(["tiktok", "instagram", "youtube"] as Platform[]).map(p => {
             const cfg = platformConfigs.find(c => c.platform === p);
             const Icon = PLATFORM_CFG[p].icon;
             return (
-              <label key={p} className="flex items-center gap-1 text-xs text-muted-foreground" title={`Publicar en ${PLATFORM_CFG[p].label} cada N días`}>
-                <Icon className={`w-3 h-3 ${PLATFORM_CFG[p].text}`} />
-                cada
+              <label key={p} className="flex items-center gap-2 text-sm text-foreground">
+                <Icon className={`w-4 h-4 ${PLATFORM_CFG[p].text}`} />
+                <span className="text-muted-foreground">{PLATFORM_CFG[p].label} · cada</span>
                 <input
                   type="number"
                   min={1}
                   max={60}
                   value={cfg?.intervalDays ?? 3}
                   onChange={(e) => updateInterval(p, parseInt(e.target.value, 10))}
-                  className="w-11 px-1 py-0.5 bg-secondary/40 border border-border rounded text-center text-foreground focus:outline-none focus:border-primary/50"
+                  className="w-14 px-2 py-1 bg-secondary/40 border border-border rounded-lg text-center text-foreground focus:outline-none focus:border-primary/50"
                 />
-                días
+                <span className="text-muted-foreground">días</span>
               </label>
             );
           })}
