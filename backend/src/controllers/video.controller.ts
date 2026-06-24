@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { TranscriptModel } from '../models/transcript.model';
 import { FileModel, FileContentStatus } from '../models/file.model';
 import { PublishingStatusModel } from '../models/publishing-status.model';
-import { IdeaCentral } from '../models/IdeaCentral';
+import { IdeaCentral } from '../models/ideacentral';
 import fs from 'fs';
 import path from 'path';
 

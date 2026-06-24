@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { IdeaCentral, IdeaStatus } from '../models/IdeaCentral';
+import { IdeaCentral, IdeaStatus } from '../models/ideacentral';
 import mongoose from 'mongoose';
 import * as fs from 'fs';
 

@@ -8,7 +8,7 @@ import streamRouter from './routes/stream.routes';
 import ideaRoutes from './routes/idearoutes';
 import authRoutes from './routes/auth.routes';
 import syncRoutes from './routes/sync.routes';
-import publishingStatusRouter from './routes/publishingStatus.routes';
+import publishingStatusRouter from './routes/publishing-status.routes';
 import youtubeUploadRouter    from './routes/youtube-upload.routes';
 import instagramUploadRouter from './routes/instagram-upload.routes';
 import tiktokUploadRouter    from './routes/tiktok-upload.routes';
