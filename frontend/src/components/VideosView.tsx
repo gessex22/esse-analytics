@@ -14,7 +14,7 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
-import { videoService, DashboardVideo, PaginationInfo, VideoContentStatus, PublishingStatus } from "../services/api";
+import { videoService, DashboardVideo, PaginationInfo, VideoContentStatus } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -117,9 +117,6 @@ export function VideosView({
     }
   }, [autoOpenVideo]);
 
-  // Publishing status map: fileId → PublishingStatus
-  const [psMap, setPsMap] = useState<Record<string, PublishingStatus>>({});
-
   const LIMIT = 10;
 
   // ── Carga ──────────────────────────────────────────────────────────────────
@@ -152,16 +149,6 @@ export function VideosView({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [deleteTarget]);
-
-  useEffect(() => {
-    videoService.getPublishingStatus()
-      .then(list => {
-        const map: Record<string, PublishingStatus> = {};
-        list.forEach(ps => { map[ps.fileId] = ps; });
-        setPsMap(map);
-      })
-      .catch(() => {/* graceful degradation — icons stay gray */});
-  }, []);
 
   const applyFilters = (tipo: TipoFilter, status: VideoContentStatus | "") => {
     setSelectedTipo(tipo);
@@ -528,8 +515,7 @@ export function VideosView({
                 {/* Plataformas */}
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
                   {(["youtube", "instagram", "tiktok"] as const).map((p) => {
-                    const ps = video.fileId ? psMap[video.fileId] : undefined;
-                    const active = ps ? ps[`${p}_published` as keyof PublishingStatus] as boolean : false;
+                    const active = video.platforms.includes(p);
                     const Icon = p === "youtube" ? YoutubeIcon : p === "instagram" ? InstagramIcon : TiktokIcon;
                     if (role !== "todopoderoso") return <Icon key={p} active={active} />;
                     return (
@@ -538,20 +524,20 @@ export function VideosView({
                         title={`${p} · ${active ? "Publicado" : "No publicado"}`}
                         onClick={async () => {
                           if (!video.fileId) return;
-                          const next = !active;
-                          const patchKey = `${p}_published` as "tiktok_published" | "instagram_published" | "youtube_published";
-                          const merge = (val: boolean): PublishingStatus => ({
-                            _id: "", fileId: video.fileId, title: video.title,
-                            tiktok_published: false, instagram_published: false, youtube_published: false, createdAt: "",
-                            ...(psMap[video.fileId] ?? {}),
-                            [patchKey]: val,
-                          });
-                          setPsMap(prev => ({ ...prev, [video.fileId]: merge(next) }));
+                          const next = active
+                            ? video.platforms.filter((x) => x !== p)
+                            : [...video.platforms, p];
+                          // Optimista: actualizamos el array local
+                          setVideos(prev => prev.map(v =>
+                            v.fileId === video.fileId ? { ...v, platforms: next } : v
+                          ));
                           try {
-                            const updated = await videoService.updatePublishingStatus(video.fileId, { [patchKey]: next });
-                            setPsMap(prev => ({ ...prev, [video.fileId]: updated }));
+                            await videoService.updateVideoPlatforms(video.fileId, next);
                           } catch {
-                            setPsMap(prev => ({ ...prev, [video.fileId]: merge(active) }));
+                            // Revertimos si falla
+                            setVideos(prev => prev.map(v =>
+                              v.fileId === video.fileId ? { ...v, platforms: video.platforms } : v
+                            ));
                           }
                         }}
                         className="transition-transform hover:scale-110 active:scale-95"
