@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PublishingStatusModel } from '../models/publishing-status.model';
+import { FileModel } from '../models/file.model';
 
 export async function getAllPublishingStatus(req: Request, res: Response): Promise<void> {
   try {
@@ -43,16 +44,22 @@ export async function updatePublishingStatus(req: Request, res: Response): Promi
       return;
     }
 
-    const doc = await PublishingStatusModel.findOneAndUpdate(
-      { fileId },
-      { $set: update },
-      { returnDocument: 'after' },
-    );
-
-    if (!doc) {
-      res.status(404).json({ error: 'PublishingStatus not found for this fileId' });
+    // Si no existe registro para este archivo, lo creamos (upsert).
+    // Necesitamos el título del archivo para el caso de creación.
+    const file = await FileModel.findById(fileId, { file_name: 1 }).lean();
+    if (!file) {
+      res.status(404).json({ error: 'File not found for this fileId' });
       return;
     }
+
+    const doc = await PublishingStatusModel.findOneAndUpdate(
+      { fileId },
+      {
+        $set: update,
+        $setOnInsert: { title: file.file_name, createdAt: new Date() },
+      },
+      { returnDocument: 'after', upsert: true },
+    );
 
     res.json(doc);
   } catch (err: any) {
