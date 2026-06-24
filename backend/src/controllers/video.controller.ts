@@ -49,6 +49,15 @@ export const getVideos = async (req: Request, res: Response) => {
 
     const results = await FileModel.aggregate([
       { $match: matchStage },
+      {
+        $lookup: {
+          from: 'transcripts',
+          localField: '_id',
+          foreignField: 'file_id',
+          as: 'transcript_data',
+        },
+      },
+      { $unwind: { path: '$transcript_data', preserveNullAndEmptyArrays: true } },
       { $sort: { [sortField]: sortOrder } },
       {
         $facet: {
@@ -59,6 +68,8 @@ export const getVideos = async (req: Request, res: Response) => {
             {
               $project: {
                 _id: 1,
+                fileId: '$_id',
+                title: '$file_name',
                 file_name: 1,
                 file_path: 1,
                 status: 1,
@@ -70,6 +81,10 @@ export const getVideos = async (req: Request, res: Response) => {
                 formato: 1,
                 createdAt: 1,
                 updatedAt: 1,
+                transcript_text: '$transcript_data.transcript_text',
+                tipo_contenido: '$transcript_data.tipo_contenido',
+                palabras_por_minuto: '$transcript_data.palabras_por_minuto',
+                language: '$transcript_data.language',
               },
             },
           ],
