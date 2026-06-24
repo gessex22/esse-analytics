@@ -307,6 +307,15 @@ export function CalendarView({ role: _role }: { role: string }) {
       .catch(() => { /* usa fallback */ });
   }, []);
 
+  // Cambiar el intervalo de días de una plataforma (optimista + persiste en backend)
+  const updateInterval = useCallback((platform: Platform, days: number) => {
+    if (!Number.isFinite(days) || days < 1) return;
+    setPlatformConfigs(prev => prev.map(c =>
+      c.platform === platform ? { ...c, intervalDays: days } : c
+    ));
+    syncService.updateCalendarConfig(platform, { intervalDays: days }).catch(() => {});
+  }, []);
+
   // Slots generados para el mes visible
   const allSlots = useMemo(
     () => generateSlotsForMonth(platformConfigs, year, month),
@@ -478,9 +487,27 @@ export function CalendarView({ role: _role }: { role: string }) {
             </button>
           );
         })}
-        <span className="ml-auto text-xs text-muted-foreground hidden sm:block">
-          Cada {INTERVAL_DAYS} días por plataforma
-        </span>
+        <div className="ml-auto flex items-center gap-3 flex-wrap">
+          {(["tiktok", "instagram", "youtube"] as Platform[]).map(p => {
+            const cfg = platformConfigs.find(c => c.platform === p);
+            const Icon = PLATFORM_CFG[p].icon;
+            return (
+              <label key={p} className="flex items-center gap-1 text-xs text-muted-foreground" title={`Publicar en ${PLATFORM_CFG[p].label} cada N días`}>
+                <Icon className={`w-3 h-3 ${PLATFORM_CFG[p].text}`} />
+                cada
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={cfg?.intervalDays ?? 3}
+                  onChange={(e) => updateInterval(p, parseInt(e.target.value, 10))}
+                  className="w-11 px-1 py-0.5 bg-secondary/40 border border-border rounded text-center text-foreground focus:outline-none focus:border-primary/50"
+                />
+                días
+              </label>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Calendario + panel ───────────────────────────────────────────── */}
