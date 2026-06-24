@@ -20,10 +20,10 @@ export const getVideos = async (req: Request, res: Response) => {
     const filters: any[] = [];
 
     if (search) {
-      filters.push({ 'file_info.file_name': { $regex: search, $options: 'i' } });
+      filters.push({ file_name: { $regex: search, $options: 'i' } });
     }
     if (status) {
-      filters.push({ 'file_info.status': status });
+      filters.push({ status: status });
     }
     if (tipo) {
       filters.push({ tipo_contenido: tipo });
@@ -32,31 +32,22 @@ export const getVideos = async (req: Request, res: Response) => {
     // content_status: si se pasa explícitamente, filtramos por ese valor;
     // si NO se pasa, excluimos 'descartado' por defecto (incluyendo docs sin el campo).
     if (content_status) {
-      filters.push({ 'file_info.content_status': content_status });
+      filters.push({ content_status: content_status });
     } else {
       filters.push({
         $or: [
-          { 'file_info.content_status': { $exists: false } },
-          { 'file_info.content_status': { $ne: 'descartado' } },
+          { content_status: { $exists: false } },
+          { content_status: { $ne: 'descartado' } },
         ],
       });
     }
 
     const matchStage = filters.length > 0 ? { $and: filters } : {};
 
-    const sortField = (req.query.sortBy as string) || 'file_info.fecha_creacion';
+    const sortField = (req.query.sortBy as string) || 'createdAt';
     const sortOrder = req.query.order === 'asc' ? 1 : -1;
 
-    const results = await TranscriptModel.aggregate([
-      {
-        $lookup: {
-          from: 'files',
-          localField: 'file_id',
-          foreignField: '_id',
-          as: 'file_info',
-        },
-      },
-      { $unwind: '$file_info' },
+    const results = await FileModel.aggregate([
       { $match: matchStage },
       { $sort: { [sortField]: sortOrder } },
       {
@@ -68,15 +59,17 @@ export const getVideos = async (req: Request, res: Response) => {
             {
               $project: {
                 _id: 1,
-                tipo_contenido: 1,
-                transcript_text: 1,
-                palabras_por_minuto: 1,
-                file_id: '$file_info',
-                formato: '$file_info.formato',
-                duracion_segundos: '$file_info.duracion_segundos',
-                resolucion: '$file_info.resolucion',
-                fecha_creacion: '$file_info.fecha_creacion',
-                platforms: '$file_info.platforms',
+                file_name: 1,
+                file_path: 1,
+                status: 1,
+                content_status: 1,
+                platforms: 1,
+                publishCode: 1,
+                duracion_segundos: 1,
+                resolucion: 1,
+                formato: 1,
+                createdAt: 1,
+                updatedAt: 1,
               },
             },
           ],
