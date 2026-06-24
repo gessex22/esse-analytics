@@ -224,7 +224,7 @@ export const updateVideoContentStatus = async (req: Request, res: Response): Pro
     const fileDoc = await FileModel.findByIdAndUpdate(
       fileId,
       { content_status: status },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!fileDoc) {
@@ -417,7 +417,7 @@ export const updateScheduledDate = async (req: Request, res: Response): Promise<
     const fileDoc = await FileModel.findByIdAndUpdate(
       fileId,
       { scheduled_date: scheduled_date ? new Date(scheduled_date) : null },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!fileDoc) {
       res.status(404).json({ message: 'Archivo no encontrado.' });
@@ -445,7 +445,7 @@ export const updateVideoPlatforms = async (req: Request, res: Response): Promise
     const fileDoc = await FileModel.findByIdAndUpdate(
       fileId,
       { platforms },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!fileDoc) {
       res.status(404).json({ message: 'Archivo no encontrado.' });

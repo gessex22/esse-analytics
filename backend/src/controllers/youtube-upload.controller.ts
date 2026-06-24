@@ -189,6 +189,12 @@ export const uploadToYoutube = async (req: Request, res: Response) => {
       { upsert: true },
     );
 
+    // Marca el archivo como publicado y registra la plataforma
+    await FileModel.findByIdAndUpdate(fileId, {
+      $set: { content_status: 'publicado' },
+      $addToSet: { platforms: 'youtube' },
+    });
+
     res.json({
       ok: true,
       videoId,

@@ -313,6 +313,12 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
       { upsert: true },
     );
 
+    // Marca el archivo como publicado y registra la plataforma
+    await FileModel.findByIdAndUpdate(fileId, {
+      $set: { content_status: 'publicado' },
+      $addToSet: { platforms: 'instagram' },
+    });
+
     res.json({
       ok:      true,
       mediaId: publishData.id,

@@ -89,7 +89,7 @@ export const setMainVersion = async (req: Request, res: Response): Promise<void>
           ultima_actualizacion: new Date() // Actualizamos la estampa de tiempo
         } 
       },
-      { new: true } // Nos devuelve el documento ya modificado
+      { returnDocument: 'after' } // Nos devuelve el documento ya modificado
     );
 
     if (!updatedIdea) {
@@ -236,7 +236,7 @@ export const updateIdeaStatus = async (req: Request, res: Response): Promise<voi
     const updated = await IdeaCentral.findByIdAndUpdate(
       ideaId,
       { status, ultima_actualizacion: new Date() },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updated) {

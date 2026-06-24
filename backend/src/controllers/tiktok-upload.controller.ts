@@ -298,6 +298,12 @@ export const uploadToTikTok = async (req: Request, res: Response) => {
       { upsert: true },
     );
 
+    // Marca el archivo como publicado y registra la plataforma
+    await FileModel.findByIdAndUpdate(fileId, {
+      $set: { content_status: 'publicado' },
+      $addToSet: { platforms: 'tiktok' },
+    });
+
     res.json({
       ok:         true,
       publishId:  publish_id,

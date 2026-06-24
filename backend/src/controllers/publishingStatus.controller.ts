@@ -46,7 +46,7 @@ export async function updatePublishingStatus(req: Request, res: Response): Promi
     const doc = await PublishingStatusModel.findOneAndUpdate(
       { fileId },
       { $set: update },
-      { new: true },
+      { returnDocument: 'after' },
     );
 
     if (!doc) {
