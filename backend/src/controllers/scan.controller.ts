@@ -80,10 +80,10 @@ export const scanFolder = async (req: Request, res: Response) => {
   const diskSet   = new Set(diskPaths.map(p => path.resolve(p)));
 
   // Archivos ya registrados (cualquier estado), indexados por ruta absoluta
-  const existing = await FileModel.find({}, { file_path: 1, status: 1 }).lean();
+  const existing = await FileModel.find({}, { file_path: 1, status: 1, fecha_creacion: 1 }).lean();
   const existingByPath = new Map(existing.map(f => [path.resolve(f.file_path), f]));
 
-  let added = 0, restored = 0, missing = 0;
+  let added = 0, restored = 0, missing = 0, backfilled = 0;
 
   // 1. Alta de archivos nuevos + restaura los que volvieron a aparecer.
   //    Se registran como PENDIENTE: si el componente esse-Transcrip está instalado,
@@ -92,18 +92,32 @@ export const scanFolder = async (req: Request, res: Response) => {
   for (const absPath of diskSet) {
     const known = existingByPath.get(absPath);
     if (!known) {
+      // Fecha real del archivo en disco (mtime) — para orden estable con/sin esse-Transcrip
+      let fechaCreacion: Date;
+      try { fechaCreacion = fs.statSync(absPath).mtime; } catch { fechaCreacion = new Date(); }
+
       await FileModel.create({
         file_name:      path.basename(absPath),
         file_path:      absPath,
         status:         'PENDIENTE',
         content_status: 'borrador',
         platforms:      [],
+        fecha_creacion: fechaCreacion,
       });
       added++;
-    } else if (known.status === 'ELIMINADO_DISCO') {
-      // El archivo había sido marcado como borrado pero volvió a aparecer
-      await FileModel.updateOne({ _id: known._id }, { $set: { status: 'PENDIENTE' } });
-      restored++;
+    } else {
+      // Restaura los que volvieron a aparecer
+      if (known.status === 'ELIMINADO_DISCO') {
+        await FileModel.updateOne({ _id: known._id }, { $set: { status: 'PENDIENTE' } });
+        restored++;
+      }
+      // Rellena fecha_creacion en registros viejos que no la tengan (arregla el orden)
+      if (!known.fecha_creacion) {
+        let fechaCreacion: Date;
+        try { fechaCreacion = fs.statSync(absPath).mtime; } catch { fechaCreacion = new Date(); }
+        await FileModel.updateOne({ _id: known._id }, { $set: { fecha_creacion: fechaCreacion } });
+        backfilled++;
+      }
     }
   }
 
@@ -122,5 +136,6 @@ export const scanFolder = async (req: Request, res: Response) => {
     added,
     restored,
     missing,
+    backfilled,
   });
 };

@@ -14,6 +14,7 @@ export interface IFile extends Document {
   duracion_segundos?: number;
   resolucion?: string;
   formato?: string;
+  fecha_creacion?: Date;  // fecha real del archivo en disco (mtime) — la llena el escáner
   scheduled_date?: Date;  // fecha programada de publicación (opcional)
 }
 
@@ -35,6 +36,7 @@ const FileSchema = new Schema<IFile>({
   duracion_segundos: { type: Number },
   resolucion: { type: String },
   formato: { type: String },
+  fecha_creacion: { type: Date },
   scheduled_date: { type: Date },
 }, { timestamps: true });
 

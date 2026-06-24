@@ -16,25 +16,22 @@ export const getVideos = async (req: Request, res: Response) => {
 
     const { search, tipo, status, content_status } = req.query;
 
-    // Construimos los filtros como array para combinar con $and
-    const filters: any[] = [];
+    // Filtros a nivel de archivo (se aplican ANTES del JOIN con transcripts)
+    const fileFilters: any[] = [];
 
     if (search) {
-      filters.push({ file_name: { $regex: search, $options: 'i' } });
+      fileFilters.push({ file_name: { $regex: search, $options: 'i' } });
     }
     if (status) {
-      filters.push({ status: status });
-    }
-    if (tipo) {
-      filters.push({ tipo_contenido: tipo });
+      fileFilters.push({ status: status });
     }
 
     // content_status: si se pasa explícitamente, filtramos por ese valor;
     // si NO se pasa, excluimos 'descartado' por defecto (incluyendo docs sin el campo).
     if (content_status) {
-      filters.push({ content_status: content_status });
+      fileFilters.push({ content_status: content_status });
     } else {
-      filters.push({
+      fileFilters.push({
         $or: [
           { content_status: { $exists: false } },
           { content_status: { $ne: 'descartado' } },
@@ -42,9 +39,11 @@ export const getVideos = async (req: Request, res: Response) => {
       });
     }
 
-    const matchStage = filters.length > 0 ? { $and: filters } : {};
+    const matchStage = fileFilters.length > 0 ? { $and: fileFilters } : {};
 
-    const sortField = (req.query.sortBy as string) || 'createdAt';
+    // Filtro de tipo_contenido: vive en transcripts, se aplica DESPUÉS del JOIN
+    const tipoMatchStage = tipo ? [{ $match: { 'transcript_data.tipo_contenido': tipo } }] : [];
+
     const sortOrder = req.query.order === 'asc' ? 1 : -1;
 
     const results = await FileModel.aggregate([
@@ -58,7 +57,11 @@ export const getVideos = async (req: Request, res: Response) => {
         },
       },
       { $unwind: { path: '$transcript_data', preserveNullAndEmptyArrays: true } },
-      { $sort: { [sortField]: sortOrder } },
+      ...tipoMatchStage,
+      // Fecha unificada para ordenar: fecha real del archivo, con fallback a createdAt.
+      // _id como segundo criterio garantiza orden estable cuando las fechas empatan.
+      { $addFields: { sort_date: { $ifNull: ['$fecha_creacion', '$createdAt'] } } },
+      { $sort: { sort_date: sortOrder, _id: sortOrder } },
       {
         $facet: {
           metadata: [{ $count: 'total' }],
@@ -68,23 +71,28 @@ export const getVideos = async (req: Request, res: Response) => {
             {
               $project: {
                 _id: 1,
-                fileId: '$_id',
-                title: '$file_name',
-                file_name: 1,
-                file_path: 1,
-                status: 1,
-                content_status: 1,
+                // El frontend espera 'file_id' como objeto anidado con los datos del archivo
+                file_id: {
+                  _id: '$_id',
+                  file_name: '$file_name',
+                  file_path: '$file_path',
+                  status: '$status',
+                  content_status: '$content_status',
+                  duracion_segundos: '$duracion_segundos',
+                  resolucion: '$resolucion',
+                  formato: '$formato',
+                  fecha_creacion: { $ifNull: ['$fecha_creacion', '$createdAt'] },
+                },
                 platforms: 1,
-                publishCode: 1,
                 duracion_segundos: 1,
                 resolucion: 1,
                 formato: 1,
-                createdAt: 1,
-                updatedAt: 1,
+                fecha_creacion: { $ifNull: ['$fecha_creacion', '$createdAt'] },
+                // Datos de transcripción (si existen)
                 transcript_text: '$transcript_data.transcript_text',
                 tipo_contenido: '$transcript_data.tipo_contenido',
                 palabras_por_minuto: '$transcript_data.palabras_por_minuto',
-                language: '$transcript_data.language',
+                processed_at: '$transcript_data.processed_at',
               },
             },
           ],
