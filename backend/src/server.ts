@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import videoRouter from './routes/video.routes';
 import streamRouter from './routes/stream.routes';
-import ideaRoutes from './routes/ideaRoutes';
+import ideaRoutes from './routes/idearoutes';
 import authRoutes from './routes/auth.routes';
 import syncRoutes from './routes/sync.routes';
 import publishingStatusRouter from './routes/publishingStatus.routes';
