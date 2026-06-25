@@ -178,14 +178,14 @@ export function SettingsView({ activeSection, role, isLocal, onSectionChange }: 
     <div className="space-y-5">
       {/* Tabs — solo visibles en mobile, en desktop el sidebar ya tiene el acordeón */}
       {visibleSections.length > 1 && (
-        <div className="sm:hidden flex gap-2">
+        <div className="sm:hidden flex flex-wrap gap-2">
           {visibleSections.map(({ id, label, icon: Icon }) => {
             const isActive = activeSection === id;
             return (
               <button
                 key={id}
                 onClick={() => onSectionChange(id)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors shrink-0 ${
                   isActive
                     ? "bg-primary/10 text-primary border-primary/40"
                     : "bg-card/40 text-muted-foreground border-border hover:text-foreground hover:bg-secondary/40"

@@ -1,4 +1,5 @@
 import { useState, useEffect, createContext, useContext, ReactNode, createElement } from "react";
+import { API_BASE } from "../config";
 
 export type ThemeId = "rojo" | "ambar";
 
@@ -26,7 +27,7 @@ export const THEMES: Theme[] = [
 
 const STORAGE_KEY = "videx-theme";
 
-function applyTheme(id: ThemeId) {
+export function applyTheme(id: ThemeId) {
   const root = document.documentElement;
   THEMES.forEach((t) => root.classList.remove(`theme-${t.id}`));
   root.classList.add(`theme-${id}`);
@@ -52,6 +53,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(id);
     localStorage.setItem(STORAGE_KEY, id);
     applyTheme(id);
+    // Persistir en la cuenta para tenerlo en cualquier dispositivo (best-effort).
+    const token = localStorage.getItem("esse_auth_token");
+    if (token) {
+      fetch(`${API_BASE}/api/auth/me/theme`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ theme: id }),
+      }).catch(() => {});
+    }
   };
 
   // Aplica en el primer render

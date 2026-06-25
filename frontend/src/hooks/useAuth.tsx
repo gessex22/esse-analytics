@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode, createElement } from "react";
+import { applyTheme } from "./useTheme";
 
 export type UserRole = "todopoderoso" | "editor" | "visitante";
 export type UserTier = "free" | "premium";
@@ -8,6 +9,15 @@ interface AuthUser {
   role: UserRole;
   tier: UserTier;
   isOwner?: boolean;
+  theme?: string;
+}
+
+// Aplica el tema guardado en la cuenta (si es válido) y lo deja en localStorage.
+function applyUserTheme(theme?: string) {
+  if (theme === "rojo" || theme === "ambar") {
+    applyTheme(theme);
+    localStorage.setItem("videx-theme", theme);
+  }
 }
 
 interface AuthContextValue {
@@ -65,6 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .then((data) => {
         setToken(saved);
         setUser(data.user);
+        applyUserTheme(data.user?.theme);
       })
       .catch(() => {
         localStorage.removeItem(STORAGE_KEY);
@@ -87,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(data.token);
     setUser(data.user);
     localStorage.setItem(STORAGE_KEY, data.token);
+    applyUserTheme(data.user?.theme);
   };
 
   const logout = () => {

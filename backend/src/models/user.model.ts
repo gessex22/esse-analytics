@@ -25,6 +25,8 @@ export interface IUser extends Document {
   // destructivas desde el cliente (reset de contraseña, baja) sin exponer una key
   // global. Solo la instalación dueña conoce este valor.
   installId?: string;
+  // Preferencia de tema (se sincroniza con la cuenta para tenerla en cualquier dispositivo).
+  theme?: string;
   createdAt: Date;
 }
 
@@ -43,6 +45,7 @@ const userSchema = new Schema<IUser>({
   firstLinkedAt:      { type: Date },
   deletedAt:          { type: Date },
   installId:          { type: String },
+  theme:              { type: String },
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 export const UserModel = model<IUser>('User', userSchema);

@@ -131,7 +131,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
     res.json({
       token,
-      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
+      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username), theme: user.theme },
     });
   } catch (err: any) {
     await LoginLogModel.create({
@@ -150,9 +150,22 @@ export const me = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await UserModel.findById(req.user!.id).select('-password').lean();
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
-    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) } });
+    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username), theme: user.theme } });
   } catch {
     res.json({ user: req.user });
+  }
+};
+
+// ── POST /api/auth/me/theme ───────────────────────────────────────────────────
+// Guarda la preferencia de tema de la cuenta autenticada.
+export const setMyTheme = async (req: AuthRequest, res: Response): Promise<void> => {
+  const { theme } = req.body as { theme?: string };
+  if (!theme) { res.status(400).json({ message: 'theme requerido.' }); return; }
+  try {
+    await UserModel.findByIdAndUpdate(req.user!.id, { theme });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al guardar el tema.', error: err.message });
   }
 };
 
