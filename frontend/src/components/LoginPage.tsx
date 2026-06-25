@@ -29,6 +29,7 @@ export function LoginPage() {
   const [error,    setError]    = useState<string | null>(null);
   const [success,  setSuccess]  = useState<string | null>(null);
   const [loading,  setLoading]  = useState(false);
+  const [accountDeleted, setAccountDeleted] = useState(false);
 
   // En local: ver si esta instancia ya está vinculada a una cuenta
   useEffect(() => {
@@ -78,12 +79,32 @@ export function LoginPage() {
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
-    setError(null); setLoading(true);
+    setError(null); setAccountDeleted(false); setLoading(true);
     try {
       await login(username.trim(), password);
       if (isLocal) await setLocalOwner();
     } catch (err: any) {
-      setError(err.message);
+      const msg: string = err.message || '';
+      if (msg.includes('dada de baja') || msg.includes('deactivated')) {
+        setAccountDeleted(true);
+      }
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUnlink = async () => {
+    setLoading(true);
+    try {
+      await fetch(`${API_BASE}/api/local/owner/reset`, { method: 'POST' });
+      setLocalOwner_(null);
+      setAccountDeleted(false);
+      setError(null);
+      setUsername('');
+      setMode('register');
+    } catch {
+      setError('No se pudo desvincular. Intenta reiniciar la app.');
     } finally {
       setLoading(false);
     }
@@ -223,6 +244,26 @@ export function LoginPage() {
               >
                 {success}
               </motion.p>
+            )}
+
+            {/* Banner cuenta dada de baja — solo en local */}
+            {accountDeleted && isLocal && (
+              <motion.div
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 space-y-2"
+              >
+                <p className="text-xs text-amber-400 font-medium">Esta cuenta fue dada de baja.</p>
+                <p className="text-[11px] text-muted-foreground">Puedes desvincular esta instalación y crear una cuenta nueva.</p>
+                <button
+                  type="button"
+                  onClick={handleUnlink}
+                  disabled={loading}
+                  className="w-full text-xs py-1.5 rounded-lg bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors disabled:opacity-50"
+                >
+                  Desvincular instalación y crear cuenta nueva
+                </button>
+              </motion.div>
             )}
 
             <button
