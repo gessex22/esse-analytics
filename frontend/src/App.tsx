@@ -224,6 +224,7 @@ export default function App() {
           <div className="min-w-0 flex-1">
             <p className="text-sm truncate font-medium">{user.username}</p>
             <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
+            <p className="text-[10px] text-muted-foreground/50 font-mono">v{__APP_VERSION__}</p>
           </div>
           <button
             onClick={logout}
