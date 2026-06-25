@@ -1,6 +1,6 @@
 {
   "name": "esse-analytics-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "EsseAnalytics — gestión de contenido local",
   "main": "dist/main.js",
   "private": true,
@@ -40,10 +40,11 @@
     "publish": {
       "provider": "github",
       "owner": "gessex22",
-      "repo": "esse-analytics"
+      "repo": "esse-analytics",
+      "releaseType": "release"
     },
     "directories": {
-      "output": "../esse-release",
+      "output": "C:/esse-release",
       "buildResources": "assets"
     },
     "files": [
