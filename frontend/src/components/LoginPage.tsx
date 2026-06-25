@@ -14,7 +14,7 @@ async function setLocalOwner() {
   }).catch(() => {});
 }
 
-export function LoginPage() {
+export function LoginPage({ onBack }: { onBack?: () => void }) {
   const { login } = useAuth();
   const { isLocal, isReady } = useBackendType();
 
@@ -144,15 +144,16 @@ export function LoginPage() {
         transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
         className="w-full max-w-sm"
       >
-        {/* Volver al landing — solo en web */}
-        {!isLocal && ownerChecked && (
+        {/* Volver al landing */}
+        {onBack && (
           <div className="mb-6">
-            <a
-              href="/"
+            <button
+              type="button"
+              onClick={onBack}
               className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               ← Volver al inicio
-            </a>
+            </button>
           </div>
         )}
 

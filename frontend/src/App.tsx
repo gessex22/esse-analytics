@@ -92,7 +92,7 @@ export default function App() {
 
   // Sin sesión → landing o login
   if (!user) {
-    if (showLogin) return <LoginPage />;
+    if (showLogin) return <LoginPage onBack={() => setShowLogin(false)} />;
     return <LandingPage onLogin={() => setShowLogin(true)} />;
   }
 
