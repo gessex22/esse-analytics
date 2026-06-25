@@ -1,6 +1,6 @@
 import { ReactNode } from "react";
 import { motion } from "motion/react";
-import { Wifi, Star, Monitor } from "lucide-react";
+import { Wifi, Star, Monitor, LogOut } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 
 const isRemoteAccess = (): boolean => {
@@ -8,7 +8,7 @@ const isRemoteAccess = (): boolean => {
   return h !== "localhost" && h !== "127.0.0.1" && !h.startsWith("192.168.");
 };
 
-function UpgradeScreen() {
+function UpgradeScreen({ onLogout }: { onLogout: () => void }) {
   return (
     <div className="flex h-screen items-center justify-center bg-background px-6">
       <motion.div
@@ -64,16 +64,24 @@ function UpgradeScreen() {
         <p className="text-xs text-muted-foreground/50">
           Contactá al administrador para activar tu acceso premium.
         </p>
+
+        <button
+          onClick={onLogout}
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mx-auto"
+        >
+          <LogOut className="w-4 h-4" />
+          Cerrar sesión
+        </button>
       </motion.div>
     </div>
   );
 }
 
 export function RemoteGate({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
 
   if (user && isRemoteAccess() && user.tier === "free") {
-    return <UpgradeScreen />;
+    return <UpgradeScreen onLogout={logout} />;
   }
 
   return <>{children}</>;
