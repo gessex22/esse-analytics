@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import {
-  Play, Camera, Music2, AlertTriangle, Clock,
+  Play, Camera, Music2, AlertTriangle, Clock, Pencil,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard,
 } from "lucide-react";
 import { videoService, syncService } from "../services/api";
@@ -81,7 +81,7 @@ function daysLabel(nextDate: string): string {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function UrgencyPill({ urgency, nextDate }: { urgency: Urgency; nextDate: string }) {
+function UrgencyPill({ urgency, nextDate, onEdit }: { urgency: Urgency; nextDate: string; onEdit?: () => void }) {
   const label = daysLabel(nextDate);
   const styles: Record<Urgency, string> = {
     past:  "bg-red-500/15 text-red-500",
@@ -94,6 +94,15 @@ function UrgencyPill({ urgency, nextDate }: { urgency: Urgency; nextDate: string
     <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${styles[urgency]}`}>
       <Icon className="w-3 h-3" />
       {label}
+      {onEdit && (
+        <button
+          onClick={onEdit}
+          title="Editar intervalo"
+          className="ml-0.5 -mr-0.5 p-0.5 rounded-full hover:bg-black/10 transition-colors"
+        >
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
     </span>
   );
 }
@@ -199,6 +208,7 @@ function PlatformCard({
   onPin,
   onOpen,
   onOpenVideo,
+  onIntervalChange,
   pinning,
   pinned,
   loading,
@@ -211,6 +221,7 @@ function PlatformCard({
   onPin: () => void;
   onOpen: () => void;
   onOpenVideo?: (fileId: string, title: string) => void;
+  onIntervalChange: (days: number) => void;
   pinning: boolean;
   pinned: boolean;
   loading: boolean;
@@ -218,6 +229,7 @@ function PlatformCard({
   const cfg     = PLATFORM_CFG[slot.platform];
   const Icon    = cfg.icon;
   const urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
+  const [editingInterval, setEditingInterval] = useState(false);
 
   return (
     <motion.div
@@ -237,9 +249,29 @@ function PlatformCard({
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-foreground">{cfg.label}</p>
-          <p className="text-xs text-muted-foreground">Cada {slot.intervalDays} días</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Cada {slot.intervalDays} días</p>
         </div>
-        {slot.nextDate && <UrgencyPill urgency={urgency} nextDate={slot.nextDate} />}
+        {slot.nextDate && (
+          editingInterval ? (
+            <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-secondary text-foreground flex-shrink-0">
+              Cada
+              <input
+                type="number"
+                min={1}
+                max={60}
+                autoFocus
+                value={slot.intervalDays}
+                onChange={(e) => onIntervalChange(parseInt(e.target.value, 10))}
+                onBlur={() => setEditingInterval(false)}
+                onKeyDown={(e) => e.key === "Enter" && setEditingInterval(false)}
+                className="w-8 text-center bg-transparent border-b border-dashed border-muted-foreground/50 focus:border-primary focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              días
+            </span>
+          ) : (
+            <UrgencyPill urgency={urgency} nextDate={slot.nextDate} onEdit={() => setEditingInterval(true)} />
+          )
+        )}
       </div>
 
       {/* Último publicado */}
@@ -358,6 +390,17 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       .finally(() => { configOk = true; resolve(); });
   }, []);
 
+  // Cambiar el intervalo de días de una plataforma (optimista + persiste en backend)
+  function updateInterval(platform: Platform, days: number) {
+    if (!Number.isFinite(days) || days < 1) return;
+    setSlots(prev => prev.map(s =>
+      s.platform === platform
+        ? { ...s, intervalDays: days, nextDate: s.lastDate ? calcNextDate(s.lastDate, days) : s.nextDate }
+        : s
+    ));
+    syncService.updateCalendarConfig(platform, { intervalDays: days }).catch(() => {});
+  }
+
   // Navegación local — sin auto-guardado; Pin es el único punto de guardado
   function navigate(platform: Platform, dir: "older" | "newer") {
     setIndices(prev => ({
@@ -429,6 +472,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
               onPin={() => pinVideo(slot.platform)}
               onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
               onOpenVideo={onOpenVideo}
+              onIntervalChange={(days) => updateInterval(slot.platform, days)}
               pinning={pinning[slot.platform]}
               pinned={pinned[slot.platform]}
               loading={loading}

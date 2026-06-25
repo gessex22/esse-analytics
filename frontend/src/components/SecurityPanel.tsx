@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Monitor, Smartphone, Tablet, CheckCircle2, XCircle, Clock } from "lucide-react";
+import { Monitor, Smartphone, Tablet, CheckCircle2, XCircle, Clock, Star, User, Loader2, Trash2 } from "lucide-react";
+import { API_BASE } from "../config";
 
 interface LoginLog {
   _id: string;
@@ -14,7 +15,12 @@ interface LoginLog {
   at: string;
 }
 
-import { API_BASE } from "../config";
+interface AppUser {
+  id: string;
+  username: string;
+  role: string;
+  tier: "free" | "premium";
+}
 
 function getAuthHeader() {
   const token = localStorage.getItem("esse_auth_token");
@@ -38,109 +44,218 @@ function formatDate(iso: string) {
 const FAIL_LABEL: Record<string, string> = {
   user_not_found: "Usuario no existe",
   wrong_password: "Contraseña incorrecta",
-  server_error: "Error del servidor",
+  server_error:   "Error del servidor",
 };
 
-export function SecurityPanel() {
-  const [logs, setLogs] = useState<LoginLog[]>([]);
+const ROLE_LABEL: Record<string, string> = {
+  todopoderoso: "Admin",
+  editor:       "Editor",
+  visitante:    "Visitante",
+};
+
+// ── Gestión de usuarios ───────────────────────────────────────────────────────
+function UsersPanel() {
+  const [users,   setUsers]   = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [saving,  setSaving]  = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/auth/users`, { headers: getAuthHeader() })
+      .then(r => r.json())
+      .then(setUsers)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggleTier = async (user: AppUser) => {
+    const newTier = user.tier === "premium" ? "free" : "premium";
+    setSaving(user.id);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/users/${user.id}/tier`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
+        body: JSON.stringify({ tier: newTier }),
+      });
+      if (res.ok) {
+        setUsers(prev => prev.map(u => u.id === user.id ? { ...u, tier: newTier } : u));
+      }
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  if (loading) return (
+    <div className="flex justify-center py-6">
+      <motion.span className="w-6 h-6 rounded-full border-2 border-primary/30 block"
+        style={{ borderTopColor: "var(--primary)" }}
+        animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }} />
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      {users.map((u, i) => (
+        <motion.div key={u.id}
+          initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: i * 0.05 }}
+          className="flex items-center gap-3 bg-card border border-border rounded-xl px-4 py-3"
+        >
+          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <User className="w-4 h-4 text-primary/60" />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-foreground truncate">{u.username}</p>
+            <p className="text-xs text-muted-foreground">{ROLE_LABEL[u.role] ?? u.role}</p>
+          </div>
+
+          {/* Badge tier actual */}
+          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold flex-shrink-0 ${
+            u.tier === "premium"
+              ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+              : "text-muted-foreground bg-secondary border-border"
+          }`}>
+            {u.tier === "premium" ? "Premium" : "Free"}
+          </span>
+
+          {/* Toggle */}
+          <button
+            onClick={() => toggleTier(u)}
+            disabled={saving === u.id}
+            title={u.tier === "premium" ? "Quitar premium" : "Activar premium"}
+            className={`relative w-10 h-5.5 rounded-full transition-colors flex-shrink-0 disabled:opacity-50 ${
+              u.tier === "premium" ? "bg-amber-500" : "bg-border"
+            }`}
+            style={{ height: "1.375rem" }}
+          >
+            {saving === u.id
+              ? <Loader2 className="w-3 h-3 animate-spin absolute inset-0 m-auto text-white" />
+              : <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                  u.tier === "premium" ? "translate-x-[1.125rem]" : "translate-x-0"
+                }`} />
+            }
+          </button>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+// ── Panel principal ───────────────────────────────────────────────────────────
+export function SecurityPanel() {
+  const [logs,    setLogs]    = useState<LoginLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/auth/logs`, { headers: getAuthHeader() })
-      .then((r) => r.json())
-      .then((data) => { setLogs(data); setLoading(false); })
+      .then(r => r.json())
+      .then(data => { setLogs(data); setLoading(false); })
       .catch(() => { setError("No se pudieron cargar los registros."); setLoading(false); });
   }, []);
 
   return (
-    <div className="space-y-4 max-w-lg">
-      <div>
-        <h3 className="text-sm font-semibold text-foreground">Últimas conexiones</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Registro de los 5 accesos más recientes a la plataforma
-        </p>
-      </div>
+    <div className="space-y-8 max-w-lg">
 
-      {loading && (
-        <div className="flex justify-center py-8">
-          <motion.span
-            className="w-7 h-7 rounded-full border-2 border-primary/30 block"
-            style={{ borderTopColor: "var(--primary)" }}
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}
-          />
+      {/* ── Usuarios y tiers ─────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+            <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" /> Usuarios
+          </h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Activá el acceso remoto Premium por usuario
+          </p>
         </div>
-      )}
+        <UsersPanel />
+      </section>
 
-      {error && (
-        <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-          {error}
-        </p>
-      )}
+      {/* ── Últimas conexiones ────────────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Últimas conexiones</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Registro de los 5 accesos más recientes
+            </p>
+          </div>
+          {logs.length > 0 && (
+            <button
+              onClick={async () => {
+                const token = localStorage.getItem("esse_auth_token");
+                const ok = window.confirm("¿Limpiar todos los registros de acceso?");
+                if (!ok) return;
+                await fetch(`${API_BASE}/api/auth/logs`, {
+                  method: "DELETE",
+                  headers: getAuthHeader(),
+                });
+                setLogs([]);
+              }}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-red-400 transition-colors flex-shrink-0"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Limpiar
+            </button>
+          )}
+        </div>
 
-      {!loading && !error && logs.length === 0 && (
-        <p className="text-xs text-muted-foreground text-center py-8">Sin registros aún.</p>
-      )}
+        {loading && (
+          <div className="flex justify-center py-8">
+            <motion.span className="w-7 h-7 rounded-full border-2 border-primary/30 block"
+              style={{ borderTopColor: "var(--primary)" }}
+              animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }} />
+          </div>
+        )}
 
-      <div className="space-y-2.5">
-        {logs.map((log, i) => (
-          <motion.div
-            key={log._id}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.06, duration: 0.2 }}
-            className={`rounded-xl border p-4 flex items-start gap-3 ${
-              log.success
-                ? "bg-card/40 border-border"
-                : "bg-red-500/5 border-red-500/20"
-            }`}
-          >
-            {/* Ícono estado */}
-            <div className={`mt-0.5 flex-shrink-0 ${log.success ? "text-emerald-400" : "text-red-400"}`}>
-              {log.success
-                ? <CheckCircle2 className="w-4 h-4" />
-                : <XCircle className="w-4 h-4" />}
-            </div>
+        {error && (
+          <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+        )}
 
-            {/* Info */}
-            <div className="flex-1 min-w-0 space-y-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-foreground truncate">
-                  {log.username}
-                </span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium flex-shrink-0 ${
-                  log.success
-                    ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
-                    : "text-red-400 bg-red-500/10 border-red-500/30"
-                }`}>
-                  {log.success ? "Exitoso" : (FAIL_LABEL[log.failReason ?? ""] ?? "Fallido")}
-                </span>
+        {!loading && !error && logs.length === 0 && (
+          <p className="text-xs text-muted-foreground text-center py-8">Sin registros aún.</p>
+        )}
+
+        <div className="space-y-2.5">
+          {logs.map((log, i) => (
+            <motion.div key={log._id}
+              initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.06, duration: 0.2 }}
+              className={`rounded-xl border p-4 flex items-start gap-3 ${
+                log.success ? "bg-card/40 border-border" : "bg-red-500/5 border-red-500/20"
+              }`}
+            >
+              <div className={`mt-0.5 flex-shrink-0 ${log.success ? "text-emerald-400" : "text-red-400"}`}>
+                {log.success ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
               </div>
-
-              <div className="flex items-center gap-3 flex-wrap">
-                {/* Dispositivo + navegador */}
-                <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                  <DeviceIcon device={log.device} />
-                  {log.browser} · {log.os}
-                </span>
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-foreground truncate">{log.username}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium flex-shrink-0 ${
+                    log.success
+                      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+                      : "text-red-400 bg-red-500/10 border-red-500/30"
+                  }`}>
+                    {log.success ? "Exitoso" : (FAIL_LABEL[log.failReason ?? ""] ?? "Fallido")}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <DeviceIcon device={log.device} />
+                    {log.browser} · {log.os}
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-[11px] text-muted-foreground font-mono bg-secondary/40 px-1.5 py-0.5 rounded">
+                    {log.ip}
+                  </span>
+                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
+                    <Clock className="w-3 h-3" />
+                    {formatDate(log.at)}
+                  </span>
+                </div>
               </div>
-
-              <div className="flex items-center gap-3 flex-wrap">
-                {/* IP */}
-                <span className="text-[11px] text-muted-foreground font-mono bg-secondary/40 px-1.5 py-0.5 rounded">
-                  {log.ip}
-                </span>
-                {/* Fecha */}
-                <span className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
-                  <Clock className="w-3 h-3" />
-                  {formatDate(log.at)}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
+            </motion.div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

@@ -60,12 +60,15 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     await LoginLogModel.create({ username: user.username, success: true, ip, ...ua });
 
     const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role },
+      { id: user._id, username: user.username, role: user.role, tier: user.tier },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
-    res.json({ token, user: { username: user.username, role: user.role } });
+    res.json({
+      token,
+      user: { username: user.username, role: user.role, tier: user.tier },
+    });
   } catch (err: any) {
     await LoginLogModel.create({
       username: username ?? 'unknown',
@@ -73,23 +76,65 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       failReason: 'server_error',
       ip,
       ...ua,
-    }).catch(() => {}); // no bloquear si el log mismo falla
+    }).catch(() => {});
     res.status(500).json({ message: 'Error interno.', error: err.message });
   }
 };
 
+// Siempre lee de DB para tener tier actualizado (no depende del JWT cacheado)
 export const me = async (req: AuthRequest, res: Response): Promise<void> => {
-  res.json({ user: req.user });
+  try {
+    const user = await UserModel.findById(req.user!.id).select('-password').lean();
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier } });
+  } catch {
+    res.json({ user: req.user });
+  }
 };
 
 export const getLoginLogs = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const logs = await LoginLogModel.find()
-      .sort({ at: -1 })
-      .limit(5)
-      .lean();
+    const logs = await LoginLogModel.find().sort({ at: -1 }).limit(5).lean();
     res.json(logs);
   } catch (err: any) {
     res.status(500).json({ message: 'Error al obtener logs.', error: err.message });
+  }
+};
+
+export const clearLoginLogs = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    await LoginLogModel.deleteMany({});
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al limpiar logs.', error: err.message });
+  }
+};
+
+// ── GET /api/auth/users ───────────────────────────────────────────────────────
+export const getUsers = async (_req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const users = await UserModel.find().select('-password').lean();
+    res.json(users.map(u => ({ id: u._id, username: u.username, role: u.role, tier: u.tier })));
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al obtener usuarios.', error: err.message });
+  }
+};
+
+// ── PATCH /api/auth/users/:id/tier ────────────────────────────────────────────
+export const setUserTier = async (req: AuthRequest, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const { tier } = req.body as { tier?: string };
+
+  if (tier !== 'free' && tier !== 'premium') {
+    res.status(400).json({ message: 'tier debe ser "free" o "premium".' });
+    return;
+  }
+
+  try {
+    const user = await UserModel.findByIdAndUpdate(id, { tier }, { new: true }).select('-password');
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    res.json({ id: user._id, username: user.username, role: user.role, tier: user.tier });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al actualizar tier.', error: err.message });
   }
 };

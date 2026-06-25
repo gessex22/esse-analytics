@@ -13,6 +13,7 @@ import { LoginPage } from "./components/LoginPage";
 import { LandingPage } from "./components/LandingPage";
 import { YoutubeUploadView } from "./components/YoutubeUploadView";
 import { useAuth } from "./hooks/useAuth";
+import { RemoteGate } from "./components/RemoteGate";
 import logoImg from "./assets/esseAnalytics.png";
 
 // Sub-secciones de Ajustes
@@ -91,7 +92,7 @@ export default function App() {
 
   // Editor: navegar solo a Videos, Taller y Calendario
   const role = user.role;
-  const allowedNavForEditor = new Set([1, 5, 7]); // Videos, Taller y Calendario
+  const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
   const visibleNavItems = navItems.filter((_, i) => {
     if (role === "todopoderoso") return true;
     return allowedNavForEditor.has(i);
@@ -121,6 +122,7 @@ export default function App() {
     : navItems[activeNav]?.label ?? "";
 
   return (
+    <RemoteGate>
     <div className="flex bg-background text-foreground overflow-hidden" style={{ fontFamily: "'Inter', sans-serif", height: "100dvh" }}>
 
       {/* ── Sidebar (sm+) ─────────────────────────────────────────────────── */}
@@ -317,5 +319,6 @@ export default function App() {
         </nav>
       </div>
     </div>
+    </RemoteGate>
   );
 }

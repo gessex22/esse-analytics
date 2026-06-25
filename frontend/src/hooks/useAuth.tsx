@@ -1,10 +1,12 @@
 import { createContext, useContext, useState, useEffect, ReactNode, createElement } from "react";
 
 export type UserRole = "todopoderoso" | "editor" | "visitante";
+export type UserTier = "free" | "premium";
 
 interface AuthUser {
   username: string;
   role: UserRole;
+  tier: UserTier;
 }
 
 interface AuthContextValue {
@@ -26,20 +28,22 @@ const AuthContext = createContext<AuthContextValue>({
 import { API_BASE } from "../config";
 const STORAGE_KEY = "esse_auth_token";
 
-// Decode JWT payload without verification (server validates on every API call)
 function decodeJwtUser(token: string): AuthUser | null {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
     if (payload.exp && Date.now() / 1000 > payload.exp) return null;
     if (!payload.username || !payload.role) return null;
-    return { username: payload.username, role: payload.role as UserRole };
+    return {
+      username: payload.username,
+      role: payload.role as UserRole,
+      tier: (payload.tier as UserTier) ?? "free",
+    };
   } catch {
     return null;
   }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Initialize synchronously from localStorage to avoid the loading spinner flash
   const [user, setUser] = useState<AuthUser | null>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     return saved ? decodeJwtUser(saved) : null;
@@ -47,7 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
   const [loading, setLoading] = useState(false);
 
-  // Background revalidation: silently log out if the token was revoked or corrupted
+  // Revalidación: lee de DB para tener el tier siempre actualizado
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return;

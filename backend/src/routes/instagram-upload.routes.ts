@@ -8,16 +8,21 @@ import {
   getAccountInfo,
   debugAccount,
 } from '../controllers/instagram-upload.controller';
-import { verifyToken, requireRole } from '../middleware/auth.middleware';
+import { verifyToken } from '../middleware/auth.middleware';
 
 const router = Router();
 
-router.get('/api/instagram/auth/url',      verifyToken, requireRole('todopoderoso'), getAuthUrl);
+// OAuth — el callback viene de Meta (sin JWT)
+router.get('/api/instagram/auth/url',      verifyToken, getAuthUrl);
 router.get('/api/instagram/auth/callback', handleCallback);
 router.get('/api/instagram/auth/status',   verifyToken, getAuthStatus);
-router.delete('/api/instagram/auth',       verifyToken, requireRole('todopoderoso'), revokeAuth);
-router.post('/api/instagram/upload',       verifyToken, requireRole('todopoderoso'), uploadToInstagram);
-router.get('/api/instagram/account-info', verifyToken, requireRole('todopoderoso'), getAccountInfo);
-router.get('/api/instagram/debug',        debugAccount); // TEMPORAL: público para diagnóstico
+router.delete('/api/instagram/auth',       verifyToken, revokeAuth);
+router.get('/api/instagram/account-info',  verifyToken, getAccountInfo);
+
+// Upload
+router.post('/api/instagram/upload',       verifyToken, uploadToInstagram);
+
+// Debug (TEMPORAL)
+router.get('/api/instagram/debug',         debugAccount);
 
 export default router;

@@ -5,6 +5,7 @@ import http from 'http';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
+import { AuthRequest } from '../middleware/auth.middleware';
 
 // Instagram Business Login usa graph.instagram.com, no graph.facebook.com
 const IG_GRAPH  = 'https://graph.instagram.com/v22.0';
@@ -12,19 +13,19 @@ const IG_OAUTH  = 'https://api.instagram.com/oauth/access_token';
 const IG_AUTH   = 'https://www.instagram.com/oauth/authorize';
 const IG_LTOKEN = 'https://graph.instagram.com/access_token';
 
-// ── Token storage ─────────────────────────────────────────────────────────────
-async function saveTokens(data: object) {
+// ── Token storage per user ────────────────────────────────────────────────────
+async function saveTokens(userId: string, data: object) {
   const db = mongoose.connection.db!;
   await db.collection('oauth_tokens').updateOne(
-    { provider: 'instagram' },
-    { $set: { provider: 'instagram', ...data, updatedAt: new Date() } },
+    { provider: 'instagram', userId },
+    { $set: { provider: 'instagram', userId, ...data, updatedAt: new Date() } },
     { upsert: true },
   );
 }
 
-async function loadTokens(): Promise<Record<string, any> | null> {
+async function loadTokens(userId: string): Promise<Record<string, any> | null> {
   const db = mongoose.connection.db!;
-  const doc = await db.collection('oauth_tokens').findOne({ provider: 'instagram' });
+  const doc = await db.collection('oauth_tokens').findOne({ provider: 'instagram', userId });
   return doc ?? null;
 }
 
@@ -36,7 +37,6 @@ async function igGet(path: string, token: string): Promise<any> {
 }
 
 // La Graph API de Meta espera los parámetros como form-urlencoded, no JSON.
-// Con JSON, parámetros como upload_type=resumable se ignoran silenciosamente.
 async function igPost(path: string, body: Record<string, any>): Promise<any> {
   const form = new URLSearchParams();
   for (const [k, v] of Object.entries(body)) {
@@ -85,7 +85,6 @@ function streamFileToMeta(uri: string, token: string, filePath: string, fileSize
 }
 
 // Instagram Business Login usa el Instagram App ID/Secret (distintos a los de Facebook)
-// Se leen dentro de las funciones para que dotenv ya esté cargado
 const igAppId     = () => process.env.INSTAGRAM_APP_ID     || process.env.META_APP_ID!;
 const igAppSecret = () => process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET!;
 
@@ -109,20 +108,31 @@ function popupResult(res: Response, status: string) {
 }
 
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
-export const getAuthUrl = (_req: Request, res: Response) => {
+export const getAuthUrl = (req: AuthRequest, res: Response) => {
+  const state = Buffer.from(req.user!.id).toString('base64url');
   const params = new URLSearchParams({
     client_id:     igAppId(),
     redirect_uri:  process.env.META_REDIRECT_URI!,
     scope:         'instagram_business_basic,instagram_business_content_publish',
     response_type: 'code',
+    state,
   });
   res.json({ url: `${IG_AUTH}?${params}` });
 };
 
 // ── GET /api/instagram/auth/callback ─────────────────────────────────────────
 export const handleCallback = async (req: Request, res: Response) => {
-  const code = req.query.code as string;
-  if (!code) return popupResult(res, 'error');
+  const code  = req.query.code  as string;
+  const state = req.query.state as string;
+  if (!code || !state) return popupResult(res, 'error');
+
+  let userId: string;
+  try {
+    userId = Buffer.from(state, 'base64url').toString();
+    if (!userId) throw new Error('state inválido');
+  } catch {
+    return popupResult(res, 'error');
+  }
 
   try {
     // 1. Exchange code → short-lived token (POST, form-encoded)
@@ -142,7 +152,6 @@ export const handleCallback = async (req: Request, res: Response) => {
       throw new Error(tokenJson.error_message || tokenJson.error);
     }
     const shortToken: string = tokenJson.access_token;
-    // user_id is already returned here (Instagram-scoped ID)
     const igUserId: string   = String(tokenJson.user_id);
 
     // 2. Exchange for long-lived token (~60 days)
@@ -154,14 +163,13 @@ export const handleCallback = async (req: Request, res: Response) => {
     const longToken: string = longJson.access_token;
 
     // El user_id del intercambio de token NO sirve para la Graph API.
-    // Hay que pedir el ID real de la cuenta profesional vía /me.
     const meRes  = await fetch(`${IG_GRAPH}/me?fields=user_id&access_token=${longToken}`);
     const meJson = await meRes.json() as any;
     const realUserId: string = String(meJson.user_id ?? igUserId);
 
     if (!realUserId) return popupResult(res, 'no_ig_account');
 
-    await saveTokens({ access_token: longToken, instagram_user_id: realUserId });
+    await saveTokens(userId, { access_token: longToken, instagram_user_id: realUserId });
     popupResult(res, 'success');
   } catch (err: any) {
     console.error('Instagram OAuth error:', err.message);
@@ -170,21 +178,21 @@ export const handleCallback = async (req: Request, res: Response) => {
 };
 
 // ── GET /api/instagram/auth/status ───────────────────────────────────────────
-export const getAuthStatus = async (_req: Request, res: Response) => {
-  const tokens = await loadTokens();
+export const getAuthStatus = async (req: AuthRequest, res: Response) => {
+  const tokens = await loadTokens(req.user!.id);
   res.json({ connected: !!(tokens?.access_token && tokens?.instagram_user_id) });
 };
 
 // ── DELETE /api/instagram/auth ────────────────────────────────────────────────
-export const revokeAuth = async (_req: Request, res: Response) => {
+export const revokeAuth = async (req: AuthRequest, res: Response) => {
   const db = mongoose.connection.db!;
-  await db.collection('oauth_tokens').deleteOne({ provider: 'instagram' });
+  await db.collection('oauth_tokens').deleteOne({ provider: 'instagram', userId: req.user!.id });
   res.json({ ok: true });
 };
 
 // ── GET /api/instagram/account-info ───────────────────────────────────────────
-export const getAccountInfo = async (_req: Request, res: Response) => {
-  const tokens = await loadTokens();
+export const getAccountInfo = async (req: AuthRequest, res: Response) => {
+  const tokens = await loadTokens(req.user!.id);
   if (!tokens?.access_token) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
@@ -203,31 +211,13 @@ export const getAccountInfo = async (_req: Request, res: Response) => {
 };
 
 // ── GET /api/instagram/debug ──────────────────────────────────────────────────
-// TEMPORAL: público para diagnóstico. Devuelve solo info no sensible.
+// TEMPORAL: público para diagnóstico.
 export const debugAccount = async (_req: Request, res: Response) => {
-  const tokens = await loadTokens();
-  if (!tokens?.access_token) return res.json({ error: 'No token saved' });
-
-  const { access_token, instagram_user_id } = tokens;
-
-  // /me con el token — devuelve el user_id correcto para publicar
-  const meRes  = await fetch(`${IG_GRAPH}/me?fields=user_id,username,account_type&access_token=${access_token}`);
-  const me     = await meRes.json();
-
-  // El ID que tenemos guardado
-  const storedRes = await fetch(`${IG_GRAPH}/${instagram_user_id}?fields=id,username,account_type&access_token=${access_token}`);
-  const stored    = await storedRes.json();
-
-  res.json({
-    stored_id: instagram_user_id,
-    me,                       // lo que dice /me (user_id que SÍ sirve para publicar)
-    storedLookup: stored,     // qué pasa al consultar el id guardado
-    ids_match: String(me.user_id) === String(instagram_user_id),
-  });
+  res.json({ message: 'Debug endpoint deshabilitado en modo multi-usuario' });
 };
 
 // ── POST /api/instagram/upload ────────────────────────────────────────────────
-export const uploadToInstagram = async (req: Request, res: Response) => {
+export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
   const { fileId, caption = '', tags = [], thumbOffset } = req.body;
   if (!fileId) return res.status(400).json({ error: 'fileId requerido' });
 
@@ -238,20 +228,19 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
   const filePath = fileDoc.file_path as string;
   if (!fs.existsSync(filePath)) return res.status(400).json({ error: 'Archivo físico no encontrado en disco' });
 
-  const tokenData = await loadTokens();
+  const tokenData = await loadTokens(req.user!.id);
   if (!tokenData?.access_token || !tokenData?.instagram_user_id) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
 
   const { access_token } = tokenData;
 
-  // El ID de /me es el único válido para la Graph API. Lo resolvemos siempre
-  // (el user_id del intercambio de token del OAuth no sirve aquí).
+  // El ID de /me es el único válido para la Graph API.
   const meRes  = await fetch(`${IG_GRAPH}/me?fields=user_id&access_token=${access_token}`);
   const meJson = await meRes.json() as any;
   const instagram_user_id: string = String(meJson.user_id ?? tokenData.instagram_user_id);
   if (meJson.user_id && String(meJson.user_id) !== String(tokenData.instagram_user_id)) {
-    await saveTokens({ access_token, instagram_user_id }); // auto-corrige el guardado
+    await saveTokens(req.user!.id, { access_token, instagram_user_id });
   }
 
   const hashtagLine = (tags as string[]).length
@@ -259,15 +248,13 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
     : '';
   const fullCaption = String(caption) + hashtagLine;
 
-  // URL pública desde la que Meta descargará el video (vía el túnel de Cloudflare)
-  const apiUrl   = (process.env.API_URL || '').replace(/\/$/, '');
+  const apiUrl = (process.env.API_URL || '').replace(/\/$/, '');
   if (!apiUrl.startsWith('https://')) {
     return res.status(500).json({ error: 'API_URL debe ser una URL pública https para que Meta descargue el video' });
   }
   const videoUrl = `${apiUrl}/api/videos/download/${fileId}`;
 
   try {
-    // Step 1: Create media container (Meta descarga el video desde video_url)
     const containerPayload: Record<string, any> = {
       media_type:    'REELS',
       video_url:     videoUrl,
@@ -282,7 +269,6 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
 
     const containerId = containerData.id as string;
 
-    // Step 2: Poll until FINISHED (Meta descarga y procesa; máx ~5 min, cada 5 s)
     let statusCode = 'IN_PROGRESS';
     for (let i = 0; i < 72 && statusCode === 'IN_PROGRESS'; i++) {
       await new Promise(r => setTimeout(r, 5000));
@@ -296,14 +282,12 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
       throw new Error('Tiempo de espera agotado. El video sigue procesándose en Instagram.');
     }
 
-    // Step 4: Publish
     const publishData = await igPost(`/${instagram_user_id}/media_publish`, {
       creation_id: containerId,
       access_token,
     });
     if (!publishData.id) throw new Error(publishData.error?.message ?? 'Error al publicar');
 
-    // Get permalink
     const mediaData = await igGet(`/${publishData.id}?fields=permalink`, access_token);
     const postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
 
@@ -313,17 +297,12 @@ export const uploadToInstagram = async (req: Request, res: Response) => {
       { upsert: true },
     );
 
-    // Marca el archivo como publicado y registra la plataforma
     await FileModel.findByIdAndUpdate(fileId, {
       $set: { content_status: 'publicado' },
       $addToSet: { platforms: 'instagram' },
     });
 
-    res.json({
-      ok:      true,
-      mediaId: publishData.id,
-      postUrl,
-    });
+    res.json({ ok: true, mediaId: publishData.id, postUrl });
   } catch (err: any) {
     console.error('Error al subir a Instagram:', err.message);
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });

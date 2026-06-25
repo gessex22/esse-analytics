@@ -4,7 +4,13 @@ import {
   CheckCircle2, ChevronRight, ChevronLeft, Film,
   Search, X, Loader2, Tag, Globe, Lock, Eye,
   CalendarDays, Users, AlertCircle, ExternalLink, RefreshCw, Play, ShieldAlert, Camera,
+  UploadCloud, FolderOpen,
 } from "lucide-react";
+
+const isRemote = () => {
+  const h = window.location.hostname;
+  return h !== "localhost" && h !== "127.0.0.1" && !h.startsWith("192.168.");
+};
 import { videoService, syncService } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { API_BASE as API } from "../config";
@@ -1073,6 +1079,9 @@ export function YoutubeUploadView() {
   const [thumbnailBlob,   setThumbnailBlob]   = useState<Blob | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
   const [showScrubber,    setShowScrubber]    = useState(false);
+  const [videoSource,     setVideoSource]     = useState<"library" | "device">(() => isRemote() ? "device" : "library");
+  const [localFile,       setLocalFile]       = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     syncService.getCalendarConfig()
@@ -1132,33 +1141,60 @@ export function YoutubeUploadView() {
   };
 
   const handleUpload = async () => {
-    if (!selected) return;
     setUploadError(null);
     setStep("uploading");
     const token = localStorage.getItem("esse_auth_token");
-    try {
-      const res = await fetch(`${API}/api/youtube/upload`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ fileId: selected.fileId, title, description, tags, categoryId, privacyStatus: privacy, madeForKids: audience === "kids", ageRestricted: audience === "age_restricted", publishAt: publishAt || undefined }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
+    const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
 
-      // Sube miniatura capturada (no fatal si falla)
-      if (thumbnailBlob && data.videoId) {
-        try {
-          const base64 = await new Promise<string>(resolve => {
-            const reader = new FileReader();
-            reader.onload = e => resolve(e.target?.result as string);
-            reader.readAsDataURL(thumbnailBlob);
-          });
-          await fetch(`${API}/api/youtube/thumbnail/${data.videoId}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-            body: JSON.stringify({ imageBase64: base64 }),
-          });
-        } catch { /* no bloquea el flujo */ }
+    try {
+      let data: any;
+
+      if (videoSource === "device" && localFile) {
+        // Upload remoto: archivo desde el dispositivo
+        const form = new FormData();
+        form.append("video", localFile);
+        form.append("title", title);
+        form.append("description", description);
+        form.append("tags", JSON.stringify(tags));
+        form.append("categoryId", categoryId);
+        form.append("privacyStatus", publishAt ? "private" : privacy);
+        form.append("madeForKids", String(audience === "kids"));
+        form.append("ageRestricted", String(audience === "age_restricted"));
+        if (publishAt) form.append("publishAt", publishAt);
+
+        const res = await fetch(`${API}/api/youtube/upload/remote`, {
+          method: "POST",
+          headers: authHeader,
+          body: form,
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
+      } else {
+        // Upload local: fileId en disco
+        if (!selected) return;
+        const res = await fetch(`${API}/api/youtube/upload`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeader },
+          body: JSON.stringify({ fileId: selected.fileId, title, description, tags, categoryId, privacyStatus: privacy, madeForKids: audience === "kids", ageRestricted: audience === "age_restricted", publishAt: publishAt || undefined }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
+
+        // Miniatura capturada (solo en modo biblioteca)
+        if (thumbnailBlob && data.videoId) {
+          try {
+            const base64 = await new Promise<string>(resolve => {
+              const reader = new FileReader();
+              reader.onload = e => resolve(e.target?.result as string);
+              reader.readAsDataURL(thumbnailBlob);
+            });
+            await fetch(`${API}/api/youtube/thumbnail/${data.videoId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...authHeader },
+              body: JSON.stringify({ imageBase64: base64 }),
+            });
+          } catch { /* no bloquea el flujo */ }
+        }
       }
 
       setDoneUrl(data.videoUrl);
@@ -1178,6 +1214,7 @@ export function YoutubeUploadView() {
     setAudience("not_kids"); setPrivacy("public"); setPublishAt("");
     setUploadError(null); setDoneUrl(null);
     setThumbnailBlob(null); setThumbnailPreview(null); setShowScrubber(false);
+    setLocalFile(null);
   };
 
   const plat = PLATFORMS.find(p => p.key === activePlatform)!;
@@ -1226,48 +1263,98 @@ export function YoutubeUploadView() {
           {activePlatform === "youtube" && (
             <div className="space-y-4">
 
-              {/* Video pre-seleccionado */}
-              <div className="bg-card border border-border rounded-xl p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video a publicar</span>
-                  <button onClick={() => setShowPicker(true)}
-                    className="flex items-center gap-1.5 text-xs text-primary hover:underline">
-                    <RefreshCw className="w-3 h-3" /> Cambiar video
-                  </button>
-                </div>
+              {/* Video a publicar */}
+              <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Video a publicar</span>
 
-                {configLoading ? (
-                  <div className="flex items-center gap-3 animate-pulse">
-                    <div className="w-24 h-14 rounded-lg bg-secondary" />
-                    <div className="space-y-2 flex-1">
-                      <div className="h-3 bg-secondary rounded w-3/4" />
-                      <div className="h-3 bg-secondary rounded w-1/4" />
-                    </div>
+                {/* Toggle fuente — solo en modo local */}
+                {!isRemote() && (
+                  <div className="flex items-center gap-1 bg-secondary/60 rounded-lg p-1">
+                    {(["library", "device"] as const).map(src => (
+                      <button key={src} onClick={() => { setVideoSource(src); setLocalFile(null); setSelected(null); setTitle(""); }}
+                        className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          videoSource === src ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                        }`}>
+                        {src === "library" ? <><FolderOpen className="w-3.5 h-3.5" /> Biblioteca</> : <><UploadCloud className="w-3.5 h-3.5" /> Desde dispositivo</>}
+                      </button>
+                    ))}
                   </div>
-                ) : selected ? (
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => setPreviewVideo(selected)}
-                      className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-primary/50 transition-colors"
-                    >
-                      <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
-                      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
-                          <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+                )}
+
+                {/* Modo: biblioteca local */}
+                {videoSource === "library" && (
+                  <>
+                    <div className="flex items-center justify-end">
+                      <button onClick={() => setShowPicker(true)} className="flex items-center gap-1.5 text-xs text-primary hover:underline">
+                        <RefreshCw className="w-3 h-3" /> Cambiar video
+                      </button>
+                    </div>
+                    {configLoading ? (
+                      <div className="flex items-center gap-3 animate-pulse">
+                        <div className="w-24 h-14 rounded-lg bg-secondary" />
+                        <div className="space-y-2 flex-1">
+                          <div className="h-3 bg-secondary rounded w-3/4" />
+                          <div className="h-3 bg-secondary rounded w-1/4" />
                         </div>
                       </div>
-                      {selected.duration && <span className="absolute bottom-1 right-1 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{selected.duration}</span>}
-                    </button>
-                    <div className="min-w-0">
-                      <p className="text-sm text-foreground font-medium truncate">{selected.title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">Próxima publicación · YouTube</p>
-                    </div>
-                  </div>
-                ) : (
-                  <button onClick={() => setShowPicker(true)}
-                    className="w-full border-2 border-dashed border-border rounded-lg py-6 text-muted-foreground text-sm hover:border-primary/40 hover:text-foreground transition-colors">
-                    Seleccionar video
-                  </button>
+                    ) : selected ? (
+                      <div className="flex items-center gap-3">
+                        <button onClick={() => setPreviewVideo(selected)}
+                          className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-primary/50 transition-colors">
+                          <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
+                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                            <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
+                              <Play className="w-4 h-4 text-white fill-white ml-0.5" />
+                            </div>
+                          </div>
+                          {selected.duration && <span className="absolute bottom-1 right-1 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{selected.duration}</span>}
+                        </button>
+                        <div className="min-w-0">
+                          <p className="text-sm text-foreground font-medium truncate">{selected.title}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">Próxima publicación · YouTube</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={() => setShowPicker(true)}
+                        className="w-full border-2 border-dashed border-border rounded-lg py-6 text-muted-foreground text-sm hover:border-primary/40 hover:text-foreground transition-colors">
+                        Seleccionar video
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {/* Modo: desde dispositivo */}
+                {videoSource === "device" && (
+                  <>
+                    <input ref={fileInputRef} type="file" accept="video/*" className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0] ?? null;
+                        setLocalFile(f);
+                        if (f) setTitle(f.name.replace(/\.[^.]+$/, ""));
+                      }} />
+                    {localFile ? (
+                      <div className="flex items-center gap-3 p-3 bg-secondary/40 rounded-xl border border-border">
+                        <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
+                          <Film className="w-5 h-5 text-primary/60" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-foreground font-medium truncate">{localFile.name}</p>
+                          <p className="text-xs text-muted-foreground">{(localFile.size / 1024 / 1024).toFixed(1)} MB</p>
+                        </div>
+                        <button onClick={() => { setLocalFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
+                          className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button onClick={() => fileInputRef.current?.click()}
+                        className="w-full border-2 border-dashed border-border rounded-xl py-8 flex flex-col items-center gap-2 text-muted-foreground hover:border-primary/40 hover:text-foreground transition-colors">
+                        <UploadCloud className="w-7 h-7" />
+                        <span className="text-sm">Elegir archivo de video</span>
+                        <span className="text-xs opacity-60">MP4, MOV, AVI · máx. 500 MB</span>
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -1549,12 +1636,14 @@ export function YoutubeUploadView() {
                   ) : <div />}
 
                   {step === "details" ? (
-                    <button onClick={() => setStep("visibility")} disabled={!title.trim() || !selected}
+                    <button onClick={() => setStep("visibility")}
+                      disabled={!title.trim() || (videoSource === "library" ? !selected : !localFile)}
                       className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                       Siguiente <ChevronRight className="w-4 h-4" />
                     </button>
                   ) : (
-                    <button onClick={handleUpload} disabled={!connected || !selected}
+                    <button onClick={handleUpload}
+                      disabled={!connected || (videoSource === "library" ? !selected : !localFile)}
                       className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm bg-red-500 hover:bg-red-400 text-white font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                       <YoutubeIcon className="w-4 h-4" /> Publicar en YouTube
                     </button>

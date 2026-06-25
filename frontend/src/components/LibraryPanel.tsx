@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save } from "lucide-react";
+import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2 } from "lucide-react";
 import { API_BASE as API } from "../config";
+import { useAuth } from "../hooks/useAuth";
 
 interface ScanResult {
   scanned: number;
@@ -9,12 +10,20 @@ interface ScanResult {
   missing: number;
 }
 
+type WipeResult = Record<string, number>;
+
 function authHeaders(): Record<string, string> {
   const token = localStorage.getItem("esse_auth_token");
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function isRemote(): boolean {
+  const h = window.location.hostname;
+  return h !== "localhost" && h !== "127.0.0.1" && !h.startsWith("192.168.");
+}
+
 export function LibraryPanel() {
+  const { user } = useAuth();
   const [folder,    setFolder]    = useState("");
   const [savedDir,  setSavedDir]  = useState<string | null>(null);
   const [dirExists, setDirExists] = useState(false);
@@ -22,6 +31,11 @@ export function LibraryPanel() {
   const [scanning,  setScanning]  = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const [result,    setResult]    = useState<ScanResult | null>(null);
+
+  const [wiping,      setWiping]      = useState(false);
+  const [wipeConfirm, setWipeConfirm] = useState(false);
+  const [wipeResult,  setWipeResult]  = useState<WipeResult | null>(null);
+  const [wipeError,   setWipeError]   = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API}/api/videos/scan/config`, { headers: authHeaders() })
@@ -65,6 +79,26 @@ export function LibraryPanel() {
       setScanning(false);
     }
   };
+
+  const wipe = async () => {
+    setWipeError(null); setWiping(true); setWipeResult(null);
+    try {
+      const res = await fetch(`${API}/api/local/wipe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.message || "Error al limpiar");
+      setWipeResult(d.cleared);
+      setWipeConfirm(false);
+    } catch (e: any) {
+      setWipeError(e.message);
+    } finally {
+      setWiping(false);
+    }
+  };
+
+  const showWipeZone = !isRemote() && user?.role === "todopoderoso";
 
   return (
     <div className="space-y-5 max-w-lg">
@@ -133,6 +167,74 @@ export function LibraryPanel() {
             <Stat label="Restaurados" value={result.restored} />
             <Stat label="Ya no en disco" value={result.missing} accent={result.missing ? "amber" : undefined} />
           </div>
+        </div>
+      )}
+
+      {/* Zona de peligro: wipe (solo local + admin) */}
+      {showWipeZone && (
+        <div className="border border-red-500/30 rounded-xl p-4 space-y-3 mt-6">
+          <div>
+            <h4 className="text-sm font-semibold text-red-400 flex items-center gap-1.5">
+              <Trash2 className="w-4 h-4" /> Zona de peligro
+            </h4>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Elimina todos los datos locales (videos, estados, plataformas, configuración). Los archivos en disco no se borran.
+            </p>
+          </div>
+
+          {!wipeConfirm ? (
+            <button
+              onClick={() => { setWipeConfirm(true); setWipeResult(null); setWipeError(null); }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" /> Limpiar app local
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-red-300">
+                ¿Seguro? Esta acción no se puede deshacer.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={wipe}
+                  disabled={wiping}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+                >
+                  {wiping ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                  {wiping ? "Limpiando…" : "Sí, limpiar todo"}
+                </button>
+                <button
+                  onClick={() => setWipeConfirm(false)}
+                  disabled={wiping}
+                  className="px-4 py-2 rounded-lg text-sm border border-border text-muted-foreground hover:bg-secondary/50 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {wipeError && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-start gap-2">
+              <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-300">{wipeError}</p>
+            </div>
+          )}
+
+          {wipeResult && (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2 space-y-1">
+              <p className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Base de datos local limpiada
+              </p>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {Object.entries(wipeResult).map(([col, count]) => (
+                  <span key={col} className="text-[11px] bg-secondary/50 rounded px-2 py-0.5 text-muted-foreground">
+                    {col}: <span className="text-foreground font-medium">{count}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
