@@ -23,7 +23,16 @@ async function proxyToCentral(req: Request, res: Response, _next: NextFunction) 
   }
 }
 
-// Express 5: router.use sin wildcard captura cualquier subruta
+// Auth central
 router.use('/api/auth', proxyToCentral);
+
+// OAuth de plataformas — callbacks registrados en la central, tokens guardados allá
+router.use('/api/youtube/auth',         proxyToCentral);
+router.use('/api/youtube/channel-info', proxyToCentral);
+router.use('/api/youtube/token',        proxyToCentral);
+router.use('/api/tiktok/auth',          proxyToCentral);
+router.use('/api/tiktok/creator-info',  proxyToCentral);
+router.use('/api/instagram/auth',       proxyToCentral);
+router.use('/api/instagram/account-info', proxyToCentral);
 
 export default router;

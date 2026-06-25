@@ -9,6 +9,7 @@ import {
   setThumbnail,
   remoteUploadToYoutube,
   remoteUploadMiddleware,
+  getYoutubeToken,
 } from '../controllers/youtube-upload.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -20,6 +21,8 @@ router.get('/api/youtube/auth/callback',      handleCallback);
 router.get('/api/youtube/auth/status',        verifyToken, getAuthStatus);
 router.delete('/api/youtube/auth',            verifyToken, revokeAuth);
 router.get('/api/youtube/channel-info',       verifyToken, getChannelInfo);
+// Token fresco para local-backend (B1)
+router.get('/api/youtube/token',              verifyToken, getYoutubeToken);
 
 // Upload local (fileId en disco)
 router.post('/api/youtube/upload',             verifyToken, uploadToYoutube);

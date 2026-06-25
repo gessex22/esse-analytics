@@ -11,6 +11,7 @@ import publishingStatusRoutes from './routes/publishing-status.routes';
 import syncRoutes             from './routes/sync.routes';
 import authProxyRoutes        from './routes/auth-proxy.routes';
 import localAdminRoutes       from './routes/local-admin.routes';
+import youtubeUploadRoutes    from './routes/youtube-upload.routes';
 
 dotenv.config();
 
@@ -25,8 +26,9 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'esse-local-backend', mongoState: mongoose.connection.readyState });
 });
 
-app.use(authProxyRoutes);     // auth → central
-app.use(localAdminRoutes);   // wipe y health local
+app.use(authProxyRoutes);        // auth + OAuth plataformas → central
+app.use(localAdminRoutes);      // wipe y health local
+app.use(youtubeUploadRoutes);   // upload local con token de central (B1)
 app.use(videoRoutes);
 app.use(streamRoutes);
 app.use(scanRoutes);

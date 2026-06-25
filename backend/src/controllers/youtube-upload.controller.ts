@@ -100,6 +100,23 @@ export const getAuthStatus = async (req: AuthRequest, res: Response) => {
   res.json({ connected: !!tokens });
 };
 
+// ── GET /api/youtube/token ────────────────────────────────────────────────────
+// Devuelve un access_token fresco para que local-backend pueda subir directamente.
+export const getYoutubeToken = async (req: AuthRequest, res: Response) => {
+  const tokens = await loadTokens(req.user!.id);
+  if (!tokens) return res.status(404).json({ error: 'NO_AUTH' });
+
+  try {
+    const oauth2 = getOAuth2Client();
+    oauth2.setCredentials(tokens);
+    const { credentials } = await oauth2.refreshAccessToken();
+    await saveTokens(req.user!.id, credentials);
+    res.json({ access_token: credentials.access_token });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Error al refrescar el token', detail: err.message });
+  }
+};
+
 // ── GET /api/youtube/channel-info ─────────────────────────────────────────────
 export const getChannelInfo = async (req: AuthRequest, res: Response) => {
   let oauth2: any;
