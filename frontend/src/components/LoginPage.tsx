@@ -144,6 +144,18 @@ export function LoginPage() {
         transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
         className="w-full max-w-sm"
       >
+        {/* Volver al landing — solo en web */}
+        {!isLocal && ownerChecked && (
+          <div className="mb-6">
+            <a
+              href="/"
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+            >
+              ← Volver al inicio
+            </a>
+          </div>
+        )}
+
         {/* Logo */}
         <div className="flex flex-col items-center gap-3 mb-8">
           <img src={logoImg} alt="EsseAnalytics" className="w-16 h-16 rounded-2xl" />
@@ -314,6 +326,9 @@ export function LoginPage() {
             )}
           </motion.form>
         </AnimatePresence>
+        <p className="text-center text-[10px] text-muted-foreground/40 font-mono mt-6">
+          v{__APP_VERSION__}
+        </p>
       </motion.div>
     </div>
   );

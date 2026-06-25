@@ -382,7 +382,7 @@ export function LandingPage({ onLogin }: LandingPageProps) {
           </div>
         </div>
         <p className="text-center text-xs text-muted-foreground/60 mt-8">
-          © 2026 EsseAnalytics. {t.rights}
+          © 2026 EsseAnalytics. {t.rights} &nbsp;·&nbsp; <span className="font-mono">v{__APP_VERSION__}</span>
         </p>
       </footer>
     </div>
