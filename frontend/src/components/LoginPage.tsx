@@ -21,12 +21,13 @@ export function LoginPage() {
   const [localOwner, setLocalOwner_] = useState<string | null>(null);
   const [ownerChecked, setOwnerChecked] = useState(false);
 
-  const [mode, setMode]         = useState<"login" | "register">("login");
+  const [mode, setMode]         = useState<"login" | "register" | "reset">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm,  setConfirm]  = useState("");
   const [email,    setEmail]    = useState("");
   const [error,    setError]    = useState<string | null>(null);
+  const [success,  setSuccess]  = useState<string | null>(null);
   const [loading,  setLoading]  = useState(false);
 
   // En local: ver si esta instancia ya está vinculada a una cuenta
@@ -45,10 +46,34 @@ export function LoginPage() {
   // El registro solo se permite desde el instalable y si la instancia no tiene dueño aún
   const canRegister = isLocal && !localOwner;
 
-  const reset = (next: "login" | "register") => {
-    setMode(next); setError(null);
+  const reset = (next: "login" | "register" | "reset") => {
+    setMode(next); setError(null); setSuccess(null);
     setPassword(""); setConfirm(""); setEmail("");
     if (!localOwner) setUsername("");
+  };
+
+  const handleReset = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null); setSuccess(null);
+    if (password !== confirm) { setError("Las contraseñas no coinciden."); return; }
+    if (password.length < 6)  { setError("Mínimo 6 caracteres."); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/local-reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: (localOwner || username).trim(), newPassword: password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || "Error al resetear");
+      setSuccess("Contraseña actualizada. Ya puedes iniciar sesión.");
+      setPassword(""); setConfirm("");
+      setTimeout(() => reset("login"), 2000);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogin = async (e: FormEvent) => {
@@ -133,24 +158,50 @@ export function LoginPage() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: mode === "login" ? 12 : -12 }}
             transition={{ duration: 0.2 }}
-            onSubmit={mode === "login" ? handleLogin : handleRegister}
+            onSubmit={mode === "login" ? handleLogin : mode === "register" ? handleRegister : handleReset}
             className="bg-card border border-border rounded-2xl p-6 space-y-4 shadow-xl"
           >
-            {localOwner && (
+            {/* Reset mode header */}
+            {mode === "reset" && (
+              <div className="text-center -mt-1 mb-1">
+                <p className="text-sm font-semibold text-foreground">Restablecer contraseña</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {localOwner
+                    ? <>Para la cuenta <span className="text-foreground font-medium">{localOwner}</span></>
+                    : "Introduce tu usuario y la nueva contraseña"}
+                </p>
+              </div>
+            )}
+
+            {localOwner && mode !== "reset" && (
               <p className="text-[11px] text-muted-foreground text-center -mt-1 mb-1">
                 Esta instalación está vinculada a <span className="text-foreground font-medium">{localOwner}</span>
               </p>
             )}
 
-            <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus disabled={!!localOwner} />
+            {/* Username — oculto en reset si localOwner ya se conoce */}
+            {!(mode === "reset" && localOwner) && (
+              <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus disabled={!!localOwner && mode !== "reset"} />
+            )}
 
             {mode === "register" && (
               <Field label="Email (opcional)" value={email} onChange={setEmail} type="email" placeholder="tu@email.com" />
             )}
 
-            <Field label="Contraseña" value={password} onChange={setPassword} type="password" placeholder="••••••••" autoComplete={mode === "login" ? "current-password" : "new-password"} />
+            {mode !== "register" && (
+              <Field
+                label={mode === "reset" ? "Nueva contraseña" : "Contraseña"}
+                value={password} onChange={setPassword} type="password" placeholder="••••••••"
+                autoComplete={mode === "login" ? "current-password" : "new-password"}
+                autoFocus={mode === "reset"}
+              />
+            )}
 
             {mode === "register" && (
+              <Field label="Contraseña" value={password} onChange={setPassword} type="password" placeholder="••••••••" autoComplete="new-password" />
+            )}
+
+            {(mode === "register" || mode === "reset") && (
               <Field label="Confirmar contraseña" value={confirm} onChange={setConfirm} type="password" placeholder="••••••••" autoComplete="new-password" />
             )}
 
@@ -164,15 +215,49 @@ export function LoginPage() {
               </motion.p>
             )}
 
+            {success && (
+              <motion.p
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-xs text-green-400 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2"
+              >
+                {success}
+              </motion.p>
+            )}
+
             <button
               type="submit"
               disabled={loading}
               className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed mt-2"
             >
               {loading
-                ? (mode === "login" ? "Verificando..." : "Creando cuenta...")
-                : (mode === "login" ? "Entrar" : "Crear cuenta y entrar")}
+                ? "..."
+                : mode === "login"    ? "Entrar"
+                : mode === "register" ? "Crear cuenta y entrar"
+                :                       "Cambiar contraseña"}
             </button>
+
+            {/* Olvidé mi contraseña — solo en local y en modo login */}
+            {isLocal && mode === "login" && (
+              <button
+                type="button"
+                onClick={() => reset("reset")}
+                className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors text-center"
+              >
+                ¿Olvidaste tu contraseña?
+              </button>
+            )}
+
+            {/* Volver desde reset */}
+            {mode === "reset" && (
+              <button
+                type="button"
+                onClick={() => reset("login")}
+                className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors text-center"
+              >
+                ← Volver al inicio de sesión
+              </button>
+            )}
 
             {mode === "register" && (
               <p className="text-[11px] text-muted-foreground text-center leading-relaxed">

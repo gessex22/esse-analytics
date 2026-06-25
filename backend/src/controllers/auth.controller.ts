@@ -250,6 +250,34 @@ export const deactivateMe = async (req: AuthRequest, res: Response): Promise<voi
   }
 };
 
+// ── POST /api/auth/local-reset ────────────────────────────────────────────────
+// Solo accesible desde el cliente instalado (X-Client-Key). Permite resetear la
+// contraseña sin conocer la actual — útil si el usuario la olvidó.
+export const localResetPassword = async (req: Request, res: Response): Promise<void> => {
+  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+    res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
+    return;
+  }
+  const { username, newPassword } = req.body as { username?: string; newPassword?: string };
+  if (!username || !newPassword) {
+    res.status(400).json({ message: 'Usuario y nueva contraseña requeridos.' });
+    return;
+  }
+  if (newPassword.length < 6) {
+    res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
+    return;
+  }
+  try {
+    const user = await UserModel.findOne({ username: username.toLowerCase() });
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al resetear contraseña.', error: err.message });
+  }
+};
+
 // ── PATCH /api/auth/users/:id/tier ────────────────────────────────────────────
 export const setUserTier = async (req: AuthRequest, res: Response): Promise<void> => {
   const { id } = req.params;
