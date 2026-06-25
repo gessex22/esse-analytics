@@ -1,8 +1,21 @@
 import { Router, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { configRepo } from '../db/config.repo';
 
 const router = Router();
+
+const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+
+// Devuelve el secreto de instalación, generándolo la primera vez.
+export function getOrCreateInstallId(): string {
+  let id = configRepo.get('install_id');
+  if (!id) {
+    id = randomUUID() + randomUUID().replace(/-/g, '');
+    configRepo.set('install_id', id);
+  }
+  return id;
+}
 
 // POST /api/local/wipe — limpia todas las tablas locales
 router.post('/api/local/wipe', verifyToken, (req: AuthRequest, res: Response) => {
@@ -28,8 +41,9 @@ router.get('/api/local/owner', (_req, res) => {
   }
 });
 
-// POST /api/local/owner — fija el owner tras el primer login
-router.post('/api/local/owner', verifyToken, (req: AuthRequest, res: Response) => {
+// POST /api/local/owner — fija el owner tras el primer login y registra el
+// secreto de instalación en la central (autoriza futuras operaciones destructivas).
+router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const existing = configRepo.getOwner();
     if (existing && existing.username !== req.user!.username) {
@@ -37,6 +51,18 @@ router.post('/api/local/owner', verifyToken, (req: AuthRequest, res: Response) =
       return;
     }
     configRepo.setOwner(req.user!.username);
+
+    // Vincular el secreto de instalación a la cuenta en la central.
+    const installId = getOrCreateInstallId();
+    await fetch(`${CENTRAL}/api/auth/link-install`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: req.headers.authorization || '',
+      },
+      body: JSON.stringify({ installId }),
+    }).catch(() => {});
+
     res.json({ ok: true, username: req.user!.username });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al fijar owner.', detail: err.message });

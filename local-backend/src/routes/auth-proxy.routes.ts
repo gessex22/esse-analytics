@@ -1,10 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { configRepo } from '../db/config.repo';
 
 const router = Router();
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 // Identifica a este cliente instalado ante la central (habilita el registro).
 const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'esse_local_client_2024';
+
+// Rutas destructivas que exigen el secreto de instalación de esta máquina.
+const INSTALL_SECRET_ROUTES = ['/api/auth/local-reset', '/api/auth/local-deactivate'];
 
 async function proxyToCentral(req: Request, res: Response, _next: NextFunction) {
   const url = `${CENTRAL}${req.originalUrl}`;
@@ -17,7 +21,12 @@ async function proxyToCentral(req: Request, res: Response, _next: NextFunction) 
 
     const init: RequestInit = { method: req.method, headers };
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      init.body = JSON.stringify(req.body);
+      // Inyecta el secreto de instalación desde SQLite — nunca pasa por el frontend.
+      const body = { ...req.body };
+      if (INSTALL_SECRET_ROUTES.some(r => req.originalUrl.startsWith(r))) {
+        body.installId = configRepo.get('install_id') ?? undefined;
+      }
+      init.body = JSON.stringify(body);
     }
 
     const upstream = await fetch(url, init);

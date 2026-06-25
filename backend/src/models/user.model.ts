@@ -21,6 +21,10 @@ export interface IUser extends Document {
   linkedPlatforms: Platform[];
   firstLinkedAt?: Date;
   deletedAt?: Date;
+  // Secreto único de la instalación vinculada a esta cuenta. Autoriza operaciones
+  // destructivas desde el cliente (reset de contraseña, baja) sin exponer una key
+  // global. Solo la instalación dueña conoce este valor.
+  installId?: string;
   createdAt: Date;
 }
 
@@ -38,6 +42,7 @@ const userSchema = new Schema<IUser>({
   linkedPlatforms:    { type: [String], default: [] },
   firstLinkedAt:      { type: Date },
   deletedAt:          { type: Date },
+  installId:          { type: String },
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 export const UserModel = model<IUser>('User', userSchema);

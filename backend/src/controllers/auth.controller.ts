@@ -237,6 +237,24 @@ export const deactivateUser = async (req: AuthRequest, res: Response): Promise<v
 
 // ── POST /api/auth/me/deactivate ──────────────────────────────────────────────
 // El propio usuario marca su cuenta como dada de baja (soft delete).
+// ── POST /api/auth/link-install ───────────────────────────────────────────────
+// Registra (o actualiza) el secreto de instalación de la cuenta autenticada. Se
+// llama tras un login válido desde la app; a partir de ahí las operaciones
+// destructivas exigen este mismo secreto.
+export const linkInstall = async (req: AuthRequest, res: Response): Promise<void> => {
+  const { installId } = req.body as { installId?: string };
+  if (!installId || installId.length < 16) {
+    res.status(400).json({ message: 'installId inválido.' });
+    return;
+  }
+  try {
+    await UserModel.findByIdAndUpdate(req.user!.id, { installId });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al vincular instalación.', error: err.message });
+  }
+};
+
 export const deactivateMe = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await UserModel.findByIdAndUpdate(
@@ -259,7 +277,7 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
-  const { username, newPassword } = req.body as { username?: string; newPassword?: string };
+  const { username, newPassword, installId } = req.body as { username?: string; newPassword?: string; installId?: string };
   if (!username || !newPassword) {
     res.status(400).json({ message: 'Usuario y nueva contraseña requeridos.' });
     return;
@@ -271,6 +289,11 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
   try {
     const user = await UserModel.findOne({ username: username.toLowerCase() });
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    // Solo la instalación vinculada a la cuenta puede resetearla.
+    if (!user.installId || user.installId !== installId) {
+      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación vinculada a la cuenta.' });
+      return;
+    }
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
     res.json({ ok: true });
@@ -289,7 +312,7 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
-  const { username } = req.body as { username?: string };
+  const { username, installId } = req.body as { username?: string; installId?: string };
   if (!username) {
     res.status(400).json({ message: 'Usuario requerido.' });
     return;
@@ -297,6 +320,12 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
   try {
     const user = await UserModel.findOne({ username: username.toLowerCase() });
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+
+    // Solo la instalación vinculada a la cuenta puede darla de baja.
+    if (!user.installId || user.installId !== installId) {
+      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación vinculada a la cuenta.' });
+      return;
+    }
 
     // 1. Marcar la cuenta como dada de baja
     user.status = 'deleted';
