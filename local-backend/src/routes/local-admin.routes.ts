@@ -76,6 +76,25 @@ router.post('/api/local/owner/reset', (req, res) => {
   }
 });
 
+// POST /api/local/reset-all — wipe completo + desvincular, sin auth.
+// Solo accesible desde localhost. Pensado para el "eliminar todo" desde el login
+// cuando el usuario no tiene token (olvidó la contraseña).
+router.post('/api/local/reset-all', (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  const isLocalhost = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+  if (!isLocalhost) {
+    res.status(403).json({ message: 'Solo accesible desde localhost.' });
+    return;
+  }
+  try {
+    const cleared = configRepo.wipeAll();
+    configRepo.clearOwner();
+    res.json({ ok: true, cleared });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al reiniciar.', detail: err.message });
+  }
+});
+
 // GET /api/local/health
 router.get('/api/local/health', (_req, res) => {
   res.json({ local: true, db: 'sqlite' });

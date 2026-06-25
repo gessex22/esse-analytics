@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { UAParser } from 'ua-parser-js';
@@ -275,6 +276,44 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al resetear contraseña.', error: err.message });
+  }
+};
+
+// ── POST /api/auth/local-deactivate ───────────────────────────────────────────
+// Da de baja la cuenta vinculada a una instalación y REVOCA el acceso a los canales
+// (borra todos sus tokens OAuth). No requiere contraseña — pensado para cuando el
+// usuario la olvidó y necesita cortar el acceso. Protegido por X-Client-Key (solo
+// desde la app instalada), igual que el reset de contraseña.
+export const localDeactivate = async (req: Request, res: Response): Promise<void> => {
+  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+    res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
+    return;
+  }
+  const { username } = req.body as { username?: string };
+  if (!username) {
+    res.status(400).json({ message: 'Usuario requerido.' });
+    return;
+  }
+  try {
+    const user = await UserModel.findOne({ username: username.toLowerCase() });
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+
+    // 1. Marcar la cuenta como dada de baja
+    user.status = 'deleted';
+    user.deletedAt = new Date();
+    await user.save();
+
+    // 2. Revocar acceso a los canales: borrar todos los tokens OAuth del usuario
+    const db = mongoose.connection.db;
+    let revoked = 0;
+    if (db) {
+      const r = await db.collection('oauth_tokens').deleteMany({ userId: String(user._id) });
+      revoked = r.deletedCount ?? 0;
+    }
+
+    res.json({ ok: true, revokedTokens: revoked });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al dar de baja la cuenta.', error: err.message });
   }
 };
 
