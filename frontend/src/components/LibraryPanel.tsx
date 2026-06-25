@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2 } from "lucide-react";
+import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2, UserMinus } from "lucide-react";
 import { API_BASE as API } from "../config";
 import { useAuth } from "../hooks/useAuth";
 
@@ -23,7 +23,7 @@ function isRemote(): boolean {
 }
 
 export function LibraryPanel() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [folder,    setFolder]    = useState("");
   const [savedDir,  setSavedDir]  = useState<string | null>(null);
   const [dirExists, setDirExists] = useState(false);
@@ -36,6 +36,10 @@ export function LibraryPanel() {
   const [wipeConfirm, setWipeConfirm] = useState(false);
   const [wipeResult,  setWipeResult]  = useState<WipeResult | null>(null);
   const [wipeError,   setWipeError]   = useState<string | null>(null);
+
+  const [deactivating,    setDeactivating]    = useState(false);
+  const [deactivateConfirm, setDeactivateConfirm] = useState(false);
+  const [deactivateError, setDeactivateError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API}/api/videos/scan/config`, { headers: authHeaders() })
@@ -95,6 +99,28 @@ export function LibraryPanel() {
       setWipeError(e.message);
     } finally {
       setWiping(false);
+    }
+  };
+
+  const deactivateAccount = async () => {
+    setDeactivateError(null); setDeactivating(true);
+    try {
+      // 1) Marcar la cuenta como dada de baja en la central
+      const res = await fetch(`${API}/api/auth/me/deactivate`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.message || "No se pudo dar de baja la cuenta");
+      }
+      // 2) Liberar esta instancia local
+      await fetch(`${API}/api/local/owner`, { method: "DELETE", headers: authHeaders() }).catch(() => {});
+      // 3) Cerrar sesión → vuelve a la pantalla de registro
+      logout();
+    } catch (e: any) {
+      setDeactivateError(e.message);
+      setDeactivating(false);
     }
   };
 
@@ -235,6 +261,51 @@ export function LibraryPanel() {
               </div>
             </div>
           )}
+
+          {/* Dar de baja la cuenta / cambiar usuario */}
+          <div className="border-t border-red-500/20 pt-3 mt-1">
+            <p className="text-xs text-muted-foreground mb-2">
+              Da de baja la cuenta <span className="text-foreground font-medium">{user?.username}</span> y libera esta
+              instalación para vincular otra cuenta. La cuenta queda registrada como dada de baja.
+            </p>
+            {!deactivateConfirm ? (
+              <button
+                onClick={() => { setDeactivateConfirm(true); setDeactivateError(null); }}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
+              >
+                <UserMinus className="w-4 h-4" /> Dar de baja / cambiar cuenta
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-red-300">
+                  ¿Seguro? No podrás volver a iniciar sesión con esta cuenta.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={deactivateAccount}
+                    disabled={deactivating}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50"
+                  >
+                    {deactivating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserMinus className="w-3.5 h-3.5" />}
+                    {deactivating ? "Procesando…" : "Sí, dar de baja"}
+                  </button>
+                  <button
+                    onClick={() => setDeactivateConfirm(false)}
+                    disabled={deactivating}
+                    className="px-4 py-2 rounded-lg text-sm border border-border text-muted-foreground hover:bg-secondary/50 transition-colors disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
+            {deactivateError && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 flex items-start gap-2 mt-2">
+                <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-red-300">{deactivateError}</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

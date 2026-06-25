@@ -3,11 +3,16 @@ import { Router, Request, Response, NextFunction } from 'express';
 const router = Router();
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+// Identifica a este cliente instalado ante la central (habilita el registro).
+const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'esse_local_client_2024';
 
 async function proxyToCentral(req: Request, res: Response, _next: NextFunction) {
   const url = `${CENTRAL}${req.originalUrl}`;
   try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Client-Key': CLIENT_REGISTER_KEY,
+    };
     if (req.headers.authorization) headers['Authorization'] = req.headers.authorization;
 
     const init: RequestInit = { method: req.method, headers };

@@ -7,7 +7,7 @@ import multer from 'multer';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
-import { UserModel } from '../models/user.model';
+import { markPlatformLinked } from '../models/user.model';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { AuthRequest } from '../middleware/auth.middleware';
 
@@ -142,11 +142,12 @@ export const getChannelInfo = async (req: AuthRequest, res: Response) => {
     const customUrl = ch.snippet?.customUrl ?? '';
     const avatarUrl = ch.snippet?.thumbnails?.default?.url ?? ch.snippet?.thumbnails?.medium?.url ?? '';
 
-    // Guardar canal en el perfil del usuario para tracking en el admin
-    await UserModel.findByIdAndUpdate(req.user!.id, {
-      youtubeChannel:    name,
-      youtubeChannelUrl: customUrl ? `https://youtube.com/${customUrl}` : '',
-    }).catch(() => {});
+    // Marca la plataforma como vinculada (primera vinculación = cuenta verificada)
+    await markPlatformLinked(req.user!.id, 'youtube', name).catch(() => {});
+    if (customUrl) {
+      const { UserModel } = await import('../models/user.model');
+      await UserModel.findByIdAndUpdate(req.user!.id, { youtubeChannelUrl: `https://youtube.com/${customUrl}` }).catch(() => {});
+    }
 
     res.json({ name, avatarUrl, customUrl });
   } catch (err: any) {

@@ -28,9 +28,16 @@ interface AppUser {
   username: string;
   role: string;
   tier: "free" | "premium";
+  status?: "active" | "deleted";
   email?: string;
   youtubeChannel?: string;
   youtubeChannelUrl?: string;
+  instagramAccount?: string;
+  tiktokAccount?: string;
+  linkedPlatforms?: string[];
+  verified?: boolean;
+  firstLinkedAt?: string;
+  deletedAt?: string;
   createdAt?: string;
 }
 
@@ -66,10 +73,13 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 // ── Gestión de usuarios ───────────────────────────────────────────────────────
+type UserFilter = "all" | "verified" | "unlinked" | "deleted";
+
 function UsersPanel() {
   const [users,   setUsers]   = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving,  setSaving]  = useState<string | null>(null);
+  const [filter,  setFilter]  = useState<UserFilter>("all");
 
   useEffect(() => {
     fetch(`${API_BASE}/api/auth/users`, { headers: getAuthHeader() })
@@ -104,9 +114,45 @@ function UsersPanel() {
     </div>
   );
 
+  const counts = {
+    all: users.length,
+    verified: users.filter(u => u.verified && u.status !== "deleted").length,
+    unlinked: users.filter(u => !u.verified && u.status !== "deleted").length,
+    deleted: users.filter(u => u.status === "deleted").length,
+  };
+
+  const visible = users.filter(u => {
+    if (filter === "verified") return u.verified && u.status !== "deleted";
+    if (filter === "unlinked") return !u.verified && u.status !== "deleted";
+    if (filter === "deleted")  return u.status === "deleted";
+    return true;
+  });
+
+  const FILTERS: { key: UserFilter; label: string }[] = [
+    { key: "all",      label: "Todos" },
+    { key: "verified", label: "Verificados" },
+    { key: "unlinked", label: "Sin vincular" },
+    { key: "deleted",  label: "Bajas" },
+  ];
+
   return (
     <div className="space-y-2">
-      {users.map((u, i) => (
+      <div className="flex gap-1.5 flex-wrap mb-1">
+        {FILTERS.map(f => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={`px-2.5 py-1 rounded-full text-[11px] border transition-colors ${
+              filter === f.key
+                ? "bg-primary/20 text-primary border-primary/50 font-semibold"
+                : "bg-secondary/40 text-muted-foreground border-border hover:text-foreground"
+            }`}
+          >
+            {f.label} <span className="opacity-60">{counts[f.key]}</span>
+          </button>
+        ))}
+      </div>
+      {visible.map((u, i) => (
         <motion.div key={u.id}
           initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
           transition={{ delay: i * 0.05 }}
@@ -117,8 +163,15 @@ function UsersPanel() {
           </div>
 
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-foreground truncate">{u.username}</p>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <p className={`text-sm font-medium truncate ${u.status === "deleted" ? "text-muted-foreground line-through" : "text-foreground"}`}>{u.username}</p>
+              {u.status === "deleted"
+                ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-border bg-secondary text-muted-foreground flex-shrink-0">Baja</span>
+                : u.verified
+                  ? <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 flex-shrink-0">Verificado</span>
+                  : <span className="text-[9px] px-1.5 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400 flex-shrink-0">Sin vincular</span>}
+            </div>
+            <div className="flex items-center gap-2 flex-wrap mt-0.5">
               <span className="text-xs text-muted-foreground">{ROLE_LABEL[u.role] ?? u.role}</span>
               {u.youtubeChannel && (
                 <span className="flex items-center gap-1 text-[11px] text-red-400/80">
@@ -130,6 +183,8 @@ function UsersPanel() {
                     : u.youtubeChannel}
                 </span>
               )}
+              {u.instagramAccount && <span className="text-[11px] text-pink-400/80">IG: {u.instagramAccount}</span>}
+              {u.tiktokAccount && <span className="text-[11px] text-foreground/70">TikTok: {u.tiktokAccount}</span>}
             </div>
           </div>
 

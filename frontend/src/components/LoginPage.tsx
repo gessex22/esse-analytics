@@ -1,11 +1,26 @@
-import { useState, FormEvent } from "react";
+import { useState, useEffect, FormEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useAuth } from "../hooks/useAuth";
+import { useBackendType } from "../hooks/useBackendType";
 import { API_BASE } from "../config";
 import logoImg from "../assets/esseAnalytics.png";
 
+async function setLocalOwner() {
+  const token = localStorage.getItem("esse_auth_token");
+  if (!token) return;
+  await fetch(`${API_BASE}/api/local/owner`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => {});
+}
+
 export function LoginPage() {
   const { login } = useAuth();
+  const { isLocal, isReady } = useBackendType();
+
+  const [localOwner, setLocalOwner_] = useState<string | null>(null);
+  const [ownerChecked, setOwnerChecked] = useState(false);
+
   const [mode, setMode]         = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -13,11 +28,27 @@ export function LoginPage() {
   const [email,    setEmail]    = useState("");
   const [error,    setError]    = useState<string | null>(null);
   const [loading,  setLoading]  = useState(false);
-  const [done,     setDone]     = useState(false);
+
+  // En local: ver si esta instancia ya está vinculada a una cuenta
+  useEffect(() => {
+    if (!isReady) return;
+    if (!isLocal) { setOwnerChecked(true); return; }
+    fetch(`${API_BASE}/api/local/owner`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.username) { setLocalOwner_(d.username); setUsername(d.username); setMode("login"); }
+      })
+      .catch(() => {})
+      .finally(() => setOwnerChecked(true));
+  }, [isReady, isLocal]);
+
+  // El registro solo se permite desde el instalable y si la instancia no tiene dueño aún
+  const canRegister = isLocal && !localOwner;
 
   const reset = (next: "login" | "register") => {
-    setMode(next); setError(null); setDone(false);
-    setUsername(""); setPassword(""); setConfirm(""); setEmail("");
+    setMode(next); setError(null);
+    setPassword(""); setConfirm(""); setEmail("");
+    if (!localOwner) setUsername("");
   };
 
   const handleLogin = async (e: FormEvent) => {
@@ -25,6 +56,7 @@ export function LoginPage() {
     setError(null); setLoading(true);
     try {
       await login(username.trim(), password);
+      if (isLocal) await setLocalOwner();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -46,8 +78,8 @@ export function LoginPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || "Error al registrarse");
-      // Auto-login after register
       await login(username.trim(), password);
+      if (isLocal) await setLocalOwner();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -77,22 +109,22 @@ export function LoginPage() {
           </p>
         </div>
 
-        {/* Toggle */}
-        <div className="flex bg-secondary/50 rounded-xl p-1 mb-4 border border-border">
-          {(["login", "register"] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => reset(m)}
-              className={`flex-1 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                mode === m
-                  ? "bg-card text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {m === "login" ? "Iniciar sesión" : "Crear cuenta"}
-            </button>
-          ))}
-        </div>
+        {/* Toggle — solo si se permite registrar */}
+        {canRegister && ownerChecked && (
+          <div className="flex bg-secondary/50 rounded-xl p-1 mb-4 border border-border">
+            {(["login", "register"] as const).map(m => (
+              <button
+                key={m}
+                onClick={() => reset(m)}
+                className={`flex-1 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  mode === m ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {m === "login" ? "Iniciar sesión" : "Crear cuenta"}
+              </button>
+            ))}
+          </div>
+        )}
 
         <AnimatePresence mode="wait">
           <motion.form
@@ -104,7 +136,13 @@ export function LoginPage() {
             onSubmit={mode === "login" ? handleLogin : handleRegister}
             className="bg-card border border-border rounded-2xl p-6 space-y-4 shadow-xl"
           >
-            <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus />
+            {localOwner && (
+              <p className="text-[11px] text-muted-foreground text-center -mt-1 mb-1">
+                Esta instalación está vinculada a <span className="text-foreground font-medium">{localOwner}</span>
+              </p>
+            )}
+
+            <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus disabled={!!localOwner} />
 
             {mode === "register" && (
               <Field label="Email (opcional)" value={email} onChange={setEmail} type="email" placeholder="tu@email.com" />
@@ -138,8 +176,14 @@ export function LoginPage() {
 
             {mode === "register" && (
               <p className="text-[11px] text-muted-foreground text-center leading-relaxed">
-                Al registrarte aceptas usar este servicio para gestionar tu propio contenido.
                 Tu cuenta será <span className="text-foreground font-medium">gratuita</span> por defecto.
+                Esta instalación quedará vinculada a esta cuenta.
+              </p>
+            )}
+
+            {!canRegister && !isLocal && ownerChecked && (
+              <p className="text-[11px] text-muted-foreground text-center leading-relaxed">
+                Para crear una cuenta, instala y abre la aplicación de escritorio.
               </p>
             )}
           </motion.form>
@@ -150,10 +194,10 @@ export function LoginPage() {
 }
 
 function Field({
-  label, value, onChange, type = "text", placeholder, autoFocus, autoComplete,
+  label, value, onChange, type = "text", placeholder, autoFocus, autoComplete, disabled,
 }: {
   label: string; value: string; onChange: (v: string) => void;
-  type?: string; placeholder?: string; autoFocus?: boolean; autoComplete?: string;
+  type?: string; placeholder?: string; autoFocus?: boolean; autoComplete?: string; disabled?: boolean;
 }) {
   return (
     <div className="space-y-1.5">
@@ -165,8 +209,9 @@ function Field({
         placeholder={placeholder}
         autoFocus={autoFocus}
         autoComplete={autoComplete}
+        disabled={disabled}
         required
-        className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2.5 text-base text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 transition-colors"
+        className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-2.5 text-base text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/60 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       />
     </div>
   );

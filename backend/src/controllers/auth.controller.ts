@@ -30,9 +30,19 @@ function parseUA(req: Request) {
   return { browser, os, device, userAgent: ua };
 }
 
+// Solo el cliente instalado (local-backend) puede registrar. El local-backend
+// añade este header al proxear; la web online no lo tiene → no puede registrar.
+const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'esse_local_client_2024';
+
 // ── POST /api/auth/register ───────────────────────────────────────────────────
 export const register = async (req: Request, res: Response): Promise<void> => {
   const { username, password, email } = req.body as { username?: string; password?: string; email?: string };
+
+  // El registro solo está disponible desde la aplicación instalada
+  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+    res.status(403).json({ message: 'El registro solo está disponible desde la aplicación instalada.' });
+    return;
+  }
 
   if (!username || !password) {
     res.status(400).json({ message: 'Usuario y contraseña requeridos.' });
@@ -104,6 +114,12 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    if (user.status === 'deleted') {
+      await LoginLogModel.create({ username: user.username, success: false, failReason: 'server_error', ip, ...ua });
+      res.status(403).json({ message: 'Esta cuenta fue dada de baja.' });
+      return;
+    }
+
     await LoginLogModel.create({ username: user.username, success: true, ip, ...ua });
 
     const token = jwt.sign(
@@ -166,13 +182,36 @@ export const getUsers = async (_req: AuthRequest, res: Response): Promise<void> 
       username: u.username,
       role: u.role,
       tier: u.tier,
+      status: (u as any).status ?? 'active',
       email: u.email,
       youtubeChannel: u.youtubeChannel,
       youtubeChannelUrl: u.youtubeChannelUrl,
+      instagramAccount: (u as any).instagramAccount,
+      tiktokAccount: (u as any).tiktokAccount,
+      linkedPlatforms: (u as any).linkedPlatforms ?? [],
+      verified: (((u as any).linkedPlatforms ?? []).length > 0),
+      firstLinkedAt: (u as any).firstLinkedAt,
+      deletedAt: (u as any).deletedAt,
       createdAt: (u as any).createdAt,
     })));
   } catch (err: any) {
     res.status(500).json({ message: 'Error al obtener usuarios.', error: err.message });
+  }
+};
+
+// ── POST /api/auth/me/deactivate ──────────────────────────────────────────────
+// El propio usuario marca su cuenta como dada de baja (soft delete).
+export const deactivateMe = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await UserModel.findByIdAndUpdate(
+      req.user!.id,
+      { status: 'deleted', deletedAt: new Date() },
+      { new: true },
+    ).select('-password');
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al dar de baja la cuenta.', error: err.message });
   }
 };
 
