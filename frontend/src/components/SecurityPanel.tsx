@@ -62,7 +62,8 @@ function UsersPanel() {
   useEffect(() => {
     fetch(`${API_BASE}/api/auth/users`, { headers: getAuthHeader() })
       .then(r => r.json())
-      .then(setUsers)
+      .then(data => setUsers(Array.isArray(data) ? data : []))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 

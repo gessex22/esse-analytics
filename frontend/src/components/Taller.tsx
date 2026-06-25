@@ -8,6 +8,7 @@ import {
   ListFilter,
   AlertCircle,
   X,
+  CloudOff,
 } from "lucide-react";
 import { videoService, IdeaCollection, IdeaStatus } from "../services/api";
 import { useTranscripStatus, TranscripRequired } from "./TranscripGate";
@@ -47,7 +48,7 @@ function FilterChip({
 }
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export function Taller({ role = "todopoderoso" }: { role?: string }) {
+export function Taller({ role = "todopoderoso", isLocal = false }: { role?: string; isLocal?: boolean }) {
   const [ideas, setIdeas] = useState<IdeaCollection[]>([]);
   const [expandedItems, setExpandedItems] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -211,6 +212,21 @@ export function Taller({ role = "todopoderoso" }: { role?: string }) {
     versionFilter !== "all";
 
   // ── Renders de estado ────────────────────────────────────────────────────────
+  if (isLocal)
+    return (
+      <div className="flex flex-col items-center justify-center h-full min-h-[300px] gap-4 px-6">
+        <div className="w-14 h-14 rounded-2xl bg-secondary flex items-center justify-center">
+          <CloudOff className="w-7 h-7 text-muted-foreground" />
+        </div>
+        <div className="text-center space-y-1.5 max-w-xs">
+          <h3 className="text-sm font-semibold text-foreground">No disponible en modo local</h3>
+          <p className="text-xs text-muted-foreground">
+            El Taller requiere el plugin <span className="text-foreground font-medium">esse-Transcrip</span> que solo corre en el servidor central.
+          </p>
+        </div>
+      </div>
+    );
+
   if (loading)
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[300px] gap-4">

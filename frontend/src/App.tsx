@@ -14,6 +14,7 @@ import { LandingPage } from "./components/LandingPage";
 import { YoutubeUploadView } from "./components/YoutubeUploadView";
 import { useAuth } from "./hooks/useAuth";
 import { RemoteGate } from "./components/RemoteGate";
+import { useBackendType } from "./hooks/useBackendType";
 import logoImg from "./assets/esseAnalytics.png";
 
 // Sub-secciones de Ajustes
@@ -59,6 +60,7 @@ function ProximamenteView({ label }: { label: string }) {
 
 export default function App() {
   const { user, logout, loading } = useAuth();
+  const { isLocal } = useBackendType();
   const [showLogin, setShowLogin] = useState(false);
   const [activeNav, setActiveNav]           = useState(1);
   const [settingsOpen, setSettingsOpen]     = useState(false);
@@ -92,6 +94,9 @@ export default function App() {
 
   // Editor: navegar solo a Videos, Taller y Calendario
   const role = user.role;
+  const visibleSettingsSections = SETTINGS_SECTIONS.filter(s =>
+    s.roles.includes(role) && !(isLocal && s.id === "seguridad")
+  );
   const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
   const visibleNavItems = navItems.filter((_, i) => {
     if (role === "todopoderoso") return true;
@@ -175,7 +180,7 @@ export default function App() {
                       style={{ overflow: "hidden" }}
                     >
                       <div className="ml-3 mb-1 border-l border-border pl-3 space-y-0.5 pt-0.5">
-                        {SETTINGS_SECTIONS.filter(s => s.roles.includes(role)).map(({ id, label: subLabel, icon: SubIcon }, subIdx) => {
+                        {visibleSettingsSections.map(({ id, label: subLabel, icon: SubIcon }, subIdx) => {
                           const isSubActive = activeNav === 6 && activeSection === id;
                           return (
                             <motion.button
@@ -270,7 +275,7 @@ export default function App() {
         {/* Contenido */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0 sm:min-h-screen">
           {effectiveNav === 5
-            ? <Taller role={role} />
+            ? <Taller role={role} isLocal={isLocal} />
             : (
               <main
                 className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 sm:pb-0"
