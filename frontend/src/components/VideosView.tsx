@@ -14,19 +14,18 @@ import {
   Trash2,
   Loader2,
 } from "lucide-react";
-import { videoService, DashboardVideo, PaginationInfo, VideoContentStatus } from "../services/api";
+import { videoService, DashboardVideo, PaginationInfo } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type TipoFilter = "" | "GUION_ESTRUCTURADO" | "CLIP_RANDOM" | "CLIP_SIN_VOZ";
 
-// ── Labels de estado (para chips de filtro) ──────────────────────────────────
-const STATUS_CONFIG: Record<VideoContentStatus, { label: string }> = {
-  publicado:  { label: "Publicado"  },
-  borrador:   { label: "Borrador"   },
-  procesando: { label: "Procesando" },
-  descartado: { label: "Descartado" },
-  parcial:    { label: "Parciales"  },
+// ── Filtro de publicación (derivado de platforms, NO de content_status) ───────
+type PubFilter = "sin_publicar" | "parcial" | "completo";
+const PUB_FILTER_LABELS: Record<PubFilter, string> = {
+  sin_publicar: "Sin publicar",
+  parcial:      "Parciales",
+  completo:     "Completos",
 };
 
 type Platform = "youtube" | "instagram" | "tiktok";
@@ -122,10 +121,10 @@ export function VideosView({
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
 
-  // Filtros (por defecto: parciales)
+  // Filtros (por defecto: parciales — derivado de platforms[])
   const [showFilterPanel, setShowFilterPanel]     = useState(false);
   const [selectedTipo, setSelectedTipo]           = useState<TipoFilter>("");
-  const [selectedStatus, setSelectedStatus]       = useState<VideoContentStatus | "">("parcial");
+  const [selectedStatus, setSelectedStatus]       = useState<PubFilter | "">("parcial");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
   // Selección
@@ -158,7 +157,7 @@ export function VideosView({
 
   // ── Carga ──────────────────────────────────────────────────────────────────
   const loadPage = useCallback(
-    async (page: number, tipo?: TipoFilter, status?: VideoContentStatus | "") => {
+    async (page: number, tipo?: TipoFilter, status?: PubFilter | "") => {
       setLoading(true);
       setError(null);
       try {
@@ -187,7 +186,7 @@ export function VideosView({
     return () => window.removeEventListener("keydown", handler);
   }, [deleteTarget]);
 
-  const applyFilters = (tipo: TipoFilter, status: VideoContentStatus | "") => {
+  const applyFilters = (tipo: TipoFilter, status: PubFilter | "") => {
     setSelectedTipo(tipo);
     setSelectedStatus(status);
     loadPage(1, tipo, status);
@@ -340,12 +339,12 @@ export function VideosView({
             </div>
           </div>
 
-          {/* Estado */}
+          {/* Estado de publicación (derivado de platforms[]) */}
           <div className="space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:gap-4">
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Estado</span>
             <div className="flex gap-2 flex-wrap">
-              {(["parcial", "publicado", "borrador", "procesando", "descartado"] as VideoContentStatus[]).map((s) => (
-                <FilterChip key={s} label={STATUS_CONFIG[s].label} active={selectedStatus === s} onClick={() => applyFilters(selectedTipo, selectedStatus === s ? "" : s)} />
+              {(["sin_publicar", "parcial", "completo"] as PubFilter[]).map((s) => (
+                <FilterChip key={s} label={PUB_FILTER_LABELS[s]} active={selectedStatus === s} onClick={() => applyFilters(selectedTipo, selectedStatus === s ? "" : s)} />
               ))}
             </div>
           </div>

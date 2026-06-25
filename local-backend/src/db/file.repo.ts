@@ -77,15 +77,17 @@ export const fileRepo = {
     if (opts.search)        { conds.push('file_name LIKE ?'); params.push(`%${opts.search}%`); }
     if (opts.status)        { conds.push('status = ?'); params.push(opts.status); }
     if (opts.excludeStatus) { conds.push('status != ?'); params.push(opts.excludeStatus); }
-    if (opts.content_status === 'parcial') {
+    if (opts.content_status === 'sin_publicar') {
+      // Ninguna plataforma publicada ni descartada
+      conds.push(`json_array_length(platforms) = 0 AND json_array_length(platforms_discarded) = 0`);
+    } else if (opts.content_status === 'parcial') {
       // Publicado en ≥1 plataforma pero al menos una sigue pendiente
       conds.push(`json_array_length(platforms) > 0 AND json_array_length(platforms) + json_array_length(platforms_discarded) < 3`);
-    } else if (opts.content_status && opts.content_status !== 'ALL') {
-      conds.push('content_status = ?'); params.push(opts.content_status);
-    } else if (!opts.content_status) {
-      conds.push("content_status != 'descartado'");
+    } else if (opts.content_status === 'completo') {
+      // Las 3 plataformas tienen estado definitivo (publicado o descartado)
+      conds.push(`json_array_length(platforms) + json_array_length(platforms_discarded) = 3`);
     }
-    // opts.content_status === 'ALL' → no filter
+    // Sin filtro de content_status → muestra todo (la fuente de verdad son los arrays de platforms)
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const dir = opts.order === 'asc' ? 'ASC' : 'DESC';
