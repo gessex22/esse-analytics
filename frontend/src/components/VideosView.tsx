@@ -26,7 +26,11 @@ const STATUS_CONFIG: Record<VideoContentStatus, { label: string }> = {
   borrador:   { label: "Borrador"   },
   procesando: { label: "Procesando" },
   descartado: { label: "Descartado" },
+  parcial:    { label: "Parciales"  },
 };
+
+type Platform = "youtube" | "instagram" | "tiktok";
+type PlatformState = "publicado" | "descartado" | "pendiente";
 
 
 // ── Iconos de plataforma ──────────────────────────────────────────────────────
@@ -49,6 +53,39 @@ function TiktokIcon({ active }: { active: boolean }) {
     <svg viewBox="0 0 24 24" className={`w-4 h-4 transition-opacity ${active ? "fill-white opacity-100" : "fill-muted-foreground opacity-25"}`}>
       <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-2.88 2.5 2.89 2.89 0 0 1-2.89-2.89 2.89 2.89 0 0 1 2.89-2.89c.28 0 .54.04.79.1V9.01a6.32 6.32 0 0 0-.79-.05 6.34 6.34 0 0 0-6.34 6.34 6.34 6.34 0 0 0 6.34 6.34 6.34 6.34 0 0 0 6.33-6.34V8.69a8.18 8.18 0 0 0 4.78 1.52V6.76a4.85 4.85 0 0 1-1.01-.07z" />
     </svg>
+  );
+}
+
+// ── Icono de plataforma con 3 estados ────────────────────────────────────────
+function PlatformBadge({
+  platform, state, onClick,
+}: { platform: Platform; state: PlatformState; onClick?: () => void }) {
+  const Icon = platform === "youtube" ? YoutubeIcon : platform === "instagram" ? InstagramIcon : TiktokIcon;
+  const active = state === "publicado";
+  const titles: Record<PlatformState, string> = {
+    publicado:  `${platform} · Publicado — clic para descartar`,
+    descartado: `${platform} · Descartado — clic para restablecer`,
+    pendiente:  `${platform} · Pendiente — clic para marcar publicado`,
+  };
+  const inner = (
+    <span className="relative inline-flex items-center justify-center">
+      <Icon active={active} />
+      {state === "descartado" && (
+        <span className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <span className="absolute w-[140%] h-px bg-muted-foreground/60 -rotate-45 left-[-20%]" />
+        </span>
+      )}
+    </span>
+  );
+  if (!onClick) return inner;
+  return (
+    <button
+      onClick={onClick}
+      title={titles[state]}
+      className="transition-transform hover:scale-110 active:scale-95"
+    >
+      {inner}
+    </button>
   );
 }
 
@@ -85,10 +122,10 @@ export function VideosView({
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
 
-  // Filtros
+  // Filtros (por defecto: parciales)
   const [showFilterPanel, setShowFilterPanel]     = useState(false);
   const [selectedTipo, setSelectedTipo]           = useState<TipoFilter>("");
-  const [selectedStatus, setSelectedStatus]       = useState<VideoContentStatus | "">("");
+  const [selectedStatus, setSelectedStatus]       = useState<VideoContentStatus | "">("parcial");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
   // Selección
@@ -141,7 +178,7 @@ export function VideosView({
     []
   );
 
-  useEffect(() => { loadPage(1); }, [loadPage]);
+  useEffect(() => { loadPage(1, "", "parcial"); }, [loadPage]);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -307,7 +344,7 @@ export function VideosView({
           <div className="space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:gap-4">
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Estado</span>
             <div className="flex gap-2 flex-wrap">
-              {(["publicado", "borrador", "procesando", "descartado"] as VideoContentStatus[]).map((s) => (
+              {(["parcial", "publicado", "borrador", "procesando", "descartado"] as VideoContentStatus[]).map((s) => (
                 <FilterChip key={s} label={STATUS_CONFIG[s].label} active={selectedStatus === s} onClick={() => applyFilters(selectedTipo, selectedStatus === s ? "" : s)} />
               ))}
             </div>
@@ -512,38 +549,55 @@ export function VideosView({
                   </div>
                 </div>
 
-                {/* Plataformas */}
+                {/* Plataformas (3 estados: publicado → descartado → pendiente) */}
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                  {(["youtube", "instagram", "tiktok"] as const).map((p) => {
-                    const active = video.platforms.includes(p);
-                    const Icon = p === "youtube" ? YoutubeIcon : p === "instagram" ? InstagramIcon : TiktokIcon;
-                    if (role !== "todopoderoso") return <Icon key={p} active={active} />;
+                  {(["youtube", "instagram", "tiktok"] as Platform[]).map((p) => {
+                    const state: PlatformState = video.platforms.includes(p)
+                      ? "publicado"
+                      : video.platforms_discarded.includes(p)
+                      ? "descartado"
+                      : "pendiente";
+
+                    if (role !== "todopoderoso") {
+                      return <PlatformBadge key={p} platform={p} state={state} />;
+                    }
+
                     return (
-                      <button
+                      <PlatformBadge
                         key={p}
-                        title={`${p} · ${active ? "Publicado" : "No publicado"}`}
+                        platform={p}
+                        state={state}
                         onClick={async () => {
                           if (!video.fileId) return;
-                          const next = active
-                            ? video.platforms.filter((x) => x !== p)
-                            : [...video.platforms, p];
-                          // Optimista: actualizamos el array local
+                          // Ciclo: pendiente → publicado → descartado → pendiente
+                          let newPlatforms = [...video.platforms];
+                          let newDiscarded = [...video.platforms_discarded];
+                          if (state === "pendiente") {
+                            newPlatforms = [...newPlatforms.filter(x => x !== p), p];
+                            newDiscarded = newDiscarded.filter(x => x !== p);
+                          } else if (state === "publicado") {
+                            newPlatforms = newPlatforms.filter(x => x !== p);
+                            newDiscarded = [...newDiscarded.filter(x => x !== p), p];
+                          } else {
+                            newPlatforms = newPlatforms.filter(x => x !== p);
+                            newDiscarded = newDiscarded.filter(x => x !== p);
+                          }
                           setVideos(prev => prev.map(v =>
-                            v.fileId === video.fileId ? { ...v, platforms: next } : v
+                            v.fileId === video.fileId
+                              ? { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded }
+                              : v
                           ));
                           try {
-                            await videoService.updateVideoPlatforms(video.fileId, next);
+                            await videoService.updateVideoPlatforms(video.fileId, newPlatforms, newDiscarded);
                           } catch {
-                            // Revertimos si falla
                             setVideos(prev => prev.map(v =>
-                              v.fileId === video.fileId ? { ...v, platforms: video.platforms } : v
+                              v.fileId === video.fileId
+                                ? { ...v, platforms: video.platforms, platforms_discarded: video.platforms_discarded }
+                                : v
                             ));
                           }
                         }}
-                        className="transition-transform hover:scale-110 active:scale-95"
-                      >
-                        <Icon active={active} />
-                      </button>
+                      />
                     );
                   })}
                 </div>

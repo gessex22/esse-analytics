@@ -65,7 +65,7 @@ export interface IdeaCollection {
   status: IdeaStatus;
 }
 
-export type VideoContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
+export type VideoContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado' | 'parcial';
 
 export interface VideoPlayerData {
   file: {
@@ -104,6 +104,7 @@ export interface DashboardVideo {
   thumbnail: string;
   category: string;        // tipo_contenido raw
   platforms: ("youtube" | "instagram" | "tiktok")[];
+  platforms_discarded: ("youtube" | "instagram" | "tiktok")[];
 }
 
 export interface PublishingStatus {
@@ -293,7 +294,8 @@ function toDashboardVideo(item: ApiVideoItem): DashboardVideo {
     status,
     thumbnail: PLACEHOLDER_THUMBNAIL,
     category: item.tipo_contenido || "SIN_CATEGORIA",
-    platforms: Array.isArray(item.platforms) ? item.platforms : [],
+    platforms:            Array.isArray(item.platforms)            ? item.platforms            : [],
+    platforms_discarded:  Array.isArray(item.platforms_discarded)  ? item.platforms_discarded  : [],
   };
 }
 
@@ -460,11 +462,15 @@ export const videoService = {
     return requestJson<VideoPlayerData>(`/api/videos/${fileId}/player-data`);
   },
 
-  updateVideoPlatforms: async (fileId: string, platforms: ("youtube" | "instagram" | "tiktok")[]): Promise<void> => {
+  updateVideoPlatforms: async (
+    fileId: string,
+    platforms: ("youtube" | "instagram" | "tiktok")[],
+    platforms_discarded?: ("youtube" | "instagram" | "tiktok")[],
+  ): Promise<void> => {
     await requestJson(`/api/videos/${fileId}/platforms`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ platforms }),
+      body: JSON.stringify({ platforms, platforms_discarded }),
     });
   },
 

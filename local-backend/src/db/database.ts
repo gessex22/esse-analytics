@@ -13,6 +13,9 @@ export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// Migration: add platforms_discarded column if it doesn't exist yet
+try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -11,6 +11,7 @@ export interface DbFile {
   status: FileStatus;
   content_status: FileContentStatus;
   platforms: Platform[];
+  platforms_discarded: Platform[];
   duracion_segundos?: number;
   resolucion?: string;
   formato?: string;
@@ -27,6 +28,7 @@ interface RawRow {
   status: string;
   content_status: string;
   platforms: string;
+  platforms_discarded: string;
   duracion_segundos: number | null;
   resolucion: string | null;
   formato: string | null;
@@ -39,7 +41,8 @@ interface RawRow {
 function parse(row: RawRow): DbFile {
   return {
     ...row,
-    platforms: JSON.parse(row.platforms || '[]'),
+    platforms:            JSON.parse(row.platforms            || '[]'),
+    platforms_discarded:  JSON.parse(row.platforms_discarded  || '[]'),
     duracion_segundos: row.duracion_segundos ?? undefined,
     resolucion: row.resolucion ?? undefined,
     formato: row.formato ?? undefined,
@@ -74,7 +77,10 @@ export const fileRepo = {
     if (opts.search)        { conds.push('file_name LIKE ?'); params.push(`%${opts.search}%`); }
     if (opts.status)        { conds.push('status = ?'); params.push(opts.status); }
     if (opts.excludeStatus) { conds.push('status != ?'); params.push(opts.excludeStatus); }
-    if (opts.content_status && opts.content_status !== 'ALL') {
+    if (opts.content_status === 'parcial') {
+      // Publicado en ≥1 plataforma pero al menos una sigue pendiente
+      conds.push(`json_array_length(platforms) > 0 AND json_array_length(platforms) + json_array_length(platforms_discarded) < 3`);
+    } else if (opts.content_status && opts.content_status !== 'ALL') {
       conds.push('content_status = ?'); params.push(opts.content_status);
     } else if (!opts.content_status) {
       conds.push("content_status != 'descartado'");
@@ -111,6 +117,7 @@ export const fileRepo = {
     status?: FileStatus;
     content_status?: FileContentStatus;
     platforms?: Platform[];
+    platforms_discarded?: Platform[];
     duracion_segundos?: number;
     resolucion?: string;
     formato?: string;
@@ -118,14 +125,15 @@ export const fileRepo = {
   }): DbFile {
     const info = db.prepare(`
       INSERT INTO files
-        (file_name, file_path, status, content_status, platforms, duracion_segundos, resolucion, formato, fecha_creacion)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (file_name, file_path, status, content_status, platforms, platforms_discarded, duracion_segundos, resolucion, formato, fecha_creacion)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       data.file_name,
       data.file_path,
       data.status ?? 'PENDIENTE',
       data.content_status ?? 'borrador',
       JSON.stringify(data.platforms ?? []),
+      JSON.stringify(data.platforms_discarded ?? []),
       data.duracion_segundos ?? null,
       data.resolucion ?? null,
       data.formato ?? null,
@@ -140,6 +148,7 @@ export const fileRepo = {
     status: FileStatus;
     content_status: FileContentStatus;
     platforms: Platform[];
+    platforms_discarded: Platform[];
     duracion_segundos: number;
     fecha_creacion: string | Date | null;
     scheduled_date: string | Date | null;
@@ -152,8 +161,9 @@ export const fileRepo = {
     if (data.file_name !== undefined)       setStr('file_name', data.file_name);
     if (data.file_path !== undefined)       setStr('file_path', data.file_path);
     if (data.status !== undefined)          setStr('status', data.status);
-    if (data.content_status !== undefined)  setStr('content_status', data.content_status);
-    if (data.platforms !== undefined)       setStr('platforms', JSON.stringify(data.platforms));
+    if (data.content_status !== undefined)      setStr('content_status', data.content_status);
+    if (data.platforms !== undefined)           setStr('platforms', JSON.stringify(data.platforms));
+    if (data.platforms_discarded !== undefined) setStr('platforms_discarded', JSON.stringify(data.platforms_discarded));
     if (data.duracion_segundos !== undefined) setStr('duracion_segundos', data.duracion_segundos);
     if ('fecha_creacion' in data)           setStr('fecha_creacion', data.fecha_creacion ? new Date(data.fecha_creacion!).toISOString() : null);
     if ('scheduled_date' in data)           setStr('scheduled_date', data.scheduled_date ? new Date(data.scheduled_date!).toISOString() : null);

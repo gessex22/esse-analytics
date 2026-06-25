@@ -44,6 +44,7 @@ export const getVideos = (req: Request, res: Response) => {
         fecha_creacion: f.fecha_creacion ?? f.created_at,
       },
       platforms: f.platforms,
+      platforms_discarded: f.platforms_discarded,
       duracion_segundos: f.duracion_segundos,
       resolucion: f.resolucion,
       formato: f.formato,
@@ -79,13 +80,19 @@ export const updateVideoContentStatus = (req: Request, res: Response): void => {
 // ── PATCH /api/videos/:fileId/platforms ──────────────────────────────────────
 export const updateVideoPlatforms = (req: Request, res: Response): void => {
   const { fileId } = req.params;
-  const { platforms } = req.body as { platforms?: string[] };
-  if (!Array.isArray(platforms) || platforms.some(p => !['youtube', 'instagram', 'tiktok'].includes(p))) {
+  const { platforms, platforms_discarded } = req.body as { platforms?: string[]; platforms_discarded?: string[] };
+  const valid = ['youtube', 'instagram', 'tiktok'];
+  if (!Array.isArray(platforms) || platforms.some(p => !valid.includes(p))) {
     res.status(400).json({ message: 'Plataformas inválidas.' }); return;
   }
-  const updated = fileRepo.update(fileId, { platforms: platforms as any });
+  if (platforms_discarded !== undefined && (!Array.isArray(platforms_discarded) || platforms_discarded.some(p => !valid.includes(p)))) {
+    res.status(400).json({ message: 'platforms_discarded inválido.' }); return;
+  }
+  const data: Parameters<typeof fileRepo.update>[1] = { platforms: platforms as any };
+  if (platforms_discarded !== undefined) data.platforms_discarded = platforms_discarded as any;
+  const updated = fileRepo.update(fileId, data);
   if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
-  res.json({ platforms });
+  res.json({ platforms, platforms_discarded });
 };
 
 // ── PATCH /api/videos/:fileId/rename ─────────────────────────────────────────
