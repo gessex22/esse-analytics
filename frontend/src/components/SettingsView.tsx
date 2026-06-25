@@ -178,7 +178,7 @@ export function SettingsView({ activeSection, role, isLocal, onSectionChange }: 
     <div className="space-y-5">
       {/* Tabs — solo visibles en mobile, en desktop el sidebar ya tiene el acordeón */}
       {visibleSections.length > 1 && (
-        <div className="sm:hidden flex flex-wrap gap-2">
+        <div className="sm:hidden -mx-3 px-3 flex gap-2 overflow-x-auto pb-0.5" style={{ scrollbarWidth: "none" }}>
           {visibleSections.map(({ id, label, icon: Icon }) => {
             const isActive = activeSection === id;
             return (

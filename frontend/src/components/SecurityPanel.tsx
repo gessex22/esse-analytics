@@ -323,7 +323,7 @@ export function SecurityPanel() {
                   </span>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
-                  <span className="text-[11px] text-muted-foreground font-mono bg-secondary/40 px-1.5 py-0.5 rounded">
+                  <span className="text-[11px] text-muted-foreground font-mono bg-secondary/40 px-1.5 py-0.5 rounded break-all">
                     {log.ip}
                   </span>
                   <span className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
