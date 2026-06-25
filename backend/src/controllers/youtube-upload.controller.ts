@@ -7,6 +7,7 @@ import multer from 'multer';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
+import { UserModel } from '../models/user.model';
 import { AuthRequest } from '../middleware/auth.middleware';
 
 export const remoteUploadMiddleware = multer({
@@ -132,13 +133,17 @@ export const getChannelInfo = async (req: AuthRequest, res: Response) => {
     const ch = resp.data.items?.[0];
     if (!ch) return res.status(404).json({ error: 'No se encontró el canal' });
 
-    res.json({
-      name:      ch.snippet?.title ?? '',
-      avatarUrl: ch.snippet?.thumbnails?.default?.url
-              ?? ch.snippet?.thumbnails?.medium?.url
-              ?? '',
-      customUrl: ch.snippet?.customUrl ?? '',
-    });
+    const name      = ch.snippet?.title ?? '';
+    const customUrl = ch.snippet?.customUrl ?? '';
+    const avatarUrl = ch.snippet?.thumbnails?.default?.url ?? ch.snippet?.thumbnails?.medium?.url ?? '';
+
+    // Guardar canal en el perfil del usuario para tracking en el admin
+    await UserModel.findByIdAndUpdate(req.user!.id, {
+      youtubeChannel:    name,
+      youtubeChannelUrl: customUrl ? `https://youtube.com/${customUrl}` : '',
+    }).catch(() => {});
+
+    res.json({ name, avatarUrl, customUrl });
   } catch (err: any) {
     console.error('Error YouTube channel-info:', err?.message);
     res.status(500).json({ error: 'Error al obtener info del canal', detail: err?.message });

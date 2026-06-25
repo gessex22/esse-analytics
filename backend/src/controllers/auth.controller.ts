@@ -30,6 +30,50 @@ function parseUA(req: Request) {
   return { browser, os, device, userAgent: ua };
 }
 
+// ── POST /api/auth/register ───────────────────────────────────────────────────
+export const register = async (req: Request, res: Response): Promise<void> => {
+  const { username, password, email } = req.body as { username?: string; password?: string; email?: string };
+
+  if (!username || !password) {
+    res.status(400).json({ message: 'Usuario y contraseña requeridos.' });
+    return;
+  }
+  if (password.length < 6) {
+    res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
+    return;
+  }
+
+  try {
+    const exists = await UserModel.findOne({ username: username.toLowerCase() });
+    if (exists) {
+      res.status(409).json({ message: 'Ese nombre de usuario ya está en uso.' });
+      return;
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = await UserModel.create({
+      username: username.toLowerCase(),
+      password: hashed,
+      role: 'editor',
+      tier: 'free',
+      ...(email ? { email } : {}),
+    });
+
+    const token = jwt.sign(
+      { id: user._id, username: user.username, role: user.role, tier: user.tier },
+      JWT_SECRET,
+      { expiresIn: '7d' },
+    );
+
+    res.status(201).json({
+      token,
+      user: { username: user.username, role: user.role, tier: user.tier },
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al registrar.', error: err.message });
+  }
+};
+
 export const login = async (req: Request, res: Response): Promise<void> => {
   const { username, password } = req.body as { username?: string; password?: string };
   const ip = getClientIp(req);
@@ -113,8 +157,17 @@ export const clearLoginLogs = async (_req: AuthRequest, res: Response): Promise<
 // ── GET /api/auth/users ───────────────────────────────────────────────────────
 export const getUsers = async (_req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const users = await UserModel.find().select('-password').lean();
-    res.json(users.map(u => ({ id: u._id, username: u.username, role: u.role, tier: u.tier })));
+    const users = await UserModel.find().select('-password').sort({ createdAt: -1 }).lean();
+    res.json(users.map(u => ({
+      id: u._id,
+      username: u.username,
+      role: u.role,
+      tier: u.tier,
+      email: u.email,
+      youtubeChannel: u.youtubeChannel,
+      youtubeChannelUrl: u.youtubeChannelUrl,
+      createdAt: (u as any).createdAt,
+    })));
   } catch (err: any) {
     res.status(500).json({ message: 'Error al obtener usuarios.', error: err.message });
   }

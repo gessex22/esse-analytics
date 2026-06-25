@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { Monitor, Smartphone, Tablet, CheckCircle2, XCircle, Clock, Star, User, Loader2, Trash2 } from "lucide-react";
+import { Monitor, Smartphone, Tablet, CheckCircle2, XCircle, Clock, Star, User, Loader2, Trash2, Youtube, ExternalLink } from "lucide-react";
 import { API_BASE } from "../config";
 
 interface LoginLog {
@@ -20,6 +20,10 @@ interface AppUser {
   username: string;
   role: string;
   tier: "free" | "premium";
+  email?: string;
+  youtubeChannel?: string;
+  youtubeChannelUrl?: string;
+  createdAt?: string;
 }
 
 function getAuthHeader() {
@@ -106,7 +110,19 @@ function UsersPanel() {
 
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-foreground truncate">{u.username}</p>
-            <p className="text-xs text-muted-foreground">{ROLE_LABEL[u.role] ?? u.role}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">{ROLE_LABEL[u.role] ?? u.role}</span>
+              {u.youtubeChannel && (
+                <span className="flex items-center gap-1 text-[11px] text-red-400/80">
+                  <Youtube className="w-3 h-3" />
+                  {u.youtubeChannelUrl
+                    ? <a href={u.youtubeChannelUrl} target="_blank" rel="noopener noreferrer" className="hover:text-red-400 flex items-center gap-0.5">
+                        {u.youtubeChannel} <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    : u.youtubeChannel}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Badge tier actual */}
