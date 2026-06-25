@@ -70,6 +70,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen]     = useState(false);
   const [activeSection, setActiveSection]   = useState("colores");
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
+  const [notifOpen, setNotifOpen]           = useState(false);
+  const [notifUnread, setNotifUnread]       = useState(true);
 
   function openVideoPlayer(fileId: string, title: string) {
     setPendingPlayer({ fileId, title });
@@ -259,10 +261,40 @@ export default function App() {
           <div className="flex items-center gap-2 sm:gap-3">
             {role === "todopoderoso" && (
               <>
-                <button className="relative text-muted-foreground hover:text-foreground p-1">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-primary rounded-full" />
-                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => { setNotifOpen(v => !v); setNotifUnread(false); }}
+                    className="relative text-muted-foreground hover:text-foreground p-1 transition-colors"
+                  >
+                    <Bell className="w-5 h-5" />
+                    {notifUnread && (
+                      <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-primary rounded-full" />
+                    )}
+                  </button>
+                  <AnimatePresence>
+                    {notifOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                        <motion.div
+                          initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                          transition={{ duration: 0.15 }}
+                          className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
+                        >
+                          <div className="px-4 py-3 border-b border-border">
+                            <p className="text-xs font-semibold text-foreground uppercase tracking-wider">Notificaciones</p>
+                          </div>
+                          <div className="px-4 py-6 text-center space-y-1">
+                            <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto" />
+                            <p className="text-sm text-muted-foreground">Sin notificaciones por ahora.</p>
+                            <p className="text-xs text-muted-foreground/60">Próximamente: alertas del día de publicación.</p>
+                          </div>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
                 <button className="hidden sm:flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm hover:bg-primary/90 transition-colors">
                   <Upload className="w-4 h-4" />
                   Subir
