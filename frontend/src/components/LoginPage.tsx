@@ -31,6 +31,12 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
   const [loading,  setLoading]  = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
 
+  // Flujo de eliminación total (cuenta + datos locales) desde el login
+  const [wipeMode, setWipeMode]     = useState(false);
+  const [wipePassword, setWipePass] = useState("");
+  const [wiping, setWiping]         = useState(false);
+  const [wipeError, setWipeError]   = useState<string | null>(null);
+
   // En local: ver si esta instancia ya está vinculada a una cuenta
   useEffect(() => {
     if (!isReady) return;
@@ -107,6 +113,43 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
       setError('No se pudo desvincular. Intenta reiniciar la app.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Elimina la cuenta en la central + borra todos los datos locales + desvincula.
+  // Requiere la contraseña para autorizar la baja de la cuenta.
+  const handleWipeAccount = async (e: FormEvent) => {
+    e.preventDefault();
+    setWipeError(null);
+    if (!wipePassword) { setWipeError("Introduce tu contraseña para confirmar."); return; }
+    setWiping(true);
+    try {
+      // 1. Autenticar SIN tocar el estado global (no queremos entrar a la app)
+      const authRes = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: (localOwner || username).trim(), password: wipePassword }),
+      });
+      const authData = await authRes.json();
+      if (!authRes.ok) throw new Error(authData.message || "Contraseña incorrecta.");
+      const token = authData.token as string;
+      const auth = { Authorization: `Bearer ${token}` };
+
+      // 2. Dar de baja la cuenta en la central (best-effort)
+      await fetch(`${API_BASE}/api/auth/me/deactivate`, { method: "POST", headers: auth }).catch(() => {});
+
+      // 3. Borrar todos los datos locales (SQLite)
+      await fetch(`${API_BASE}/api/local/wipe`, { method: "POST", headers: auth }).catch(() => {});
+
+      // 4. Desvincular esta instalación
+      await fetch(`${API_BASE}/api/local/owner/reset`, { method: "POST" }).catch(() => {});
+
+      // 5. Limpiar sesión y recargar en estado inicial
+      localStorage.removeItem("esse_auth_token");
+      window.location.reload();
+    } catch (err: any) {
+      setWipeError(err.message);
+      setWiping(false);
     }
   };
 
@@ -302,6 +345,17 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
               </button>
             )}
 
+            {/* Eliminar cuenta y datos — solo en local, con instalación vinculada */}
+            {isLocal && localOwner && mode === "login" && !wipeMode && (
+              <button
+                type="button"
+                onClick={() => { setWipeMode(true); setWipeError(null); setWipePass(""); }}
+                className="w-full text-[11px] text-red-400/70 hover:text-red-400 transition-colors text-center"
+              >
+                Eliminar cuenta y reiniciar aplicación
+              </button>
+            )}
+
             {/* Volver desde reset */}
             {mode === "reset" && (
               <button
@@ -327,6 +381,59 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
             )}
           </motion.form>
         </AnimatePresence>
+
+        {/* Panel de eliminación total — fuera del form para no disparar el login */}
+        {isLocal && localOwner && wipeMode && (
+          <motion.form
+            onSubmit={handleWipeAccount}
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/5 p-5 space-y-3"
+          >
+            <div>
+              <p className="text-sm font-semibold text-foreground">Eliminar cuenta y reiniciar app</p>
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                Esto dará de baja la cuenta <span className="text-foreground font-medium">{localOwner}</span> en
+                la nube y borrará todos los datos locales (biblioteca, videos, configuración). Esta acción
+                <span className="text-red-400 font-medium"> no se puede deshacer.</span>
+              </p>
+            </div>
+
+            <Field
+              label="Confirma tu contraseña"
+              value={wipePassword}
+              onChange={setWipePass}
+              type="password"
+              placeholder="••••••••"
+              autoComplete="current-password"
+            />
+
+            {wipeError && (
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                {wipeError}
+              </p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="submit"
+                disabled={wiping}
+                className="flex-1 bg-red-500 text-white py-2 rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors disabled:opacity-60"
+              >
+                {wiping ? "Eliminando..." : "Eliminar todo"}
+              </button>
+              <button
+                type="button"
+                disabled={wiping}
+                onClick={() => { setWipeMode(false); setWipePass(""); setWipeError(null); }}
+                className="px-4 py-2 rounded-lg bg-card border border-border text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+            </div>
+          </motion.form>
+        )}
+
         <p className="text-center text-[10px] text-muted-foreground/40 font-mono mt-6">
           v{__APP_VERSION__}
         </p>
