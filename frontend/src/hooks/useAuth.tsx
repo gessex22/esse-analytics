@@ -7,6 +7,7 @@ interface AuthUser {
   username: string;
   role: UserRole;
   tier: UserTier;
+  isOwner?: boolean;
 }
 
 interface AuthContextValue {
@@ -37,6 +38,7 @@ function decodeJwtUser(token: string): AuthUser | null {
       username: payload.username,
       role: payload.role as UserRole,
       tier: (payload.tier as UserTier) ?? "free",
+      isOwner: !!payload.isOwner,
     };
   } catch {
     return null;

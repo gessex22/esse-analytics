@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import { UAParser } from 'ua-parser-js';
 import { UserModel } from '../models/user.model';
 import { LoginLogModel } from '../models/login-log.model';
-import { AuthRequest } from '../middleware/auth.middleware';
+import { AuthRequest, isOwner } from '../middleware/auth.middleware';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
 
@@ -51,23 +51,26 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     }
 
     const hashed = await bcrypt.hash(password, 10);
+    // Cada cliente es "todopoderoso" en SU propia instancia local (configura
+    // biblioteca, escaneo, etc.). El acceso a la administración central está
+    // restringido aparte al owner del servicio (requireOwner).
     const user = await UserModel.create({
       username: username.toLowerCase(),
       password: hashed,
-      role: 'editor',
+      role: 'todopoderoso',
       tier: 'free',
       ...(email ? { email } : {}),
     });
 
     const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role, tier: user.tier },
+      { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
       JWT_SECRET,
       { expiresIn: '7d' },
     );
 
     res.status(201).json({
       token,
-      user: { username: user.username, role: user.role, tier: user.tier },
+      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
     });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al registrar.', error: err.message });
@@ -104,14 +107,14 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     await LoginLogModel.create({ username: user.username, success: true, ip, ...ua });
 
     const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role, tier: user.tier },
+      { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
     res.json({
       token,
-      user: { username: user.username, role: user.role, tier: user.tier },
+      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
     });
   } catch (err: any) {
     await LoginLogModel.create({
@@ -130,7 +133,7 @@ export const me = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await UserModel.findById(req.user!.id).select('-password').lean();
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
-    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier } });
+    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) } });
   } catch {
     res.json({ user: req.user });
   }

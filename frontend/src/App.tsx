@@ -94,9 +94,12 @@ export default function App() {
 
   // Editor: navegar solo a Videos, Taller y Calendario
   const role = user.role;
-  const visibleSettingsSections = SETTINGS_SECTIONS.filter(s =>
-    s.roles.includes(role) && !(isLocal && s.id === "seguridad")
-  );
+  const visibleSettingsSections = SETTINGS_SECTIONS.filter(s => {
+    if (!s.roles.includes(role)) return false;
+    // "Seguridad" es administración central: solo el dueño del servicio, nunca en local
+    if (s.id === "seguridad") return !isLocal && !!user.isOwner;
+    return true;
+  });
   const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
   const visibleNavItems = navItems.filter((_, i) => {
     if (role === "todopoderoso") return true;

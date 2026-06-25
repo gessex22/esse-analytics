@@ -4,6 +4,15 @@ import { UserRole, UserTier } from '../models/user.model';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
 
+// Dueño del SERVICIO (no de una instancia local). Solo este usuario administra
+// clientes y ve los logs en la central. Cualquier cliente registrado es
+// "todopoderoso" en SU instancia, pero no es el owner del servicio.
+export const OWNER_USERNAME = (process.env.OWNER_USERNAME || 'esse').toLowerCase();
+
+export function isOwner(username?: string): boolean {
+  return !!username && username.toLowerCase() === OWNER_USERNAME;
+}
+
 export interface AuthRequest extends Request {
   user?: { id: string; username: string; role: UserRole; tier: UserTier };
 }
@@ -32,4 +41,13 @@ export function requireRole(...roles: UserRole[]) {
     }
     next();
   };
+}
+
+// Solo el dueño del servicio (administración central de clientes).
+export function requireOwner(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (!isOwner(req.user?.username)) {
+    res.status(403).json({ message: 'Solo el administrador del servicio puede hacer esto.' });
+    return;
+  }
+  next();
 }
