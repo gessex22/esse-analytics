@@ -1,8 +1,10 @@
+import './db/database'; // inicializa SQLite y crea las tablas
 import express from 'express';
-import mongoose from 'mongoose';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
 
 import videoRoutes            from './routes/video.routes';
 import streamRoutes           from './routes/stream.routes';
@@ -12,6 +14,8 @@ import syncRoutes             from './routes/sync.routes';
 import authProxyRoutes        from './routes/auth-proxy.routes';
 import localAdminRoutes       from './routes/local-admin.routes';
 import youtubeUploadRoutes    from './routes/youtube-upload.routes';
+import transcriptRoutes       from './routes/transcript.routes';
+import gemsRoutes             from './routes/gems.routes';
 
 dotenv.config();
 
@@ -23,24 +27,30 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'esse-local-backend', mongoState: mongoose.connection.readyState });
+  res.json({ ok: true, service: 'esse-local-backend', db: 'sqlite' });
 });
 
-app.use(authProxyRoutes);        // auth + OAuth plataformas → central
-app.use(localAdminRoutes);      // wipe y health local
-app.use(youtubeUploadRoutes);   // upload local con token de central (B1)
+app.use(authProxyRoutes);
+app.use(localAdminRoutes);
+app.use(youtubeUploadRoutes);
 app.use(videoRoutes);
 app.use(streamRoutes);
 app.use(scanRoutes);
 app.use(publishingStatusRoutes);
 app.use(syncRoutes);
+app.use(transcriptRoutes);
+app.use(gemsRoutes);
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/esse_local';
-
-mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 })
-  .then(() => console.log('MongoDB local conectado:', MONGO_URI))
-  .catch(err => console.error('Error MongoDB:', err.message));
+// Sirve el frontend estático si FRONTEND_DIST está configurado (modo empaquetado)
+const frontendDist = process.env.FRONTEND_DIST;
+if (frontendDist && fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get('/{*splat}', (_req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Local backend corriendo en http://0.0.0.0:${PORT}`);
+  console.log('Base de datos: SQLite (esse_local.db)');
 });

@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Bell, Settings, BarChart2, Film, Users,
   Upload, Clock, TrendingUp, Wrench, Palette, ShieldCheck, Tv2, ChevronDown, LogOut,
-  CalendarDays, FolderOpen,
+  CalendarDays, FolderOpen, Gem,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -15,6 +15,8 @@ import { YoutubeUploadView } from "./components/YoutubeUploadView";
 import { useAuth } from "./hooks/useAuth";
 import { RemoteGate } from "./components/RemoteGate";
 import { useBackendType } from "./hooks/useBackendType";
+import { GemsPanel } from "./components/GemsPanel";
+import { UsersPanel } from "./components/UsersPanel";
 import logoImg from "./assets/esseAnalytics.png";
 
 // Sub-secciones de Ajustes
@@ -34,9 +36,10 @@ const navItems = [
   { icon: Wrench,       label: "Taller"      },
   { icon: Settings,     label: "Ajustes"     },
   { icon: CalendarDays, label: "Calendario"  },
+  { icon: Gem,          label: "Gemas"       },
 ];
 
-const ACTIVE_VIEWS = new Set([1, 2, 5, 6, 7]);
+const ACTIVE_VIEWS = new Set([1, 2, 3, 5, 6, 7, 8]);
 const MOBILE_NAV   = [1, 2, 7, 5, 6];
 
 function ProximamenteView({ label }: { label: string }) {
@@ -288,6 +291,8 @@ export default function App() {
                   : effectiveNav === 2 ? <YoutubeUploadView />
                   : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} onSectionChange={setActiveSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
+                  : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
+                  : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }
               </main>

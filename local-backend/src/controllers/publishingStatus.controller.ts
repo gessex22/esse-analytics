@@ -1,24 +1,19 @@
 import { Request, Response } from 'express';
-import { PublishingStatusModel } from '../models/publishing-status.model';
-import { FileModel } from '../models/file.model';
+import { publishingStatusRepo } from '../db/publishing-status.repo';
+import { fileRepo } from '../db/file.repo';
 
 export async function getAllPublishingStatus(_req: Request, res: Response): Promise<void> {
   try {
-    const docs = await PublishingStatusModel.aggregate([
-      {
-        $lookup: {
-          from:     'files',
-          localField: 'fileId',
-          foreignField: '_id',
-          as:       '_file',
-          pipeline: [{ $project: { fecha_creacion: 1 } }],
-        },
-      },
-      { $addFields: { _fecha: { $arrayElemAt: ['$_file.fecha_creacion', 0] } } },
-      { $sort: { _fecha: -1 } },
-      { $project: { _file: 0, _fecha: 0 } },
-    ]);
-    res.json(docs);
+    const docs = publishingStatusRepo.findAll();
+    res.json(docs.map(d => ({
+      _id: String(d.id),
+      fileId: String(d.file_id),
+      title: d.title,
+      tiktok_published: d.tiktok_published,
+      instagram_published: d.instagram_published,
+      youtube_published: d.youtube_published,
+      createdAt: d.created_at,
+    })));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -29,22 +24,26 @@ export async function updatePublishingStatus(req: Request, res: Response): Promi
     const { fileId } = req.params;
     const { tiktok_published, instagram_published, youtube_published } = req.body;
 
-    const update: Record<string, boolean> = {};
-    if (typeof tiktok_published    === 'boolean') update.tiktok_published    = tiktok_published;
-    if (typeof instagram_published === 'boolean') update.instagram_published = instagram_published;
-    if (typeof youtube_published   === 'boolean') update.youtube_published   = youtube_published;
+    const updates: Record<string, boolean> = {};
+    if (typeof tiktok_published    === 'boolean') updates.tiktok_published    = tiktok_published;
+    if (typeof instagram_published === 'boolean') updates.instagram_published = instagram_published;
+    if (typeof youtube_published   === 'boolean') updates.youtube_published   = youtube_published;
 
-    if (!Object.keys(update).length) { res.status(400).json({ error: 'Sin campos a actualizar' }); return; }
+    if (!Object.keys(updates).length) { res.status(400).json({ error: 'Sin campos a actualizar' }); return; }
 
-    const file = await FileModel.findById(fileId, { file_name: 1 }).lean();
+    const file = fileRepo.findById(fileId);
     if (!file) { res.status(404).json({ error: 'Archivo no encontrado' }); return; }
 
-    const doc = await PublishingStatusModel.findOneAndUpdate(
-      { fileId },
-      { $set: update, $setOnInsert: { title: file.file_name, createdAt: new Date() } },
-      { returnDocument: 'after', upsert: true },
-    );
-    res.json(doc);
+    const doc = publishingStatusRepo.upsert(Number(fileId), file.file_name, updates);
+    res.json({
+      _id: String(doc.id),
+      fileId: String(doc.file_id),
+      title: doc.title,
+      tiktok_published: doc.tiktok_published,
+      instagram_published: doc.instagram_published,
+      youtube_published: doc.youtube_published,
+      createdAt: doc.created_at,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

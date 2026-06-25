@@ -1,8 +1,8 @@
 import { Response } from 'express';
 import fs from 'fs';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { FileModel } from '../models/file.model';
-import { PlatformVideoModel } from '../models/platform-video.model';
+import { fileRepo } from '../db/file.repo';
+import { platformVideoRepo } from '../db/platform-video.repo';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -15,7 +15,6 @@ async function fetchAccessToken(authHeader: string): Promise<string> {
   return data.access_token;
 }
 
-// Resumable upload to YouTube Data API v3 using plain fetch (no googleapis dep needed)
 async function uploadVideoToYoutube(
   accessToken: string,
   filePath: string,
@@ -47,7 +46,6 @@ async function uploadVideoToYoutube(
   };
   if (metadata.publishAt) statusBody.publishAt = metadata.publishAt;
 
-  // Step 1: Initiate resumable upload
   const initRes = await fetch(
     'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
     {
@@ -70,14 +68,10 @@ async function uploadVideoToYoutube(
   const uploadUrl = initRes.headers.get('location');
   if (!uploadUrl) throw new Error('No se recibió upload URL de YouTube');
 
-  // Step 2: Upload the file
   const fileBuffer = fs.readFileSync(filePath);
   const uploadRes = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'video/*',
-      'Content-Length': String(fileSize),
-    },
+    headers: { 'Content-Type': 'video/*', 'Content-Length': String(fileSize) },
     body: fileBuffer,
   });
 
@@ -87,10 +81,9 @@ async function uploadVideoToYoutube(
   }
 
   const data = await uploadRes.json() as { id: string; snippet?: { title?: string } };
-  const videoId = data.id;
   return {
-    videoId,
-    videoUrl: `https://www.youtube.com/shorts/${videoId}`,
+    videoId: data.id,
+    videoUrl: `https://www.youtube.com/shorts/${data.id}`,
     title: data.snippet?.title ?? metadata.title,
   };
 }
@@ -111,11 +104,11 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
 
   if (!fileId || !title) return res.status(400).json({ error: 'fileId y title son requeridos' });
 
-  const fileDoc = await FileModel.findById(fileId).lean();
+  const fileDoc = fileRepo.findById(fileId);
   if (!fileDoc) return res.status(404).json({ error: 'Archivo no encontrado' });
-  if ((fileDoc as any).status === 'ELIMINADO_DISCO') return res.status(400).json({ error: 'El archivo fue eliminado del disco' });
+  if (fileDoc.status === 'ELIMINADO_DISCO') return res.status(400).json({ error: 'El archivo fue eliminado del disco' });
 
-  const filePath = (fileDoc as any).file_path as string;
+  const filePath = fileDoc.file_path;
   if (!fs.existsSync(filePath)) return res.status(400).json({ error: 'Archivo físico no encontrado en disco' });
 
   let accessToken: string;
@@ -133,23 +126,17 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
       publishAt,
     });
 
-    await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'youtube', platformId: result.videoId },
-      {
-        platform: 'youtube',
-        platformId: result.videoId,
-        platformUrl: result.videoUrl,
-        publishedAt: new Date(),
-        linkedFileId: fileId,
-        matchStatus: 'manual',
-      },
-      { upsert: true },
-    );
-
-    await FileModel.findByIdAndUpdate(fileId, {
-      $set: { content_status: 'publicado' },
-      $addToSet: { platforms: 'youtube' },
+    platformVideoRepo.upsert({
+      platform:      'youtube',
+      platform_id:   result.videoId,
+      platform_url:  result.videoUrl,
+      published_at:  new Date(),
+      linked_file_id: Number(fileId),
+      match_status:  'manual',
     });
+
+    fileRepo.update(fileId, { content_status: 'publicado' });
+    fileRepo.addPlatform(fileId, 'youtube');
 
     res.json({ ok: true, ...result });
   } catch (err: any) {

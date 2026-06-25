@@ -174,28 +174,63 @@ export const clearLoginLogs = async (_req: AuthRequest, res: Response): Promise<
 };
 
 // ── GET /api/auth/users ───────────────────────────────────────────────────────
-export const getUsers = async (_req: AuthRequest, res: Response): Promise<void> => {
+// ?q=texto  &status=active|deleted  &limit=5  &offset=0
+export const getUsers = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const users = await UserModel.find().select('-password').sort({ createdAt: -1 }).lean();
-    res.json(users.map(u => ({
-      id: u._id,
-      username: u.username,
-      role: u.role,
-      tier: u.tier,
-      status: (u as any).status ?? 'active',
-      email: u.email,
-      youtubeChannel: u.youtubeChannel,
-      youtubeChannelUrl: u.youtubeChannelUrl,
-      instagramAccount: (u as any).instagramAccount,
-      tiktokAccount: (u as any).tiktokAccount,
-      linkedPlatforms: (u as any).linkedPlatforms ?? [],
-      verified: (((u as any).linkedPlatforms ?? []).length > 0),
-      firstLinkedAt: (u as any).firstLinkedAt,
-      deletedAt: (u as any).deletedAt,
-      createdAt: (u as any).createdAt,
-    })));
+    const q      = (req.query.q      as string) || '';
+    const status = (req.query.status as string) || 'active';   // 'active' | 'deleted'
+    const limit  = Math.min(parseInt(req.query.limit  as string) || 5, 100);
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    const filter: Record<string, any> = { status };
+    if (q) {
+      filter.$or = [
+        { username: { $regex: q, $options: 'i' } },
+        { email:    { $regex: q, $options: 'i' } },
+      ];
+    }
+
+    const [users, total] = await Promise.all([
+      UserModel.find(filter).select('-password').sort({ createdAt: -1 }).skip(offset).limit(limit).lean(),
+      UserModel.countDocuments(filter),
+    ]);
+
+    res.json({
+      total,
+      users: users.map(u => ({
+        id:                u._id,
+        username:          u.username,
+        role:              u.role,
+        tier:              u.tier,
+        status:            (u as any).status ?? 'active',
+        email:             u.email,
+        linkedPlatforms:   (u as any).linkedPlatforms ?? [],
+        youtubeChannel:    (u as any).youtubeChannel,
+        youtubeChannelUrl: (u as any).youtubeChannelUrl,
+        instagramAccount:  (u as any).instagramAccount,
+        tiktokAccount:     (u as any).tiktokAccount,
+        firstLinkedAt:     (u as any).firstLinkedAt,
+        deletedAt:         (u as any).deletedAt,
+        createdAt:         (u as any).createdAt,
+      })),
+    });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al obtener usuarios.', error: err.message });
+  }
+};
+
+// ── PATCH /api/auth/users/:id/deactivate (owner da de baja a cualquier usuario) ──
+export const deactivateUser = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const user = await UserModel.findByIdAndUpdate(
+      req.params.id,
+      { status: 'deleted', deletedAt: new Date() },
+      { new: true },
+    ).select('-password');
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al dar de baja.', error: err.message });
   }
 };
 

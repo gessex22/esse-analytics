@@ -1,49 +1,43 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
-import { FileModel } from '../models/file.model';
-import { PlatformVideoModel } from '../models/platform-video.model';
+import { fileRepo } from '../db/file.repo';
+import { platformVideoRepo } from '../db/platform-video.repo';
+import { configRepo } from '../db/config.repo';
 
 // GET /api/sync/calendar-config
 export const getCalendarConfig = async (_req: Request, res: Response): Promise<void> => {
   try {
-    const db = mongoose.connection.db!;
-
-    const stored = await db.collection('platform_config')
-      .find({ platform: { $in: ['tiktok', 'instagram', 'youtube'] } })
-      .toArray();
-
+    const stored = configRepo.getAllPlatformConfigs();
     const storedMap = new Map(stored.map(c => [c.platform as string, c]));
 
-    // YouTube: usa override si existe, si no calcula desde platformvideos
+    // YouTube: usa override si existe, si no calcula desde platform_videos
     let ytConfig: { platform: string; lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number };
     const ytOverride = storedMap.get('youtube');
 
     if (ytOverride) {
       ytConfig = {
         platform:           'youtube',
-        lastPublishedTitle: ytOverride.lastPublishedTitle,
-        lastPublishedDate:  ytOverride.lastPublishedDate,
-        intervalDays:       ytOverride.intervalDays ?? 4,
+        lastPublishedTitle: (ytOverride.last_published_title as string) ?? '',
+        lastPublishedDate:  (ytOverride.last_published_date  as string) ?? '',
+        intervalDays:       (ytOverride.interval_days as number) ?? 4,
       };
     } else {
-      const ytVideos = await PlatformVideoModel.find({ platform: 'youtube', linkedFileId: { $ne: null } })
-        .sort({ publishedAt: -1 }).limit(7).lean();
+      const ytVideos = platformVideoRepo.findByPlatformLinked('youtube', 7);
 
       ytConfig = { platform: 'youtube', lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 4 };
       if (ytVideos.length > 0) {
         const diffs: number[] = [];
         for (let i = 0; i < Math.min(6, ytVideos.length - 1); i++) {
           diffs.push(Math.round(
-            (new Date(ytVideos[i].publishedAt!).getTime() - new Date(ytVideos[i + 1].publishedAt!).getTime())
+            (new Date(ytVideos[i].published_at!).getTime() - new Date(ytVideos[i + 1].published_at!).getTime())
             / (1000 * 60 * 60 * 24)
           ));
         }
         const interval = diffs.length ? Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length) : 4;
-        const linkedFile = await FileModel.findById(ytVideos[0].linkedFileId).select('file_name').lean();
+        const linkedFile = ytVideos[0].linked_file_id ? fileRepo.findById(ytVideos[0].linked_file_id) : undefined;
         ytConfig = {
           platform:           'youtube',
           lastPublishedTitle: linkedFile?.file_name ?? '',
-          lastPublishedDate:  new Date(ytVideos[0].publishedAt!).toISOString().slice(0, 10),
+          lastPublishedDate:  ytVideos[0].published_at!.slice(0, 10),
           intervalDays:       interval,
         };
       }
@@ -52,28 +46,26 @@ export const getCalendarConfig = async (_req: Request, res: Response): Promise<v
     const igTk = ['tiktok', 'instagram'].map(p => {
       const c = storedMap.get(p);
       return c
-        ? { platform: p, lastPublishedTitle: c.lastPublishedTitle, lastPublishedDate: c.lastPublishedDate, intervalDays: c.intervalDays ?? 3, lastVideoId: c.lastVideoId ?? null, nextVideoId: c.nextVideoId ?? null }
+        ? { platform: p, lastPublishedTitle: c.last_published_title, lastPublishedDate: c.last_published_date, intervalDays: (c.interval_days as number) ?? 3, lastVideoId: c.last_video_id ?? null, nextVideoId: c.next_video_id ?? null }
         : { platform: p, lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 3, lastVideoId: null, nextVideoId: null };
     });
 
     const allConfigs = [
-      { ...ytConfig, lastVideoId: ytOverride?.lastVideoId ?? null, nextVideoId: ytOverride?.nextVideoId ?? null },
+      { ...ytConfig, lastVideoId: ytOverride?.last_video_id ?? null, nextVideoId: ytOverride?.next_video_id ?? null },
       ...igTk,
     ];
 
     const enriched = await Promise.all(allConfigs.map(async (cfg) => {
       if (!cfg.nextVideoId) return { ...cfg, nextVideo: null };
       try {
-        const file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
-          .select('file_name duracion_segundos').lean();
+        const file = fileRepo.findById(String(cfg.nextVideoId));
         if (!file) return { ...cfg, nextVideo: null };
-        const dur = (file as any).duracion_segundos as number | undefined;
         return {
           ...cfg,
           nextVideo: {
-            fileId:   String(file._id),
-            title:    (file as any).file_name,
-            duration: dur ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}` : '',
+            fileId:   String(file.id),
+            title:    file.file_name,
+            duration: file.duracion_segundos ? `${Math.floor(file.duracion_segundos / 60)}:${String(Math.floor(file.duracion_segundos % 60)).padStart(2, '0')}` : '',
           },
         };
       } catch {
@@ -88,24 +80,20 @@ export const getCalendarConfig = async (_req: Request, res: Response): Promise<v
 };
 
 // PATCH /api/sync/calendar-config/:platform
-export const updateCalendarConfig = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { platform } = req.params;
-    if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
-      res.status(400).json({ message: 'Plataforma no válida' }); return;
-    }
-    const { lastPublishedDate, lastPublishedTitle, intervalDays, lastVideoId, nextVideoId } = req.body;
-    const fields: Record<string, unknown> = {};
-    if (lastPublishedDate  !== undefined) fields.lastPublishedDate  = lastPublishedDate;
-    if (lastPublishedTitle !== undefined) fields.lastPublishedTitle = lastPublishedTitle;
-    if (intervalDays       !== undefined) fields.intervalDays       = intervalDays;
-    if (lastVideoId        !== undefined) fields.lastVideoId        = lastVideoId;
-    if (nextVideoId        !== undefined) fields.nextVideoId        = nextVideoId;
-
-    const db = mongoose.connection.db!;
-    await db.collection('platform_config').updateOne({ platform }, { $set: fields }, { upsert: true });
-    res.json({ ok: true });
-  } catch (err: any) {
-    res.status(500).json({ message: err.message });
+export const updateCalendarConfig = (req: Request, res: Response): void => {
+  const { platform } = req.params;
+  if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
+    res.status(400).json({ message: 'Plataforma no válida' }); return;
   }
+  const { lastPublishedDate, lastPublishedTitle, intervalDays, lastVideoId, nextVideoId } = req.body;
+
+  configRepo.setPlatformConfig(platform, {
+    ...(lastPublishedDate  !== undefined ? { last_published_date:  lastPublishedDate  } : {}),
+    ...(lastPublishedTitle !== undefined ? { last_published_title: lastPublishedTitle } : {}),
+    ...(intervalDays       !== undefined ? { interval_days:        intervalDays       } : {}),
+    ...('lastVideoId' in req.body ? { last_video_id: lastVideoId ?? null } : {}),
+    ...('nextVideoId' in req.body ? { next_video_id: nextVideoId ?? null } : {}),
+  });
+
+  res.json({ ok: true });
 };

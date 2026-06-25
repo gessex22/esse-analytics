@@ -2,9 +2,16 @@ import { useState } from "react";
 import { motion } from "motion/react";
 import {
   Film, BarChart2, Wrench, LogIn, CalendarClock, Share2,
-  LineChart, Languages, ArrowRight, ShieldCheck,
+  LineChart, Languages, ArrowRight, ShieldCheck, Download, Monitor, Apple,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
+
+// ── URLs de descarga — actualiza estas constantes cuando subas los archivos ──
+const DOWNLOADS = {
+  windows: "https://github.com/gessex22/esse-analytics/releases/download/v1.0.0/EsseAnalytics.Setup.1.0.0.exe",
+  macArm:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.0/EsseAnalytics-1.0.0-arm64.dmg",
+  macX64:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.0/EsseAnalytics-1.0.0.dmg",
+};
 
 // ── Iconos de plataforma ──────────────────────────────────────────────────────
 function YoutubeIcon({ className }: { className?: string }) {
@@ -55,6 +62,14 @@ const T = {
       { n: "2", title: "Elige y prepara tu video", desc: "Selecciona un video de tu biblioteca, escribe el título, define la privacidad y elige la portada." },
       { n: "3", title: "Publica y mide", desc: "Publica con un clic y sigue el rendimiento de tu contenido en todas las redes desde un solo lugar." },
     ],
+    dlTitle: "Descarga la app de escritorio",
+    dlSub: "Gestiona tus videos localmente, sin subir nada a la nube. Gratis.",
+    dlWin: "Windows",
+    dlWinSub: "Windows 10 / 11 — x64",
+    dlMac: "macOS",
+    dlMacArm: "Apple Silicon (M1/M2/M3)",
+    dlMacX64: "Mac Intel (x64)",
+    dlFree: "Gratis · Sin cuenta requerida",
     ctaTitle: "Lleva tu contenido más lejos",
     ctaSub: "Empieza a gestionar y publicar en todas tus redes desde un solo panel.",
     ctaBtn: "Acceder a la plataforma",
@@ -86,6 +101,14 @@ const T = {
       { n: "2", title: "Pick and prepare your video", desc: "Choose a video from your library, write the title, set the privacy and pick the cover frame." },
       { n: "3", title: "Publish and measure", desc: "Publish with one click and track your content's performance across networks from one place." },
     ],
+    dlTitle: "Download the desktop app",
+    dlSub: "Manage your videos locally, without uploading anything to the cloud. Free.",
+    dlWin: "Windows",
+    dlWinSub: "Windows 10 / 11 — x64",
+    dlMac: "macOS",
+    dlMacArm: "Apple Silicon (M1/M2/M3)",
+    dlMacX64: "Mac Intel (x64)",
+    dlFree: "Free · No account required",
     ctaTitle: "Take your content further",
     ctaSub: "Start managing and publishing across all your networks from a single dashboard.",
     ctaBtn: "Enter the platform",
@@ -133,6 +156,13 @@ export function LandingPage({ onLogin }: LandingPageProps) {
             <Languages className="w-4 h-4" />
             <span className="font-medium uppercase">{lang === "es" ? "EN" : "ES"}</span>
           </button>
+          <a
+            href="#download"
+            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            {lang === "es" ? "Descargar" : "Download"}
+          </a>
           <button
             onClick={onLogin}
             className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors"
@@ -219,6 +249,84 @@ export function LandingPage({ onLogin }: LandingPageProps) {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Descarga */}
+      <section id="download" className="px-6 py-20 border-t border-border bg-card/30">
+        <div className="max-w-3xl mx-auto text-center">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }} transition={{ duration: 0.45 }}
+          >
+            <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mx-auto mb-5">
+              <Download className="w-6 h-6 text-primary" />
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-bold mb-3" style={{ fontFamily: "'Space Grotesk', sans-serif", letterSpacing: "-0.02em" }}>
+              {t.dlTitle}
+            </h2>
+            <p className="text-muted-foreground text-base mb-10">{t.dlSub}</p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
+
+              {/* Windows */}
+              <a
+                href={DOWNLOADS.windows}
+                className="group flex flex-col gap-4 rounded-xl border border-border bg-card p-6 hover:border-primary/40 hover:bg-card/80 transition-all"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+                    <Monitor className="w-5 h-5 text-sky-400" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-foreground">{t.dlWin}</p>
+                    <p className="text-xs text-muted-foreground">{t.dlWinSub}</p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-auto">
+                  <span className="text-xs text-muted-foreground font-mono">.exe · ~85 MB</span>
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary group-hover:gap-2.5 transition-all">
+                    <Download className="w-3.5 h-3.5" />
+                    Descargar
+                  </span>
+                </div>
+              </a>
+
+              {/* macOS */}
+              <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-6">
+                <div className="flex items-center gap-3 mb-1">
+                  <div className="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
+                    <Apple className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-foreground">{t.dlMac}</p>
+                    <p className="text-xs text-muted-foreground">.dmg · ~110 MB</p>
+                  </div>
+                </div>
+                <a
+                  href={DOWNLOADS.macArm}
+                  className="group flex items-center justify-between rounded-lg border border-border bg-secondary/50 px-4 py-2.5 hover:border-primary/30 hover:bg-secondary transition-colors"
+                >
+                  <span className="text-sm text-foreground">{t.dlMacArm}</span>
+                  <span className="inline-flex items-center gap-1 text-xs text-primary font-semibold group-hover:gap-1.5 transition-all">
+                    <Download className="w-3.5 h-3.5" /> arm64
+                  </span>
+                </a>
+                <a
+                  href={DOWNLOADS.macX64}
+                  className="group flex items-center justify-between rounded-lg border border-border bg-secondary/50 px-4 py-2.5 hover:border-primary/30 hover:bg-secondary transition-colors"
+                >
+                  <span className="text-sm text-foreground">{t.dlMacX64}</span>
+                  <span className="inline-flex items-center gap-1 text-xs text-primary font-semibold group-hover:gap-1.5 transition-all">
+                    <Download className="w-3.5 h-3.5" /> x64
+                  </span>
+                </a>
+              </div>
+
+            </div>
+
+            <p className="text-xs text-muted-foreground mt-6">{t.dlFree}</p>
+          </motion.div>
         </div>
       </section>
 

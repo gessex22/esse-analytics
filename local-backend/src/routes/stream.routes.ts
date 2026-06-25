@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { FileModel } from '../models/file.model';
+import { fileRepo } from '../db/file.repo';
 import path from 'path';
 import fs from 'fs';
 
@@ -7,7 +7,7 @@ const router = Router();
 
 router.get('/api/videos/stream/:id', async (req, res) => {
   try {
-    const doc = await FileModel.findById(req.params.id);
+    const doc = fileRepo.findById(req.params.id);
     if (!doc || doc.status === 'ELIMINADO_DISCO') return res.status(404).json({ error: 'Video no disponible' });
     const filePath = path.resolve(doc.file_path);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado en disco' });
@@ -38,7 +38,7 @@ router.get('/api/videos/stream/:id', async (req, res) => {
 
 router.get('/api/videos/download/:id', async (req, res) => {
   try {
-    const doc = await FileModel.findById(req.params.id);
+    const doc = fileRepo.findById(req.params.id);
     if (!doc || doc.status === 'ELIMINADO_DISCO') return res.status(404).json({ error: 'Video no disponible' });
     const filePath = path.resolve(doc.file_path);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado' });

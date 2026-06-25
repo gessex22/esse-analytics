@@ -7,15 +7,16 @@
     "start": "tsx src/server.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^5.0.1",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "mongoose": "^8.9.5",
     "multer": "^1.4.5-lts.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.7",
