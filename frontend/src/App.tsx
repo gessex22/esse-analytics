@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Bell, Settings, BarChart2, Film, Users,
   Upload, Clock, TrendingUp, Wrench, Palette, ShieldCheck, Tv2, ChevronDown, LogOut,
-  CalendarDays, FolderOpen, Gem,
+  CalendarDays, FolderOpen, Gem, Database,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -21,10 +21,11 @@ import logoImg from "./assets/esseAnalytics.png";
 
 // Sub-secciones de Ajustes
 export const SETTINGS_SECTIONS = [
-  { id: "colores",    label: "Colores",         icon: Palette,       roles: ["todopoderoso", "editor"] },
-  { id: "biblioteca", label: "Biblioteca",       icon: FolderOpen,    roles: ["todopoderoso"] },
-  { id: "seguridad",  label: "Seguridad",        icon: ShieldCheck,   roles: ["todopoderoso"] },
-  { id: "sync",       label: "Sincronización",   icon: Tv2,           roles: ["todopoderoso"] },
+  { id: "colores",    label: "Colores",         icon: Palette,       roles: ["todopoderoso", "editor"], localOnly: false },
+  { id: "biblioteca", label: "Biblioteca",       icon: FolderOpen,    roles: ["todopoderoso"],           localOnly: false },
+  { id: "seguridad",  label: "Seguridad",        icon: ShieldCheck,   roles: ["todopoderoso"],           localOnly: false },
+  { id: "sync",       label: "Sincronización",   icon: Tv2,           roles: ["todopoderoso"],           localOnly: false },
+  { id: "datos",      label: "Datos locales",    icon: Database,      roles: ["todopoderoso"],           localOnly: true  },
 ];
 
 const navItems = [
@@ -99,8 +100,8 @@ export default function App() {
   const role = user.role;
   const visibleSettingsSections = SETTINGS_SECTIONS.filter(s => {
     if (!s.roles.includes(role)) return false;
-    // "Seguridad" es administración central: solo el dueño del servicio, nunca en local
     if (s.id === "seguridad") return !isLocal && !!user.isOwner;
+    if (s.localOnly) return isLocal;
     return true;
   });
   const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
@@ -289,7 +290,7 @@ export default function App() {
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <YoutubeUploadView />
-                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} onSectionChange={setActiveSection} />
+                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} onSectionChange={setActiveSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
