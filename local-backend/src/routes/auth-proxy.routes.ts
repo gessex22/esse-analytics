@@ -16,6 +16,13 @@ async function proxyToCentral(req: Request, res: Response, _next: NextFunction) 
     }
 
     const upstream = await fetch(url, init);
+    const ct = upstream.headers.get('content-type') ?? '';
+    if (!ct.includes('application/json')) {
+      // La central devolvió HTML (ruta no encontrada o error de servidor)
+      const text = await upstream.text();
+      res.status(upstream.status).json({ message: `Error en central (${upstream.status})`, detail: text.slice(0, 200) });
+      return;
+    }
     const data = await upstream.json();
     res.status(upstream.status).json(data);
   } catch (err: any) {
