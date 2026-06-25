@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { encodeState, decodeState } from '../utils/oauth-state';
 
 const TK_BASE   = 'https://open.tiktokapis.com/v2';
 const TK_AUTH   = 'https://www.tiktok.com/v2/auth/authorize/';
@@ -63,8 +64,7 @@ async function getValidToken(userId: string): Promise<{ access_token: string; op
 }
 
 // Popup que cierra y notifica al frontend
-function popupResult(res: Response, status: string) {
-  const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
+function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173') {
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;background:#0c0c14;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
 <p>Conectando con TikTok… puedes cerrar esta ventana.</p>
@@ -83,7 +83,8 @@ function popupResult(res: Response, status: string) {
 
 // ── GET /api/tiktok/auth/url ──────────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
-  const state = Buffer.from(req.user!.id).toString('base64url');
+  const origin = req.query.origin as string | undefined;
+  const state = encodeState(req.user!.id, origin);
   const params = new URLSearchParams({
     client_key:    tkKey(),
     scope:         'user.info.basic,video.publish,video.upload',
@@ -100,13 +101,8 @@ export const handleCallback = async (req: Request, res: Response) => {
   const state = req.query.state as string;
   if (!code || !state) return popupResult(res, 'error');
 
-  let userId: string;
-  try {
-    userId = Buffer.from(state, 'base64url').toString();
-    if (!userId) throw new Error('state inválido');
-  } catch {
-    return popupResult(res, 'error');
-  }
+  const { userId, origin } = decodeState(state);
+  if (!userId) return popupResult(res, 'error', origin);
 
   try {
     const tokenRes = await fetch(TK_TOKEN, {
@@ -124,10 +120,10 @@ export const handleCallback = async (req: Request, res: Response) => {
     if (data.error) throw new Error(data.error_description ?? data.error);
 
     await saveTokens(userId, data);
-    popupResult(res, 'success');
+    popupResult(res, 'success', origin);
   } catch (err: any) {
     console.error('TikTok OAuth error:', err.message);
-    popupResult(res, 'error');
+    popupResult(res, 'error', origin);
   }
 };
 

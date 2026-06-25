@@ -6,6 +6,7 @@ import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { encodeState, decodeState } from '../utils/oauth-state';
 
 // Instagram Business Login usa graph.instagram.com, no graph.facebook.com
 const IG_GRAPH  = 'https://graph.instagram.com/v22.0';
@@ -89,8 +90,7 @@ const igAppId     = () => process.env.INSTAGRAM_APP_ID     || process.env.META_A
 const igAppSecret = () => process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET!;
 
 // Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup)
-function popupResult(res: Response, status: string) {
-  const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
+function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173') {
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;background:#0c0c14;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
 <p>Conectando con Instagram… puedes cerrar esta ventana.</p>
@@ -109,7 +109,8 @@ function popupResult(res: Response, status: string) {
 
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
-  const state = Buffer.from(req.user!.id).toString('base64url');
+  const origin = req.query.origin as string | undefined;
+  const state = encodeState(req.user!.id, origin);
   const params = new URLSearchParams({
     client_id:     igAppId(),
     redirect_uri:  process.env.META_REDIRECT_URI!,
@@ -126,13 +127,8 @@ export const handleCallback = async (req: Request, res: Response) => {
   const state = req.query.state as string;
   if (!code || !state) return popupResult(res, 'error');
 
-  let userId: string;
-  try {
-    userId = Buffer.from(state, 'base64url').toString();
-    if (!userId) throw new Error('state inválido');
-  } catch {
-    return popupResult(res, 'error');
-  }
+  const { userId, origin } = decodeState(state);
+  if (!userId) return popupResult(res, 'error', origin);
 
   try {
     // 1. Exchange code → short-lived token (POST, form-encoded)
@@ -167,13 +163,13 @@ export const handleCallback = async (req: Request, res: Response) => {
     const meJson = await meRes.json() as any;
     const realUserId: string = String(meJson.user_id ?? igUserId);
 
-    if (!realUserId) return popupResult(res, 'no_ig_account');
+    if (!realUserId) return popupResult(res, 'no_ig_account', origin);
 
     await saveTokens(userId, { access_token: longToken, instagram_user_id: realUserId });
-    popupResult(res, 'success');
+    popupResult(res, 'success', origin);
   } catch (err: any) {
     console.error('Instagram OAuth error:', err.message);
-    popupResult(res, 'error');
+    popupResult(res, 'error', origin);
   }
 };
 

@@ -245,7 +245,7 @@ function TikTokUploadForm({ selected, onChangeVideo }: {
 
   const connectTikTok = async () => {
     const token = localStorage.getItem("esse_auth_token");
-    const res = await fetch(`${API}/api/tiktok/auth/url`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch(`${API}/api/tiktok/auth/url?origin=${encodeURIComponent(window.location.origin)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     const { url } = await res.json();
     const w = 600, h = 720;
     const left = window.screenX + (window.outerWidth - w) / 2;
@@ -720,7 +720,7 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
 
   const connectInstagram = async () => {
     const token = localStorage.getItem("esse_auth_token");
-    const res = await fetch(`${API}/api/instagram/auth/url`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch(`${API}/api/instagram/auth/url?origin=${encodeURIComponent(window.location.origin)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     const { url } = await res.json();
     const w = 600, h = 720;
     const left = window.screenX + (window.outerWidth - w) / 2;
@@ -1135,7 +1135,7 @@ export function YoutubeUploadView() {
 
   const connectYoutube = async () => {
     const token = localStorage.getItem("esse_auth_token");
-    const res = await fetch(`${API}/api/youtube/auth/url`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    const res = await fetch(`${API}/api/youtube/auth/url?origin=${encodeURIComponent(window.location.origin)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
     const { url } = await res.json();
     window.location.href = url;
   };

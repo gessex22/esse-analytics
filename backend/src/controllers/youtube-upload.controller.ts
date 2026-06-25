@@ -8,6 +8,7 @@ import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { UserModel } from '../models/user.model';
+import { encodeState, decodeState } from '../utils/oauth-state';
 import { AuthRequest } from '../middleware/auth.middleware';
 
 export const remoteUploadMiddleware = multer({
@@ -65,7 +66,8 @@ async function getAuthorizedClient(userId: string) {
 // ── GET /api/youtube/auth/url ─────────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const oauth2 = getOAuth2Client();
-  const state = Buffer.from(req.user!.id).toString('base64url');
+  const origin = req.query.origin as string | undefined;
+  const state = encodeState(req.user!.id, origin);
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -79,12 +81,15 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
 export const handleCallback = async (req: Request, res: Response) => {
   const code  = req.query.code  as string;
   const state = req.query.state as string;
-  const origin = process.env.FRONTEND_URL || 'http://localhost:5173';
 
-  if (!code || !state) return res.redirect(`${origin}?youtube_auth=error`);
+  if (!code || !state) {
+    const fallback = process.env.FRONTEND_URL || 'http://localhost:5173';
+    return res.redirect(`${fallback}?youtube_auth=error`);
+  }
+
+  const { userId, origin } = decodeState(state);
 
   try {
-    const userId = Buffer.from(state, 'base64url').toString();
     const oauth2 = getOAuth2Client();
     const { tokens } = await oauth2.getToken(code);
     await saveTokens(userId, tokens);
