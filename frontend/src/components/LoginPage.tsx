@@ -31,6 +31,11 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
   const [loading,  setLoading]  = useState(false);
   const [accountDeleted, setAccountDeleted] = useState(false);
 
+  // Cambiar de cuenta: desvincula y limpia datos locales SIN tocar la central.
+  // La cuenta sigue activa; solo se libera esta instalación.
+  const [switchMode, setSwitchMode] = useState(false);
+  const [switching, setSwitching]   = useState(false);
+
   // Flujo de eliminación total (cuenta + datos locales) desde el login.
   // No pide contraseña (por si la olvidaron); confirma escribiendo el usuario.
   const [wipeMode, setWipeMode]       = useState(false);
@@ -114,6 +119,19 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
       setError('No se pudo desvincular. Intenta reiniciar la app.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Cambiar de cuenta (NO destructivo): borra datos locales y desvincula esta
+  // instalación, pero la cuenta sigue activa en la central y se puede volver a usar.
+  const handleSwitchAccount = async () => {
+    setSwitching(true);
+    try {
+      await fetch(`${API_BASE}/api/local/reset-all`, { method: "POST" }).catch(() => {});
+      localStorage.removeItem("esse_auth_token");
+      window.location.reload();
+    } catch {
+      setSwitching(false);
     }
   };
 
@@ -342,14 +360,14 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
               </button>
             )}
 
-            {/* Eliminar cuenta y datos — solo en local, con instalación vinculada */}
-            {isLocal && localOwner && mode === "login" && !wipeMode && (
+            {/* Cambiar de cuenta (no destructivo) — solo en local, vinculada */}
+            {isLocal && localOwner && mode === "login" && !wipeMode && !switchMode && (
               <button
                 type="button"
-                onClick={() => { setWipeMode(true); setWipeError(null); setWipeConfirm(""); }}
-                className="w-full text-[11px] text-red-400/70 hover:text-red-400 transition-colors text-center"
+                onClick={() => setSwitchMode(true)}
+                className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors text-center"
               >
-                Eliminar cuenta y reiniciar aplicación
+                Usar otra cuenta
               </button>
             )}
 
@@ -378,6 +396,55 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
             )}
           </motion.form>
         </AnimatePresence>
+
+        {/* Panel "usar otra cuenta" — cambio de usuario no destructivo */}
+        {isLocal && localOwner && switchMode && !wipeMode && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-3 rounded-2xl border border-border bg-card p-5 space-y-3"
+          >
+            <div>
+              <p className="text-sm font-semibold text-foreground">Usar otra cuenta</p>
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                Se cerrará la sesión y se liberará esta instalación para vincular otra cuenta.
+                La cuenta <span className="text-foreground font-medium">{localOwner}</span> seguirá
+                activa y podrás volver a entrar cuando quieras. Se borrarán los datos locales
+                (biblioteca, calendario) de esta máquina.
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                disabled={switching}
+                onClick={handleSwitchAccount}
+                className="flex-1 bg-primary text-primary-foreground py-2 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-60"
+              >
+                {switching ? "Cambiando..." : "Continuar"}
+              </button>
+              <button
+                type="button"
+                disabled={switching}
+                onClick={() => setSwitchMode(false)}
+                className="px-4 py-2 rounded-lg bg-card border border-border text-sm text-muted-foreground hover:text-foreground transition-colors disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+            </div>
+
+            {/* Opción destructiva, secundaria y separada */}
+            <div className="pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={() => { setSwitchMode(false); setWipeMode(true); setWipeError(null); setWipeConfirm(""); }}
+                className="w-full text-[11px] text-red-400/70 hover:text-red-400 transition-colors text-center"
+              >
+                O eliminar la cuenta permanentemente
+              </button>
+            </div>
+          </motion.div>
+        )}
 
         {/* Panel de eliminación total — fuera del form para no disparar el login */}
         {isLocal && localOwner && wipeMode && (
