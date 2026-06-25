@@ -1,0 +1,103 @@
+{
+  "name": "esse-analytics-desktop",
+  "version": "1.0.0",
+  "description": "EsseAnalytics — gestión de contenido local",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "build:icons": "node generate-icons.mjs",
+    "build:main": "tsc -p tsconfig.json",
+    "build:server": "node build-server.mjs",
+    "build:frontend": "cd ../frontend && npm run build",
+    "build": "npm run build:icons && npm run build:frontend && npm run build:server && npm run build:main",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --mac",
+    "dev": "npm run build:server && npm run build:main && electron .",
+    "release:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish always",
+    "release:mac": "npm run build && electron-builder --mac --publish always"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "cross-env": "^10.1.0",
+    "electron": "^35.5.1",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "jimp": "^1.6.1",
+    "png-to-ico": "^3.0.1",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.esseanalytics.desktop",
+    "productName": "EsseAnalytics",
+    "copyright": "Copyright © 2025 EsseAnalytics",
+    "publish": {
+      "provider": "github",
+      "owner": "gessex22",
+      "repo": "esse-analytics"
+    },
+    "directories": {
+      "output": "../esse-release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend-dist"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "signtoolOptions": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EsseAnalytics"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.productivity"
+    },
+    "dmg": {
+      "title": "EsseAnalytics",
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    }
+  }
+}
