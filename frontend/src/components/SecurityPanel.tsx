@@ -175,7 +175,7 @@ function UsersPanel() {
               <span className="text-xs text-muted-foreground">{ROLE_LABEL[u.role] ?? u.role}</span>
               {u.youtubeChannel && (
                 <span className="flex items-center gap-1 text-[11px] text-red-400/80">
-                  <Youtube className="w-3 h-3" />
+                  <YoutubeIcon className="w-3 h-3" />
                   {u.youtubeChannelUrl
                     ? <a href={u.youtubeChannelUrl} target="_blank" rel="noopener noreferrer" className="hover:text-red-400 flex items-center gap-0.5">
                         {u.youtubeChannel} <ExternalLink className="w-2.5 h-2.5" />
