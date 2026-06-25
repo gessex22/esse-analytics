@@ -1140,6 +1140,20 @@ export function YoutubeUploadView() {
     window.location.href = url;
   };
 
+  const [disconnecting, setDisconnecting] = useState(false);
+  const disconnectYoutube = async () => {
+    if (!window.confirm("¿Desconectar tu cuenta de YouTube? Tendrás que volver a vincularla para subir videos.")) return;
+    setDisconnecting(true);
+    const token = localStorage.getItem("esse_auth_token");
+    try {
+      await fetch(`${API}/api/youtube/auth`, { method: "DELETE", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      setConnected(false);
+      setChannel(null);
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   const handleUpload = async () => {
     setUploadError(null);
     setStep("uploading");
@@ -1390,6 +1404,15 @@ export function YoutubeUploadView() {
                       <CheckCircle2 className="w-3.5 h-3.5" /> Cuenta de YouTube conectada
                     </div>
                   )}
+                  <button
+                    onClick={disconnectYoutube}
+                    disabled={disconnecting}
+                    title="Desconectar cuenta de YouTube"
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-red-400 border border-border hover:border-red-500/40 px-3 py-1.5 rounded-full transition-colors flex-shrink-0 disabled:opacity-50"
+                  >
+                    {disconnecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                    Desconectar
+                  </button>
                 </div>
               )}
 
