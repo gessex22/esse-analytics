@@ -92,24 +92,21 @@ async function fetchInstagramVideoData(
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   try {
-    const fields = 'status,media_type,caption,media_product_type,thumbnail_url,insights.metric(engagement,impressions,reach)';
+    const fields = 'id,caption,media_type,media_product_type,permalink,thumbnail_url,like_count,comments_count,timestamp';
     const res = await fetch(
-      `https://graph.instagram.com/${publishId}?fields=${fields}&access_token=${token.access_token}`
+      `https://graph.instagram.com/v22.0/${publishId}?fields=${fields}&access_token=${token.access_token}`
     );
     if (!res.ok) return {};
-    const data = await res.json();
-    const insights = data.insights?.data || [];
-    const engagement = insights.find((i: any) => i.name === 'engagement')?.values?.[0]?.value || 0;
-    const likes = insights.find((i: any) => i.name === 'impressions')?.values?.[0]?.value || 0;
+    const data = await res.json() as any;
+    if (data.error) return {};
 
     return {
-      status: data.status,
       title: data.caption || null,
       stats: {
-        media_type: data.media_product_type || data.media_type,
-        engagement: engagement,
-        likes: likes,
-        thumbnail: data.thumbnail_url || null,
+        media_type:     data.media_product_type || data.media_type,
+        like_count:     data.like_count ?? 0,
+        comments_count: data.comments_count ?? 0,
+        thumbnail:      data.thumbnail_url || null,
       },
     };
   } catch {

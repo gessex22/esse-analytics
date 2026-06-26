@@ -133,6 +133,7 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
       published_at:  new Date(),
       linked_file_id: Number(fileId),
       match_status:  'manual',
+      title:         result.title?.slice(0, 300) || title?.slice(0, 300) || undefined,
     });
 
     fileRepo.update(fileId, { content_status: 'publicado' });

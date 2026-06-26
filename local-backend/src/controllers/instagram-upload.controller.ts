@@ -146,6 +146,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       published_at:   new Date(),
       linked_file_id: Number(fileId),
       match_status:   'manual',
+      title:          fullCaption.slice(0, 300) || undefined,
     });
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'instagram');
