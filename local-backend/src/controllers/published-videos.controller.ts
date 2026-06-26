@@ -119,9 +119,8 @@ async function fetchYouTubeVideoData(
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   try {
-    const parts = 'snippet,statistics,fileDetails';
     const res = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=${parts}&access_token=${token.access_token}`
+      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&access_token=${token.access_token}`
     );
     if (!res.ok) return {};
     const data = await res.json();

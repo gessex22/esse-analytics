@@ -98,39 +98,22 @@ async function doInstagram(igToken: any, authHeader: string) {
 }
 
 async function doYouTube(ytToken: any, authHeader: string) {
-  let accessToken: string = ytToken.tokens?.access_token;
-  const refreshToken: string = ytToken.tokens?.refresh_token;
+  const apiKey    = process.env.YOUTUBE_API_KEY!;
+  const channelId = process.env.YOUTUBE_CHANNEL_ID!;
 
-  if (!accessToken && !refreshToken) { console.log('  ❌ Sin tokens'); return; }
-
-  // Try channels endpoint, refresh if expired
-  let res = await fetch(`${YT_API}/channels?part=contentDetails&mine=true&access_token=${accessToken}`);
-  let data = await res.json() as any;
-
-  if (data.error?.code === 401 && refreshToken) {
-    console.log('  🔄 Token expirado — refrescando...');
-    const newToken = await refreshYouTubeToken(refreshToken);
-    if (!newToken) { console.log('  ❌ No se pudo refrescar'); return; }
-    accessToken = newToken;
-    res = await fetch(`${YT_API}/channels?part=contentDetails&mine=true&access_token=${accessToken}`);
-    data = await res.json() as any;
-  }
-
-  if (data.error) { console.log('  ❌ channels error:', JSON.stringify(data.error)); return; }
-
-  const uploadsId = data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
-  if (!uploadsId) { console.log('  ❌ No uploads playlist'); return; }
-  console.log(`  ✓ Uploads playlist: ${uploadsId}`);
-
-  const plRes = await fetch(
-    `${YT_API}/playlistItems?part=snippet&playlistId=${uploadsId}&maxResults=1&access_token=${accessToken}`
+  // Use search?order=date to get latest PUBLIC videos (avoids private/unlisted)
+  const searchRes = await fetch(
+    `${YT_API}/search?key=${apiKey}&channelId=${channelId}&part=snippet&order=date&type=video&maxResults=1`
   );
-  const plData = await plRes.json() as any;
-  const item = plData.items?.[0];
+  const searchData = await searchRes.json() as any;
+
+  if (searchData.error) { console.log('  ❌ search error:', JSON.stringify(searchData.error)); return; }
+
+  const item = searchData.items?.[0];
   if (!item) { console.log('  ❌ No videos'); return; }
 
-  const videoId = item.snippet.resourceId.videoId;
-  const title   = item.snippet.title;
+  const videoId     = item.id.videoId;
+  const title       = item.snippet.title;
   const publishedAt = item.snippet.publishedAt;
 
   console.log(`  ✓ Último video: ${videoId} — "${title}"`);
