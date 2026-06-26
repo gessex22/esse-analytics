@@ -31,7 +31,7 @@ async function uploadChunks(uploadUrl: string, filePath: string, fileSize: numbe
       fs.readSync(fd, buf, 0, size, start);
 
       const res = await fetch(uploadUrl, {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'Content-Type':  'video/mp4',
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
