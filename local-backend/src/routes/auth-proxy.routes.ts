@@ -59,4 +59,7 @@ router.use('/api/instagram/account-info', proxyToCentral);
 // Backup en línea — los endpoints de cloud viven en la central
 router.use('/api/backup', proxyToCentral);
 
+// Calendario — la config vive en MongoDB (central), no en SQLite
+router.use('/api/sync/calendar-config', proxyToCentral);
+
 export default router;
