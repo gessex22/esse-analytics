@@ -98,7 +98,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
           source:      'FILE_UPLOAD',
           video_size:  fileSize,
           chunk_size:  CHUNK_SIZE,
-          total_chunk_count: Math.ceil(fileSize / CHUNK_SIZE),
+          total_chunk_count: Math.floor(fileSize / CHUNK_SIZE),
         },
       }),
     });
