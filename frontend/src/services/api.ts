@@ -628,3 +628,42 @@ export const syncService = {
       body: JSON.stringify(data),
     }),
 };
+
+// ==========================================
+// BACKUP SERVICE
+// ==========================================
+
+export interface BackupLocalStatus {
+  localCount: number;
+  lastPush: string | null;
+  lastPull: string | null;
+  lastSync: string | null;
+}
+
+export interface BackupCloudStatus {
+  total: number;
+  lastSync: string | null;
+}
+
+export interface BackupSyncResult {
+  ok: boolean;
+  localCount?: number;
+  cloudCount?: number;
+  updated: number;
+  skipped: number;
+  orphans?: number;
+}
+
+export const backupService = {
+  getLocalStatus: (): Promise<BackupLocalStatus> =>
+    requestJson('/api/local/backup/status'),
+
+  getCloudStatus: (): Promise<BackupCloudStatus> =>
+    requestJson('/api/backup/status'),
+
+  push: (): Promise<BackupSyncResult> =>
+    requestJson('/api/local/backup/push', { method: 'POST' }),
+
+  pull: (): Promise<BackupSyncResult> =>
+    requestJson('/api/local/backup/pull', { method: 'POST' }),
+};

@@ -1,0 +1,9 @@
+# esse-Transcrip — dependencias base (CPU)
+faster-whisper>=1.0.0
+requests>=2.31.0
+
+# Para GPU NVIDIA (CUDA 12.x):
+# pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Para Apple Silicon (MPS, opcional — faster-whisper usa CPU de todas formas):
+# pip install torch torchvision torchaudio

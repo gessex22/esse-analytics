@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, Globe } from "lucide-react";
+import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, Globe, CloudUpload, CloudDownload, Cloud } from "lucide-react";
 import { API_BASE } from "../config";
+import { backupService } from "../services/api";
 import type { UserTier } from "../hooks/useAuth";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -44,6 +45,16 @@ const GEMS: GemDef[] = [
     version:     "1.0.0",
     type:        "plugin",
     tier:        "free",
+  },
+  {
+    id:          "esse_backup",
+    name:        "Backup en línea",
+    tagline:     "Metadata sincronizada en la nube",
+    description: "Guarda en la nube el estado de publicación de tus videos. Sincroniza entre PCs o recupera tu historial después de reinstalar.",
+    color:       "amber",
+    version:     "builtin",
+    type:        "builtin",
+    tier:        "premium",
   },
   {
     id:          "esse_remote_access",
@@ -207,6 +218,127 @@ function LocalNetworkInfo() {
   );
 }
 
+// ── Panel de Backup en línea ──────────────────────────────────────────────────
+
+type SyncOp = "push" | "pull" | null;
+
+function BackupPanel() {
+  const [localCount, setLocalCount]   = useState<number | null>(null);
+  const [cloudCount, setCloudCount]   = useState<number | null>(null);
+  const [lastSync,   setLastSync]     = useState<string | null>(null);
+  const [syncing,    setSyncing]      = useState<SyncOp>(null);
+  const [result,     setResult]       = useState<{ msg: string; ok: boolean } | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [local, cloud] = await Promise.all([
+        backupService.getLocalStatus(),
+        backupService.getCloudStatus().catch(() => null),
+      ]);
+      setLocalCount(local.localCount);
+      setLastSync(local.lastSync);
+      if (cloud) setCloudCount(cloud.total);
+    } catch {/* offline */}
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const formatTs = (ts: string | null) => {
+    if (!ts) return "Nunca";
+    const d = new Date(ts);
+    return d.toLocaleString("es", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const run = async (op: "push" | "pull") => {
+    setSyncing(op);
+    setResult(null);
+    try {
+      const res = op === "push"
+        ? await backupService.push()
+        : await backupService.pull();
+
+      if (op === "push") {
+        setResult({ ok: true, msg: `↑ ${res.updated} subidos · ${res.skipped} sin cambio` });
+      } else {
+        const orphanNote = res.orphans ? ` · ${res.orphans} sin archivo local` : "";
+        setResult({ ok: true, msg: `↓ ${res.updated} actualizados · ${res.skipped} sin cambio${orphanNote}` });
+      }
+      await load();
+    } catch (err: any) {
+      setResult({ ok: false, msg: err.message ?? "Error de sincronización" });
+    } finally {
+      setSyncing(null);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      className="space-y-3 overflow-hidden"
+    >
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="bg-secondary rounded-lg px-3 py-2 text-center">
+          <p className="text-xs text-muted-foreground">Local</p>
+          <p className="text-sm font-semibold text-foreground">{localCount ?? "—"}</p>
+        </div>
+        <div className="bg-secondary rounded-lg px-3 py-2 text-center">
+          <p className="text-xs text-muted-foreground">Cloud</p>
+          <p className="text-sm font-semibold text-foreground">{cloudCount ?? "—"}</p>
+        </div>
+        <div className="bg-secondary rounded-lg px-3 py-2 text-center">
+          <p className="text-xs text-muted-foreground">Sync</p>
+          <p className="text-[11px] font-medium text-foreground leading-tight">{formatTs(lastSync)}</p>
+        </div>
+      </div>
+
+      {/* Botones */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => run("push")}
+          disabled={syncing !== null}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 disabled:opacity-50 transition-colors"
+        >
+          {syncing === "push"
+            ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            : <CloudUpload className="w-3.5 h-3.5" />}
+          Subir
+        </button>
+        <button
+          onClick={() => run("pull")}
+          disabled={syncing !== null}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 disabled:opacity-50 transition-colors"
+        >
+          {syncing === "pull"
+            ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            : <CloudDownload className="w-3.5 h-3.5" />}
+          Bajar
+        </button>
+      </div>
+
+      {/* Resultado */}
+      <AnimatePresence>
+        {result && (
+          <motion.p
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className={`text-xs px-3 py-2 rounded-lg ${
+              result.ok
+                ? "bg-green-500/10 text-green-400"
+                : "bg-red-500/10 text-red-400"
+            }`}
+          >
+            {result.msg}
+          </motion.p>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 // ── Badge de estado extendido ─────────────────────────────────────────────────
 
 function LockedBadge() {
@@ -259,6 +391,7 @@ function GemCard({
           <div className={`p-2 rounded-xl ${c.bg}`}>
             {gem.id === "esse_local_access"  ? <Wifi  className={`w-6 h-6 ${c.text}`} /> :
              gem.id === "esse_remote_access" ? <Globe className={`w-6 h-6 ${c.text}`} /> :
+             gem.id === "esse_backup"        ? <Cloud className={`w-6 h-6 ${c.text}`} /> :
              <GemIcon color={gem.color} size={32} />}
           </div>
           <div>
@@ -284,9 +417,10 @@ function GemCard({
       {/* Descripción */}
       <p className="text-sm text-muted-foreground leading-relaxed">{gem.description}</p>
 
-      {/* Info de red local cuando está activa */}
+      {/* Paneles expandibles cuando la gem está activa */}
       <AnimatePresence>
         {gem.id === "esse_local_access" && on && <LocalNetworkInfo />}
+        {gem.id === "esse_backup"       && on && <BackupPanel />}
       </AnimatePresence>
 
       {/* Footer */}

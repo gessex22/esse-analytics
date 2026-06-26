@@ -56,4 +56,7 @@ router.use('/api/tiktok/creator-info',  proxyToCentral);
 router.use('/api/instagram/auth',       proxyToCentral);
 router.use('/api/instagram/account-info', proxyToCentral);
 
+// Backup en línea — los endpoints de cloud viven en la central
+router.use('/api/backup', proxyToCentral);
+
 export default router;

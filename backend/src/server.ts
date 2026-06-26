@@ -14,6 +14,7 @@ import instagramUploadRouter from './routes/instagram-upload.routes';
 import tiktokUploadRouter    from './routes/tiktok-upload.routes';
 import scanRouter            from './routes/scan.routes';
 import componentsRouter      from './routes/components.routes';
+import backupRouter          from './routes/backup.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
 
 dotenv.config();
@@ -51,6 +52,7 @@ app.use(instagramUploadRouter);
 app.use(tiktokUploadRouter);
 app.use(scanRouter);
 app.use(componentsRouter);
+app.use(backupRouter);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`API corriendo en http://0.0.0.0:${PORT}`);

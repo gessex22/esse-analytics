@@ -16,6 +16,7 @@ import localAdminRoutes       from './routes/local-admin.routes';
 import youtubeUploadRoutes    from './routes/youtube-upload.routes';
 import transcriptRoutes       from './routes/transcript.routes';
 import gemsRoutes             from './routes/gems.routes';
+import backupSyncRoutes       from './routes/backup-sync.routes';
 
 dotenv.config();
 
@@ -43,6 +44,7 @@ app.use(publishingStatusRoutes);
 app.use(syncRoutes);
 app.use(transcriptRoutes);
 app.use(gemsRoutes);
+app.use(backupSyncRoutes);
 
 // Sirve el frontend estático si FRONTEND_DIST está configurado (modo empaquetado)
 const frontendDist = process.env.FRONTEND_DIST;
