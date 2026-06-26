@@ -5,6 +5,7 @@ export type FileContentStatus = 'publicado' | 'borrador' | 'procesando' | 'desca
 export type Platform = 'youtube' | 'instagram' | 'tiktok';
 
 export interface IFile extends Document {
+  userId?: string;       // dueño del archivo (scoping por cuenta). Legacy = sin dueño → backfill al owner.
   file_name: string;
   file_path: string;
   status: 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
@@ -20,6 +21,7 @@ export interface IFile extends Document {
 }
 
 const FileSchema = new Schema<IFile>({
+  userId: { type: String, index: true },
   file_name: { type: String, required: true },
   file_path: { type: String, required: true },
   status: { type: String, required: true, enum: ['PENDIENTE', 'PROCESANDO', 'TRANSCRITO', 'ELIMINADO_DISCO', 'ERROR'] },

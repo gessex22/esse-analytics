@@ -181,7 +181,7 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: 'fileId y title son requeridos' });
   }
 
-  const fileDoc = await FileModel.findById(fileId).lean();
+  const fileDoc = await FileModel.findOne({ _id: fileId, userId: req.user!.id }).lean();
   if (!fileDoc) return res.status(404).json({ error: 'Archivo no encontrado' });
   if (fileDoc.status === 'ELIMINADO_DISCO') return res.status(400).json({ error: 'El archivo fue eliminado del disco' });
 

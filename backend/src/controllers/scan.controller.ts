@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
+import { AuthRequest } from '../middleware/auth.middleware';
 
 // Extensiones de video que el escáner reconoce
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm']);
@@ -76,11 +77,12 @@ export const scanFolder = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'La carpeta configurada no existe en este equipo', folder });
   }
 
+  const userId = (req as AuthRequest).user!.id;
   const diskPaths = walkVideos(folder);
   const diskSet   = new Set(diskPaths.map(p => path.resolve(p)));
 
-  // Archivos ya registrados (cualquier estado), indexados por ruta absoluta
-  const existing = await FileModel.find({}, { file_path: 1, status: 1, fecha_creacion: 1 }).lean();
+  // Archivos ya registrados (de este usuario), indexados por ruta absoluta
+  const existing = await FileModel.find({ userId }, { file_path: 1, status: 1, fecha_creacion: 1 }).lean();
   const existingByPath = new Map(existing.map(f => [path.resolve(f.file_path), f]));
 
   let added = 0, restored = 0, missing = 0, backfilled = 0;
@@ -97,6 +99,7 @@ export const scanFolder = async (req: Request, res: Response) => {
       try { fechaCreacion = fs.statSync(absPath).mtime; } catch { fechaCreacion = new Date(); }
 
       await FileModel.create({
+        userId,
         file_name:      path.basename(absPath),
         file_path:      absPath,
         status:         'PENDIENTE',

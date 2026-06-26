@@ -1,7 +1,12 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
+import { AuthRequest } from '../middleware/auth.middleware';
 import { TranscriptModel } from '../models/transcript.model';
 import { FileModel, FileContentStatus } from '../models/file.model';
+
+// Todos los endpoints de archivos van scopeados por dueño (userId del JWT).
+// El central corre en la PC del owner; sin esto, otra cuenta vería/publicaría sus archivos.
+const ownerId = (req: Request): string => (req as AuthRequest).user!.id;
 import { PublishingStatusModel } from '../models/publishing-status.model';
 import { IdeaCentral } from '../models/ideacentral';
 import fs from 'fs';
@@ -17,7 +22,7 @@ export const getVideos = async (req: Request, res: Response) => {
     const { search, tipo, status, content_status } = req.query;
 
     // Filtros a nivel de archivo (se aplican ANTES del JOIN con transcripts)
-    const fileFilters: any[] = [];
+    const fileFilters: any[] = [{ userId: ownerId(req) }];
 
     if (search) {
       fileFilters.push({ file_name: { $regex: search, $options: 'i' } });
@@ -140,7 +145,7 @@ export const renameVideo = async (req: Request, res: Response): Promise<void> =>
 
   try {
     // 1. Buscar el documento actual para obtener file_path
-    const fileDoc = await FileModel.findById(fileId);
+    const fileDoc = await FileModel.findOne({ _id: fileId, userId: ownerId(req) });
     if (!fileDoc) {
       res.status(404).json({ message: 'Archivo no encontrado.' });
       return;
@@ -224,8 +229,8 @@ export const updateVideoContentStatus = async (req: Request, res: Response): Pro
   }
 
   try {
-    const fileDoc = await FileModel.findByIdAndUpdate(
-      fileId,
+    const fileDoc = await FileModel.findOneAndUpdate(
+      { _id: fileId, userId: ownerId(req) },
       { content_status: status },
       { returnDocument: 'after' }
     );
@@ -248,7 +253,7 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
   const { fileId } = req.params;
 
   try {
-    const fileDoc = await FileModel.findById(fileId).lean();
+    const fileDoc = await FileModel.findOne({ _id: fileId, userId: ownerId(req) }).lean();
     if (!fileDoc) {
       res.status(404).json({ message: 'Archivo no encontrado.' });
       return;
@@ -299,7 +304,7 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
 // ── GET /api/metrics ──────────────────────────────────────────────────────────
 export const getMetrics = async (req: Request, res: Response) => {
   try {
-    const totalVideos            = await FileModel.countDocuments();
+    const totalVideos            = await FileModel.countDocuments({ userId: ownerId(req) });
     const guionesEstructurados   = await TranscriptModel.countDocuments({ tipo_contenido: 'GUION_ESTRUCTURADO' });
     const clipsRandom            = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_RANDOM' });
     const clipsSinVoz            = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_SIN_VOZ' });
@@ -315,7 +320,7 @@ export const getMetrics = async (req: Request, res: Response) => {
 export const deleteFileFromDisk = async (req: Request, res: Response) => {
   try {
     const { fileId } = req.params;
-    const fileDoc = await FileModel.findById(fileId);
+    const fileDoc = await FileModel.findOne({ _id: fileId, userId: ownerId(req) });
 
     if (!fileDoc) return res.status(404).json({ error: 'Archivo no encontrado' });
     if (fileDoc.status === 'ELIMINADO_DISCO') return res.status(400).json({ error: 'El archivo ya fue eliminado' });
@@ -360,6 +365,7 @@ export const getCalendarVideos = async (req: Request, res: Response) => {
         },
       },
       { $unwind: '$file_info' },
+      { $match: { 'file_info.userId': ownerId(req) } },
       {
         $addFields: {
           effective_date: {
@@ -417,8 +423,8 @@ export const updateScheduledDate = async (req: Request, res: Response): Promise<
   const { scheduled_date } = req.body as { scheduled_date?: string | null };
 
   try {
-    const fileDoc = await FileModel.findByIdAndUpdate(
-      fileId,
+    const fileDoc = await FileModel.findOneAndUpdate(
+      { _id: fileId, userId: ownerId(req) },
       { scheduled_date: scheduled_date ? new Date(scheduled_date) : null },
       { returnDocument: 'after' }
     );
@@ -452,8 +458,8 @@ export const updateVideoPlatforms = async (req: Request, res: Response): Promise
   if (platforms_discarded !== undefined) update.platforms_discarded = platforms_discarded;
 
   try {
-    const fileDoc = await FileModel.findByIdAndUpdate(
-      fileId,
+    const fileDoc = await FileModel.findOneAndUpdate(
+      { _id: fileId, userId: ownerId(req) },
       update,
       { returnDocument: 'after' }
     );
@@ -473,7 +479,7 @@ export const getVideoSlimList = async (req: Request, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 1200, 2000);
 
-    const files = await FileModel.find({ status: { $ne: 'ELIMINADO_DISCO' } })
+    const files = await FileModel.find({ status: { $ne: 'ELIMINADO_DISCO' }, userId: ownerId(req) })
       .sort({ fecha_creacion: -1 })
       .limit(limit)
       .select('_id file_name duracion_segundos fecha_creacion')

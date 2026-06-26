@@ -15,12 +15,12 @@ import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
 
-// Rutas públicas (lectura)
-router.get('/api/videos/slim',                    getVideoSlimList);
-router.get('/api/videos',                         getVideos);
-router.get('/api/metrics',                        getMetrics);
-router.get('/api/calendar',                       getCalendarVideos);
-router.get('/api/videos/:fileId/player-data',     getVideoPlayerData);
+// Lectura — requiere sesión y va scopeada por dueño (userId).
+router.get('/api/videos/slim',                    verifyToken, getVideoSlimList);
+router.get('/api/videos',                         verifyToken, getVideos);
+router.get('/api/metrics',                        verifyToken, getMetrics);
+router.get('/api/calendar',                       verifyToken, getCalendarVideos);
+router.get('/api/videos/:fileId/player-data',     verifyToken, getVideoPlayerData);
 
 // Rutas protegidas — solo todopoderoso
 router.patch('/api/videos/:fileId/rename',          verifyToken, requireRole('todopoderoso'), renameVideo);

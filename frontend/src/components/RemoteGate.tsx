@@ -2,11 +2,7 @@ import { ReactNode } from "react";
 import { motion } from "motion/react";
 import { Wifi, Star, Monitor, LogOut } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
-
-const isRemoteAccess = (): boolean => {
-  const h = window.location.hostname;
-  return h !== "localhost" && h !== "127.0.0.1" && !h.startsWith("192.168.");
-};
+import { useBackendType } from "../hooks/useBackendType";
 
 function UpgradeScreen({ onLogout }: { onLogout: () => void }) {
   return (
@@ -79,8 +75,26 @@ function UpgradeScreen({ onLogout }: { onLogout: () => void }) {
 
 export function RemoteGate({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
+  const { isLocal, isReady } = useBackendType();
 
-  if (user && isRemoteAccess() && user.tier === "free") {
+  // "Remoto" = NO estamos hablando con un backend local, sin importar la IP/red.
+  // (Antes se adivinaba por hostname 192.168.* y dejaba fuera a redes 10.x/172.x.)
+
+  // Mientras se determina el entorno, evitar parpadeo de la app para usuarios free.
+  if (user && user.tier === "free" && !isReady) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <motion.span
+          className="w-10 h-10 rounded-full border-2 border-primary/30 block"
+          style={{ borderTopColor: "var(--primary)" }}
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}
+        />
+      </div>
+    );
+  }
+
+  if (user && isReady && !isLocal && user.tier === "free") {
     return <UpgradeScreen onLogout={logout} />;
   }
 
