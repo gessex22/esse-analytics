@@ -20,12 +20,15 @@ async function fetchToken(authHeader: string): Promise<{ access_token: string; o
 
 // Sube el archivo en chunks directamente a TikTok (FILE_UPLOAD) sin pasar por la central
 async function uploadChunks(uploadUrl: string, filePath: string, fileSize: number, chunkSize: number): Promise<void> {
-  const totalChunks = Math.ceil(fileSize / chunkSize);
+  // Mismo conteo que el init: TikTok espera que el ÚLTIMO chunk sea "oversized"
+  // (absorbe el resto del archivo), por eso floor y no ceil.
+  const totalChunks = Math.max(1, Math.floor(fileSize / chunkSize));
   const fd = fs.openSync(filePath, 'r');
   try {
     for (let i = 0; i < totalChunks; i++) {
       const start = i * chunkSize;
-      const end   = Math.min(start + chunkSize, fileSize) - 1;
+      // El último chunk llega hasta el final del archivo (oversized)
+      const end   = (i === totalChunks - 1) ? fileSize - 1 : start + chunkSize - 1;
       const size  = end - start + 1;
       const buf   = Buffer.alloc(size);
       fs.readSync(fd, buf, 0, size, start);
@@ -98,7 +101,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
           source:      'FILE_UPLOAD',
           video_size:  fileSize,
           chunk_size:  CHUNK_SIZE,
-          total_chunk_count: Math.floor(fileSize / CHUNK_SIZE),
+          total_chunk_count: Math.max(1, Math.floor(fileSize / CHUNK_SIZE)),
         },
       }),
     });
