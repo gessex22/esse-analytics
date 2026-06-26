@@ -34,7 +34,8 @@ async function fetchTikTokVideoData(
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   try {
-    const res = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
+    // Step 1: Get status and video_id
+    const statusRes = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token.access_token}`,
@@ -42,21 +43,43 @@ async function fetchTikTokVideoData(
       },
       body: JSON.stringify({ publish_id: publishId }),
     });
-    if (!res.ok) return {};
-    const data = await res.json();
-    const videoData = data.data ?? {};
+    if (!statusRes.ok) return {};
+    const statusData = await statusRes.json();
+    const videoData = statusData.data ?? {};
+    const videoId = videoData.video_id;
 
-    // TikTok also provides video_cover_cover_url (thumbnail) if available
+    let videoInfo: any = {};
+
+    // Step 2: If we have video_id, fetch description and thumbnail from /video/list/
+    if (videoId) {
+      try {
+        const listRes = await fetch(
+          `https://open.tiktokapis.com/v2/video/list/?fields=id,video_description,video_cover_url,duration,create_time&access_token=${token.access_token}`,
+          { headers: { Authorization: `Bearer ${token.access_token}` } }
+        );
+        if (listRes.ok) {
+          const listData = await listRes.json();
+          const video = listData.data?.videos?.find((v: any) => v.id === videoId);
+          if (video) {
+            videoInfo = {
+              description: video.video_description || null,
+              thumbnail: video.video_cover_url || null,
+              duration: video.duration || null,
+            };
+          }
+        }
+      } catch {
+        // video/list fetch failed, continue with status-only data
+      }
+    }
+
     return {
       status: videoData.status,
+      title: videoInfo.description || null,
       stats: {
-        video_id: videoData.video_id,
+        video_id: videoId,
         fail_reason: videoData.fail_reason,
-        likes: videoData.like_count || 0,
-        shares: videoData.share_count || 0,
-        comments: videoData.comment_count || 0,
-        views: videoData.view_count || 0,
-        thumbnail: videoData.video_cover_url || null,
+        thumbnail: videoInfo.thumbnail || null,
       },
     };
   } catch {
