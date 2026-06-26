@@ -373,8 +373,8 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
             </p>
           </div>
 
-          {/* Título del video (si está disponible) */}
-          {data.title && (
+          {/* Título del video (si está disponible, no en TikTok) */}
+          {data.title && data.platform !== 'tiktok' && (
             <div>
               <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
                 Título
@@ -407,8 +407,8 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               </div>
             )}
 
-            {/* Platform URL */}
-            {data.platformUrl && (
+            {/* Platform URL (no en TikTok) */}
+            {data.platformUrl && data.platform !== 'tiktok' && (
               <p className="text-xs text-muted-foreground">
                 <a href={data.platformUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline break-all">
                   Ver en {cfg.label}
