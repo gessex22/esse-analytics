@@ -207,7 +207,6 @@ function PlatformCard({
   onNewer,
   onPin,
   onOpen,
-  onOpenVideo,
   onIntervalChange,
   pinning,
   pinned,
@@ -220,7 +219,6 @@ function PlatformCard({
   onNewer: () => void;
   onPin: () => void;
   onOpen: () => void;
-  onOpenVideo?: (fileId: string, title: string) => void;
   onIntervalChange: (days: number) => void;
   pinning: boolean;
   pinned: boolean;
@@ -274,28 +272,6 @@ function PlatformCard({
         )}
       </div>
 
-      {/* Último publicado */}
-      <div className={`rounded-xl p-3 ${cfg.light}`}>
-        <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-1">
-          Último publicado
-        </p>
-        <div className="flex items-center gap-1.5 min-w-0">
-          <p className="text-sm font-semibold text-foreground truncate flex-1">
-            {slot.lastTitle || "—"}
-          </p>
-          {slot.lastVideoId && onOpenVideo && (
-            <button
-              onClick={() => onOpenVideo(slot.lastVideoId!, slot.lastTitle)}
-              title="Ver video"
-              className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-black/10 transition-colors flex-shrink-0"
-            >
-              <Clapperboard className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-        <p className={`text-xs mt-0.5 ${cfg.text}`}>{formatDate(slot.lastDate)}</p>
-      </div>
-
       {/* Próxima publicación */}
       <div className="flex flex-col gap-2">
         <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground">
@@ -324,12 +300,88 @@ function PlatformCard({
   );
 }
 
+// ── Published videos (bottom section) ─────────────────────────────────────────
+
+type PublishedVideo = {
+  platform:    Platform;
+  fileName:    string | null;
+  platformId:  string | null;
+  platformUrl: string | null;
+  publishedAt: string | null;
+};
+
+function formatPublishedAt(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleString("es", {
+    day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function PublishedCard({ data }: { data: PublishedVideo }) {
+  const cfg  = PLATFORM_CFG[data.platform];
+  const Icon = cfg.icon;
+  const empty = !data.platformId;
+
+  return (
+    <div className="flex flex-col gap-3 p-5 rounded-2xl border border-border bg-card">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
+          <Icon className="w-4.5 h-4.5 text-white" />
+        </div>
+        <p className="text-sm font-semibold text-foreground">{cfg.label}</p>
+      </div>
+
+      {empty ? (
+        <div className="p-3 rounded-xl border border-dashed border-border text-center">
+          <p className="text-sm text-muted-foreground">Sin publicaciones todavía</p>
+        </div>
+      ) : (
+        <>
+          {/* Archivo local */}
+          <div>
+            <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
+              Archivo local
+            </p>
+            <p className="text-sm font-semibold text-foreground break-words">
+              {data.fileName || "— (archivo no encontrado)"}
+            </p>
+          </div>
+
+          {/* Video publicado */}
+          <div className={`rounded-xl p-3 ${cfg.light} flex flex-col gap-1`}>
+            <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground">
+              Video publicado
+            </p>
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">ID:</span>{" "}
+              <span className="break-all">{data.platformId}</span>
+            </p>
+            {data.platformUrl && (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">URL:</span>{" "}
+                <span className="break-all">{data.platformUrl}</span>
+              </p>
+            )}
+            <p className={`text-xs mt-0.5 ${cfg.text}`}>
+              Publicado · {formatPublishedAt(data.publishedAt)}
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; onOpenVideo?: (fileId: string, title: string) => void }) {
   const [videos,  setVideos]  = useState<SlimVideo[]>([]);
   const [slots,   setSlots]   = useState<PlatformSlot[]>(FALLBACK_SLOTS);
   const [loading, setLoading] = useState(true);
+  const [published, setPublished] = useState<PublishedVideo[]>([]);
 
   const [indices, setIndices] = useState<Record<Platform, number>>({
     tiktok: 0, instagram: 0, youtube: 0,
@@ -390,6 +442,11 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       })
       .catch(() => {})
       .finally(() => { configOk = true; resolve(); });
+
+    // Sección inferior: último video publicado por plataforma (independiente)
+    syncService.getPublishedVideos()
+      .then(data => setPublished(data as PublishedVideo[]))
+      .catch(() => {});
   }, []);
 
   // Cambiar el intervalo de días de una plataforma (optimista + persiste en backend)
@@ -473,7 +530,6 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
               onNewer={() => navigate(slot.platform, "newer")}
               onPin={() => pinVideo(slot.platform)}
               onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
-              onOpenVideo={onOpenVideo}
               onIntervalChange={(days) => updateInterval(slot.platform, days)}
               pinning={pinning[slot.platform]}
               pinned={pinned[slot.platform]}
@@ -496,6 +552,24 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
           <Pin className="w-3.5 h-3.5" />
           Fijar actualiza el contador desde hoy
         </span>
+      </div>
+
+      {/* Último video publicado por plataforma */}
+      <div className="border-t border-border pt-6">
+        <div className="mb-4">
+          <h2 className="text-lg font-semibold text-foreground">Último video publicado</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Archivo local y datos de la publicación real en cada plataforma
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {(["youtube", "tiktok", "instagram"] as Platform[]).map(p => {
+            const data = published.find(d => d.platform === p)
+              ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null };
+            return <PublishedCard key={p} data={data} />;
+          })}
+        </div>
       </div>
     </div>
   );
