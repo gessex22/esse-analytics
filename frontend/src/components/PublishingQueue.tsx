@@ -356,7 +356,9 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       for (const p of ["tiktok", "instagram", "youtube"] as Platform[]) {
         const id = loadedNextIds[p];
         if (!id) continue;
-        const found = loadedVideos.findIndex(v => (v.fileId) === id);
+        // Intenta por fileId primero (web usa MongoDB ObjectId), luego por title (app usa file_name)
+        let found = loadedVideos.findIndex(v => v.fileId === id);
+        if (found === -1) found = loadedVideos.findIndex(v => v.title === id);
         if (found !== -1) idx[p] = found;
       }
       setIndices(idx);
@@ -431,7 +433,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         lastPublishedTitle: video.title,
         lastVideoId:        video.fileId,
         intervalDays,
-        nextVideoId:        nextVideo?.fileId,
+        nextVideoId:        nextVideo?.title,
       });
 
       setSlots(prev => prev.map(s =>

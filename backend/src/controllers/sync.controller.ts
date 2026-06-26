@@ -172,9 +172,15 @@ export const getCalendarConfig = async (_req: AuthRequest, res: Response): Promi
       if (!cfg.nextVideoId) return { ...cfg, nextVideo: null };
       try {
         const mongoose = (await import('mongoose')).default;
-        const file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
-          .select('file_name duracion_segundos')
-          .lean();
+        let file: any = null;
+        try {
+          file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
+            .select('file_name duracion_segundos').lean();
+        } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
+        if (!file) {
+          file = await FileModel.findOne({ file_name: String(cfg.nextVideoId) })
+            .select('file_name duracion_segundos').lean();
+        }
         if (!file) return { ...cfg, nextVideo: null };
         const dur = (file as any).duracion_segundos as number | undefined;
         const duration = dur
