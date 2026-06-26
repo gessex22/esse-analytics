@@ -374,10 +374,16 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
         </div>
       ) : (
         <>
-          {/* Miniatura */}
+          {/* Miniatura — ratio 9:16 para contenido vertical */}
           {data.stats?.thumbnail && (
-            <div className="rounded-lg overflow-hidden bg-black">
-              <img src={data.stats.thumbnail} alt="thumbnail" className="w-full h-auto object-cover max-h-48" />
+            <div className="rounded-lg overflow-hidden bg-black w-full" style={{ aspectRatio: '9/16' }}>
+              <img
+                src={data.stats.thumbnail}
+                alt="thumbnail"
+                width={180}
+                height={320}
+                className="w-full h-full object-cover"
+              />
             </div>
           )}
 
