@@ -211,11 +211,25 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
       result.push(merged);
     }
 
+    // Espejo a la central para que la web/remoto pueda mostrar estas tarjetas (fire-and-forget).
+    mirrorToCentral(authHeader, result).catch(() => { /* no bloquear la respuesta local */ });
+
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
 };
+
+// Sube las tarjetas a la central (Mongo) sin bloquear la respuesta local.
+async function mirrorToCentral(authHeader: string, cards: PublishedVideo[]): Promise<void> {
+  const withId = cards.filter(c => c.platformId);
+  if (withId.length === 0) return;
+  await fetch(`${CENTRAL}/api/sync/published-videos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: JSON.stringify({ cards: withId }),
+  });
+}
 
 // AuthRequest type (assuming it exists in your middleware)
 interface AuthRequest extends Request {

@@ -15,9 +15,14 @@ import { YoutubeUploadView } from "./components/YoutubeUploadView";
 import { useAuth } from "./hooks/useAuth";
 import { RemoteGate } from "./components/RemoteGate";
 import { useBackendType } from "./hooks/useBackendType";
+import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import logoImg from "./assets/esseAnalytics.png";
+
+// Vistas que requieren el dispositivo central (SQLite + archivos físicos).
+// En remoto se ocultan: Videos, Subir, Taller, Gemas.
+const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8]);
 
 // Sub-secciones de Ajustes
 export const SETTINGS_SECTIONS = [
@@ -65,6 +70,10 @@ function ProximamenteView({ label }: { label: string }) {
 export default function App() {
   const { user, logout, loading } = useAuth();
   const { isLocal } = useBackendType();
+  const isPremium = !!user && (user.isOwner || user.tier === "premium");
+
+  // Backup automático: solo en el dispositivo central y para premium.
+  useAutoBackup(isLocal && isPremium);
   const [showLogin, setShowLogin] = useState(false);
   const [activeNav, setActiveNav]           = useState(1);
   const [settingsOpen, setSettingsOpen]     = useState(false);
@@ -107,13 +116,16 @@ export default function App() {
     return true;
   });
   const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
-  const visibleNavItems = navItems.filter((_, i) => {
-    if (role === "todopoderoso") return true;
-    return allowedNavForEditor.has(i);
-  });
 
-  // Asegurar que activeNav sea válido para el rol
-  const effectiveNav = role === "editor" && !allowedNavForEditor.has(activeNav) ? 1 : activeNav;
+  // Visibilidad de cada item: rol + entorno (en remoto se ocultan las vistas locales).
+  const isNavVisible = (i: number) => {
+    if (role === "editor" && !allowedNavForEditor.has(i)) return false;
+    if (!isLocal && LOCAL_ONLY_NAV.has(i)) return false;
+    return true;
+  };
+
+  // Asegurar que activeNav sea válido para el rol/entorno; si no, caer en Calendario (remoto) o Videos.
+  const effectiveNav = isNavVisible(activeNav) ? activeNav : (isLocal ? 1 : 7);
 
   const handleNavClick = (i: number) => {
     if (i === 6) {
@@ -152,7 +164,7 @@ export default function App() {
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
           {navItems.map(({ icon: Icon, label }, i) => {
-            if (role === "editor" && !allowedNavForEditor.has(i)) return null;
+            if (!isNavVisible(i)) return null;
             const isSettings = i === 6;
             const isActive   = effectiveNav === i;
 
@@ -312,13 +324,23 @@ export default function App() {
           </div>
         </header>
 
+        {/* Banner modo remoto */}
+        {!isLocal && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-200/90 text-xs sm:text-sm">
+            <Tv2 className="w-4 h-4 flex-shrink-0 text-amber-400" />
+            <span>
+              Modo remoto — funciones limitadas. Para subir y gestionar videos usá la app en tu PC.
+            </span>
+          </div>
+        )}
+
         {/* Contenido */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0 sm:min-h-screen">
           {effectiveNav === 5
             ? <Taller role={role} isLocal={isLocal} />
             : (
               <main
-                className="flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-8 lg:px-12 py-4 sm:py-6 sm:pb-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"
                 style={{ paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
@@ -339,7 +361,7 @@ export default function App() {
           className="sm:hidden fixed bottom-0 left-0 right-0 z-40 flex items-center border-t border-border bg-card"
           style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0px)" }}
         >
-          {MOBILE_NAV.filter(i => role === "todopoderoso" || allowedNavForEditor.has(i)).map((i) => {
+          {MOBILE_NAV.filter(i => isNavVisible(i)).map((i) => {
             const { icon: Icon, label } = navItems[i];
             const isActive = effectiveNav === i;
             return (

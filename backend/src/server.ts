@@ -33,7 +33,20 @@ app.use(helmet({
 // Seguridad: rate limit global
 app.use('/api', apiRateLimit);
 
-app.use(cors());
+// Seguridad: CORS restringido a orígenes conocidos.
+// Las peticiones server-to-server (local-backend proxy, curl, apps) no llevan Origin → se permiten.
+// El navegador solo nos llama desde la web pública.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+  'https://esse-analytics.com,https://www.esse-analytics.com')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);             // server-to-server / apps nativas
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error('Origen no permitido por CORS'));
+  },
+}));
 app.use(express.json());
 
 app.get('/api/health', (_req, res) => {

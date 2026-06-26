@@ -4,9 +4,14 @@ import {
   getReviewList, confirmLink, markOrphan,
   getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
+import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
 import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
+
+// Tarjetas de "último publicado" — la app las espeja (POST) y la web/remoto las lee (GET).
+router.get ('/api/sync/published-videos', verifyToken, getPublishedCards);
+router.post('/api/sync/published-videos', verifyToken, mirrorPublishedCards);
 
 router.post('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), triggerYouTubeSync);
 router.get ('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), getYouTubeList);

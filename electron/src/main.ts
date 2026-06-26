@@ -18,8 +18,9 @@ function setupEnv() {
   }
 
   process.env.PORT = String(PORT);
-  process.env.YOUTUBE_API_KEY  = 'AIzaSyCmoIlsl6l6ODbrnwgrjdvZmWHC6rRcn98';
-  process.env.CENTRAL_API      = 'https://api.esse-analytics.com';
+  process.env.YOUTUBE_API_KEY     = 'AIzaSyCmoIlsl6l6ODbrnwgrjdvZmWHC6rRcn98';
+  process.env.CENTRAL_API         = 'https://api.esse-analytics.com';
+  process.env.CLIENT_REGISTER_KEY = 'esse_client_k7Hq3Wp9Rz2NxV5m';
 }
 
 function startServer() {
@@ -34,6 +35,9 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'EsseAnalytics',
+    // Fondo oscuro del tema → sin flash blanco al abrir y bordes limpios (Win11 redondea solo).
+    backgroundColor: '#0c0c14',
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -41,6 +45,9 @@ function createWindow() {
     // Sin barra de menú nativa
     autoHideMenuBar: true,
   });
+
+  // Mostrar recién cuando el contenido está listo (evita parpadeo).
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
 
   mainWindow.loadURL(`http://localhost:${PORT}`);
 

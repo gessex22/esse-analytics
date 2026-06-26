@@ -51,3 +51,12 @@ export function requireOwner(req: AuthRequest, res: Response, next: NextFunction
   }
   next();
 }
+
+// Requiere plan premium. El owner del servicio siempre pasa.
+export function requirePremium(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (isOwner(req.user?.username) || req.user?.tier === 'premium') {
+    next();
+    return;
+  }
+  res.status(403).json({ message: 'Esta función requiere plan Premium.' });
+}

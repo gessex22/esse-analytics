@@ -33,7 +33,9 @@ function parseUA(req: Request) {
 
 // Solo el cliente instalado (local-backend) puede registrar. El local-backend
 // añade este header al proxear; la web online no lo tiene → no puede registrar.
-const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'esse_local_client_2024';
+// El valor REAL viene de env (backend/.env, fuera del repo). El fallback es solo
+// un placeholder de desarrollo que NO autoriza nada en producción.
+const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
 
 // ── POST /api/auth/register ───────────────────────────────────────────────────
 export const register = async (req: Request, res: Response): Promise<void> => {

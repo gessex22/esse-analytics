@@ -1,11 +1,11 @@
 import { Router } from 'express';
 import { register, login, me, getLoginLogs, clearLoginLogs, getUsers, setUserTier, deactivateMe, deactivateUser, localResetPassword, localDeactivate, linkInstall, setMyTheme } from '../controllers/auth.controller';
 import { verifyToken, requireOwner } from '../middleware/auth.middleware';
-import { loginRateLimit } from '../middleware/rate-limit.middleware';
+import { loginRateLimit, registerRateLimit } from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
-router.post('/api/auth/register',           loginRateLimit, register);
+router.post('/api/auth/register',           registerRateLimit, register);
 router.post('/api/auth/login',              loginRateLimit, login);
 router.get('/api/auth/me',                  verifyToken, me);
 router.post('/api/auth/me/deactivate',      verifyToken, deactivateMe);

@@ -5,7 +5,8 @@ const router = Router();
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 // Identifica a este cliente instalado ante la central (habilita el registro).
-const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'esse_local_client_2024';
+// El valor real lo inyecta el Electron (setupEnv) / dev .env; fallback solo de desarrollo.
+const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
 
 // Rutas destructivas que exigen el secreto de instalación de esta máquina.
 const INSTALL_SECRET_ROUTES = ['/api/auth/local-reset', '/api/auth/local-deactivate'];
