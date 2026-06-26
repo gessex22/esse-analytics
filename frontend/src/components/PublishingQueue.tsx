@@ -345,9 +345,10 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
       if (stats.likeCount) items.push({ label: 'Likes', value: parseInt(stats.likeCount).toLocaleString() });
       if (stats.commentCount) items.push({ label: 'Comentarios', value: parseInt(stats.commentCount).toLocaleString() });
     } else if (platform === 'instagram') {
-      if (stats.engagement) items.push({ label: 'Engagement', value: parseInt(stats.engagement).toLocaleString() });
-      if (stats.likes) items.push({ label: 'Impresiones', value: parseInt(stats.likes).toLocaleString() });
-      if (stats.media_type) items.push({ label: 'Tipo', value: stats.media_type });
+      if (stats.engagement)     items.push({ label: 'Engagement',   value: parseInt(stats.engagement).toLocaleString() });
+      if (stats.likes)          items.push({ label: 'Impresiones',  value: parseInt(stats.likes).toLocaleString() });
+      if (stats.like_count)     items.push({ label: 'Likes',        value: parseInt(stats.like_count).toLocaleString() });
+      if (stats.comments_count) items.push({ label: 'Comentarios',  value: parseInt(stats.comments_count).toLocaleString() });
     } else if (platform === 'tiktok') {
       if (stats.views) items.push({ label: 'Vistas', value: parseInt(stats.views).toLocaleString() });
       if (stats.likes) items.push({ label: 'Likes', value: parseInt(stats.likes).toLocaleString() });
