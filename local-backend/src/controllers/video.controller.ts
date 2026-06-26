@@ -9,12 +9,13 @@ export const getVideos = (req: Request, res: Response) => {
   const page   = Math.max(1, parseInt(req.query.page  as string) || 1);
   const limit  = Math.max(1, parseInt(req.query.limit as string) || 10);
   const offset = (page - 1) * limit;
-  const { search, status, content_status, order } = req.query;
+  const { search, status, content_status, tipo, order } = req.query;
 
   const { rows, total } = fileRepo.findAll({
     search:         search as string | undefined,
     status:         status as string | undefined,
     content_status: content_status as string | undefined,
+    tipo:           tipo as string | undefined,
     order:          (order === 'asc' ? 'asc' : 'desc'),
     limit,
     offset,

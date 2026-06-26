@@ -68,6 +68,7 @@ export const fileRepo = {
   findAll(opts: {
     status?: string;
     content_status?: string;
+    tipo?: string;
     search?: string;
     order?: 'asc' | 'desc';
     limit?: number;
@@ -80,6 +81,7 @@ export const fileRepo = {
     if (opts.search)        { conds.push('file_name LIKE ?'); params.push(`%${opts.search}%`); }
     if (opts.status)        { conds.push('status = ?'); params.push(opts.status); }
     if (opts.excludeStatus) { conds.push('status != ?'); params.push(opts.excludeStatus); }
+    if (opts.tipo)          { conds.push('tipo_contenido = ?'); params.push(opts.tipo); }
     if (opts.content_status === 'sin_publicar') {
       // Ninguna plataforma publicada ni descartada
       conds.push(`json_array_length(platforms) = 0 AND json_array_length(platforms_discarded) = 0`);
