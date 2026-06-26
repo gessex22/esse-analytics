@@ -387,7 +387,7 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               Archivo local
             </p>
             <p className="text-sm font-semibold text-foreground break-words truncate" title={data.fileName || ""}>
-              {data.fileName || "— (archivo no encontrado)"}
+              {data.fileName || "— (sin archivo local)"}
             </p>
           </div>
 
