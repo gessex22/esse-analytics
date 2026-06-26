@@ -121,10 +121,9 @@ export function VideosView({
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
 
-  // Filtros (por defecto: parciales — derivado de platforms[])
   const [showFilterPanel, setShowFilterPanel]     = useState(false);
   const [selectedTipo, setSelectedTipo]           = useState<TipoFilter>("");
-  const [selectedStatus, setSelectedStatus]       = useState<PubFilter | "">("parcial");
+  const [selectedStatus, setSelectedStatus]       = useState<PubFilter | "">("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
   // Selección
@@ -177,7 +176,7 @@ export function VideosView({
     []
   );
 
-  useEffect(() => { loadPage(1, "", "parcial"); }, [loadPage]);
+  useEffect(() => { loadPage(1); }, [loadPage]);
 
   useEffect(() => {
     if (!deleteTarget) return;
