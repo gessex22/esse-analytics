@@ -45,11 +45,18 @@ async function fetchTikTokVideoData(
     if (!res.ok) return {};
     const data = await res.json();
     const videoData = data.data ?? {};
+
+    // TikTok also provides video_cover_cover_url (thumbnail) if available
     return {
       status: videoData.status,
       stats: {
         video_id: videoData.video_id,
         fail_reason: videoData.fail_reason,
+        likes: videoData.like_count || 0,
+        shares: videoData.share_count || 0,
+        comments: videoData.comment_count || 0,
+        views: videoData.view_count || 0,
+        thumbnail: videoData.video_cover_url || null,
       },
     };
   } catch {
@@ -62,17 +69,24 @@ async function fetchInstagramVideoData(
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   try {
-    const fields = 'status,media_type,caption';
+    const fields = 'status,media_type,caption,media_product_type,thumbnail_url,insights.metric(engagement,impressions,reach)';
     const res = await fetch(
       `https://graph.instagram.com/${publishId}?fields=${fields}&access_token=${token.access_token}`
     );
     if (!res.ok) return {};
     const data = await res.json();
+    const insights = data.insights?.data || [];
+    const engagement = insights.find((i: any) => i.name === 'engagement')?.values?.[0]?.value || 0;
+    const likes = insights.find((i: any) => i.name === 'impressions')?.values?.[0]?.value || 0;
+
     return {
       status: data.status,
       title: data.caption || null,
       stats: {
-        media_type: data.media_type,
+        media_type: data.media_product_type || data.media_type,
+        engagement: engagement,
+        likes: likes,
+        thumbnail: data.thumbnail_url || null,
       },
     };
   } catch {
@@ -85,7 +99,7 @@ async function fetchYouTubeVideoData(
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   try {
-    const parts = 'snippet,statistics';
+    const parts = 'snippet,statistics,fileDetails';
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=${parts}&access_token=${token.access_token}`
     );
@@ -99,6 +113,8 @@ async function fetchYouTubeVideoData(
         viewCount: video.statistics?.viewCount,
         likeCount: video.statistics?.likeCount,
         commentCount: video.statistics?.commentCount,
+        thumbnail: video.snippet?.thumbnails?.medium?.url || null,
+        description: video.snippet?.description || null,
       },
     };
   } catch {

@@ -336,15 +336,26 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
     return "bg-blue-500/20 text-blue-300";
   };
 
-  const formatStats = (stats?: Record<string, any>): string[] => {
+  const formatStats = (stats?: Record<string, any>, platform?: string): { label: string; value: string }[] => {
     if (!stats) return [];
-    const lines: string[] = [];
-    if (stats.viewCount) lines.push(`👁 ${parseInt(stats.viewCount).toLocaleString()}`);
-    if (stats.likeCount) lines.push(`❤ ${parseInt(stats.likeCount).toLocaleString()}`);
-    if (stats.commentCount) lines.push(`💬 ${parseInt(stats.commentCount).toLocaleString()}`);
-    if (stats.media_type) lines.push(`📸 ${stats.media_type}`);
-    if (stats.video_id && !stats.viewCount) lines.push(`ID: ${stats.video_id}`);
-    return lines;
+    const items: { label: string; value: string }[] = [];
+
+    if (platform === 'youtube') {
+      if (stats.viewCount) items.push({ label: 'Vistas', value: parseInt(stats.viewCount).toLocaleString() });
+      if (stats.likeCount) items.push({ label: 'Likes', value: parseInt(stats.likeCount).toLocaleString() });
+      if (stats.commentCount) items.push({ label: 'Comentarios', value: parseInt(stats.commentCount).toLocaleString() });
+    } else if (platform === 'instagram') {
+      if (stats.engagement) items.push({ label: 'Engagement', value: parseInt(stats.engagement).toLocaleString() });
+      if (stats.likes) items.push({ label: 'Impresiones', value: parseInt(stats.likes).toLocaleString() });
+      if (stats.media_type) items.push({ label: 'Tipo', value: stats.media_type });
+    } else if (platform === 'tiktok') {
+      if (stats.views) items.push({ label: 'Vistas', value: parseInt(stats.views).toLocaleString() });
+      if (stats.likes) items.push({ label: 'Likes', value: parseInt(stats.likes).toLocaleString() });
+      if (stats.comments) items.push({ label: 'Comentarios', value: parseInt(stats.comments).toLocaleString() });
+      if (stats.shares) items.push({ label: 'Shares', value: parseInt(stats.shares).toLocaleString() });
+    }
+
+    return items;
   };
 
   return (
@@ -363,6 +374,13 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
         </div>
       ) : (
         <>
+          {/* Miniatura */}
+          {data.stats?.thumbnail && (
+            <div className="rounded-lg overflow-hidden bg-black">
+              <img src={data.stats.thumbnail} alt="thumbnail" className="w-full h-auto object-cover max-h-48" />
+            </div>
+          )}
+
           {/* Archivo local */}
           <div>
             <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
@@ -372,6 +390,18 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               {data.fileName || "— (archivo no encontrado)"}
             </p>
           </div>
+
+          {/* Descripción (limitada) */}
+          {data.stats?.description && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
+                Descripción
+              </p>
+              <p className="text-xs text-muted-foreground line-clamp-2" title={data.stats.description}>
+                {data.stats.description.substring(0, 120)}{data.stats.description.length > 120 ? '...' : ''}
+              </p>
+            </div>
+          )}
 
           {/* Título del video (si está disponible, no en TikTok) */}
           {data.title && data.platform !== 'tiktok' && (
@@ -398,11 +428,14 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               )}
             </div>
 
-            {/* Stats */}
-            {data.stats && formatStats(data.stats).length > 0 && (
-              <div className="text-xs text-muted-foreground space-y-1">
-                {formatStats(data.stats).map((line, i) => (
-                  <p key={i}>{line}</p>
+            {/* Stats Grid */}
+            {data.stats && formatStats(data.stats, data.platform).length > 0 && (
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {formatStats(data.stats, data.platform).map((item, i) => (
+                  <div key={i} className="flex items-center justify-between px-2 py-1.5 rounded-md bg-black/20">
+                    <span className="text-muted-foreground">{item.label}</span>
+                    <span className="font-semibold text-foreground">{item.value}</span>
+                  </div>
                 ))}
               </div>
             )}
