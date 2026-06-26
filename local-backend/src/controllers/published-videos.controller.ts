@@ -117,12 +117,13 @@ async function fetchInstagramVideoData(
 
 async function fetchYouTubeVideoData(
   videoId: string,
-  token: { access_token: string; [key: string]: any }
+  token?: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
   const fallbackThumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
   try {
     // API key is sufficient for public video stats — no OAuth needed
-    const param = YT_API_KEY ? `key=${YT_API_KEY}` : `access_token=${token.access_token}`;
+    const param = YT_API_KEY ? `key=${YT_API_KEY}` : `access_token=${token?.access_token}`;
+    if (!YT_API_KEY && !token) return { stats: { thumbnail: fallbackThumbnail } };
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&${param}`
     );
@@ -185,20 +186,23 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
         stats: (latest as any).description ? { description: (latest as any).description } : undefined,
       };
 
-      // Fetch fresh data from platform API
-      const token = await fetchToken(platform, authHeader);
-      if (!token) {
-        result.push(baseVideo);
-        continue;
-      }
-
       let freshData: Partial<PublishedVideo> = {};
-      if (platform === 'tiktok') {
-        freshData = await fetchTikTokVideoData(latest.platform_id, token);
-      } else if (platform === 'instagram') {
-        freshData = await fetchInstagramVideoData(latest.platform_id, token);
-      } else if (platform === 'youtube') {
-        freshData = await fetchYouTubeVideoData(latest.platform_id, token);
+
+      if (platform === 'youtube') {
+        // YouTube usa API key pública — no necesita token OAuth
+        freshData = await fetchYouTubeVideoData(latest.platform_id);
+      } else {
+        // TikTok e Instagram sí requieren token OAuth
+        const token = await fetchToken(platform, authHeader);
+        if (!token) {
+          result.push(baseVideo);
+          continue;
+        }
+        if (platform === 'tiktok') {
+          freshData = await fetchTikTokVideoData(latest.platform_id, token);
+        } else if (platform === 'instagram') {
+          freshData = await fetchInstagramVideoData(latest.platform_id, token);
+        }
       }
 
       // Merge: API data wins, but fall back to stored title if API returns nothing

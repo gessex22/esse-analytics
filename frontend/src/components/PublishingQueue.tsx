@@ -360,11 +360,11 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
   };
 
   return (
-    <div className="flex flex-col gap-3 p-5 rounded-2xl border border-border bg-card">
+    <div className="flex flex-col gap-2.5 p-4 rounded-2xl border border-border bg-card">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
-          <Icon className="w-4.5 h-4.5 text-white" />
+      <div className="flex items-center gap-2.5">
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
+          <Icon className="w-4 h-4 text-white" />
         </div>
         <p className="text-sm font-semibold text-foreground">{cfg.label}</p>
       </div>
@@ -375,57 +375,50 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
         </div>
       ) : (
         <>
-          {/* Miniatura — ratio 9:16 para contenido vertical */}
-          {data.stats?.thumbnail && (
-            <div className="rounded-lg overflow-hidden bg-black w-full" style={{ aspectRatio: '9/16' }}>
-              <img
-                src={data.stats.thumbnail}
-                alt="thumbnail"
-                width={180}
-                height={320}
-                className="w-full h-full object-cover"
-              />
-            </div>
-          )}
+          {/* Fila: miniatura pequeña 9:16 + info */}
+          <div className="flex gap-3">
+            {data.stats?.thumbnail && (
+              <div
+                className="rounded-lg overflow-hidden bg-black flex-shrink-0"
+                style={{ width: 64, aspectRatio: '9/16' }}
+              >
+                <img
+                  src={data.stats.thumbnail}
+                  alt="thumbnail"
+                  className="w-full h-full object-cover"
+                />
+              </div>
+            )}
 
-          {/* Archivo local */}
-          <div>
-            <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
-              Archivo local
-            </p>
-            <p className="text-sm font-semibold text-foreground break-words truncate" title={data.fileName || ""}>
-              {data.fileName || "— (sin archivo local)"}
-            </p>
+            <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+              {/* Archivo local */}
+              <div>
+                <p className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">
+                  Archivo local
+                </p>
+                <p className="text-xs font-semibold text-foreground break-words truncate" title={data.fileName || ""}>
+                  {data.fileName || "— (sin archivo local)"}
+                </p>
+              </div>
+
+              {/* Título del video (si está disponible, no en TikTok) */}
+              {data.title && data.platform !== 'tiktok' && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">
+                    Título
+                  </p>
+                  <p className="text-xs text-foreground break-words line-clamp-2" title={data.title}>
+                    {data.title}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Descripción (limitada) */}
-          {data.stats?.description && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
-                Descripción
-              </p>
-              <p className="text-xs text-muted-foreground line-clamp-2" title={data.stats.description}>
-                {data.stats.description.substring(0, 120)}{data.stats.description.length > 120 ? '...' : ''}
-              </p>
-            </div>
-          )}
-
-          {/* Título del video (si está disponible, no en TikTok) */}
-          {data.title && data.platform !== 'tiktok' && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
-                Título
-              </p>
-              <p className="text-sm text-foreground break-words line-clamp-2">
-                {data.title}
-              </p>
-            </div>
-          )}
-
           {/* Video publicado */}
-          <div className={`rounded-xl p-3 ${cfg.light} flex flex-col gap-2`}>
+          <div className={`rounded-xl p-2.5 ${cfg.light} flex flex-col gap-2`}>
             <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground">
+              <p className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">
                 Estado
               </p>
               {data.status && (
@@ -437,9 +430,9 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
 
             {/* Stats Grid */}
             {data.stats && formatStats(data.stats, data.platform).length > 0 && (
-              <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="grid grid-cols-2 gap-1.5 text-xs">
                 {formatStats(data.stats, data.platform).map((item, i) => (
-                  <div key={i} className="flex items-center justify-between px-2 py-1.5 rounded-md bg-black/20">
+                  <div key={i} className="flex items-center justify-between px-2 py-1 rounded-md bg-black/20">
                     <span className="text-muted-foreground">{item.label}</span>
                     <span className="font-semibold text-foreground">{item.value}</span>
                   </div>
@@ -447,18 +440,17 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               </div>
             )}
 
-            {/* Platform URL (no en TikTok) */}
-            {data.platformUrl && data.platform !== 'tiktok' && (
-              <p className="text-xs text-muted-foreground">
-                <a href={data.platformUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline break-all">
+            <div className="flex items-center justify-between gap-2">
+              <p className={`text-[11px] ${cfg.text}`}>
+                {formatPublishedAt(data.publishedAt)}
+              </p>
+              {/* Platform URL (no en TikTok) */}
+              {data.platformUrl && data.platform !== 'tiktok' && (
+                <a href={data.platformUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-primary hover:underline flex-shrink-0">
                   Ver en {cfg.label}
                 </a>
-              </p>
-            )}
-
-            <p className={`text-xs mt-0.5 ${cfg.text}`}>
-              Publicado · {formatPublishedAt(data.publishedAt)}
-            </p>
+              )}
+            </div>
           </div>
         </>
       )}
