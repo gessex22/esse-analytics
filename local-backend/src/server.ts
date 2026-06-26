@@ -17,6 +17,8 @@ import youtubeUploadRoutes    from './routes/youtube-upload.routes';
 import transcriptRoutes       from './routes/transcript.routes';
 import gemsRoutes             from './routes/gems.routes';
 import backupSyncRoutes       from './routes/backup-sync.routes';
+import tiktokUploadRoutes     from './routes/tiktok-upload.routes';
+import instagramUploadRoutes  from './routes/instagram-upload.routes';
 
 dotenv.config();
 
@@ -45,6 +47,8 @@ app.use(syncRoutes);
 app.use(transcriptRoutes);
 app.use(gemsRoutes);
 app.use(backupSyncRoutes);
+app.use(tiktokUploadRoutes);
+app.use(instagramUploadRoutes);
 
 // Sirve el frontend estático si FRONTEND_DIST está configurado (modo empaquetado)
 const frontendDist = process.env.FRONTEND_DIST;

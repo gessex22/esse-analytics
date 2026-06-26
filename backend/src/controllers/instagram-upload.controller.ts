@@ -107,6 +107,15 @@ function popupResult(res: Response, status: string, origin = process.env.FRONTEN
 </body></html>`);
 }
 
+// ── GET /api/instagram/token — devuelve token válido al local-backend ─────────
+export const getToken = async (req: AuthRequest, res: Response) => {
+  const tokens = await loadTokens(req.user!.id);
+  if (!tokens?.access_token || !tokens?.instagram_user_id) {
+    return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
+  }
+  res.json({ access_token: tokens.access_token, instagram_user_id: tokens.instagram_user_id });
+};
+
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;

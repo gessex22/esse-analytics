@@ -81,6 +81,16 @@ function popupResult(res: Response, status: string, origin = process.env.FRONTEN
 </body></html>`);
 }
 
+// ── GET /api/tiktok/token — devuelve token válido al local-backend ────────────
+export const getToken = async (req: AuthRequest, res: Response) => {
+  try {
+    const token = await getValidToken(req.user!.id);
+    res.json(token); // { access_token, open_id }
+  } catch {
+    res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de TikTok primero' });
+  }
+};
+
 // ── GET /api/tiktok/auth/url ──────────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;

@@ -7,6 +7,7 @@ import {
   uploadToInstagram,
   getAccountInfo,
   debugAccount,
+  getToken,
 } from '../controllers/instagram-upload.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -18,6 +19,9 @@ router.get('/api/instagram/auth/callback', handleCallback);
 router.get('/api/instagram/auth/status',   verifyToken, getAuthStatus);
 router.delete('/api/instagram/auth',       verifyToken, revokeAuth);
 router.get('/api/instagram/account-info',  verifyToken, getAccountInfo);
+
+// Token para local-backend
+router.get('/api/instagram/token',         verifyToken, getToken);
 
 // Upload
 router.post('/api/instagram/upload',       verifyToken, uploadToInstagram);
