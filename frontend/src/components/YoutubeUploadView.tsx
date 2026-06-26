@@ -1084,11 +1084,22 @@ export function YoutubeUploadView() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    syncService.getCalendarConfig()
-      .then(configs => {
+    Promise.all([
+      syncService.getCalendarConfig(),
+      videoService.getSlimList().catch(() => [] as SlimVideo[]),
+    ])
+      .then(([configs, slim]) => {
+        // El calendar-config viene de Mongo: nextVideo.fileId es un ObjectId que NO
+        // existe en SQLite. Remapeamos al fileId real de la biblioteca local cruzando
+        // por título (file_name), así la miniatura/preview puede hacer stream.
+        const byTitle = new Map(slim.map(v => [v.title, v]));
         const map: Record<Platform, SlimVideo | null> = { youtube: null, instagram: null, tiktok: null };
         for (const c of configs) {
-          if (c.nextVideo) map[c.platform as Platform] = c.nextVideo;
+          if (!c.nextVideo) continue;
+          const local = byTitle.get(c.nextVideo.title);
+          map[c.platform as Platform] = local
+            ? { ...c.nextVideo, fileId: local.fileId, duration: c.nextVideo.duration || local.duration }
+            : c.nextVideo;
         }
         setNextVideos(map);
         // Pre-selecciona el de youtube
