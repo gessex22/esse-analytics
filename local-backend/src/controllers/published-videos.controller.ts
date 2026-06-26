@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { platformVideoRepo } from '../db/platform-video.repo';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 type PublishedVideo = {
   platform: string;
@@ -118,12 +119,12 @@ async function fetchYouTubeVideoData(
   videoId: string,
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
-  // Thumbnail is always available from ytimg.com without auth
   const fallbackThumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
-
   try {
+    // API key is sufficient for public video stats — no OAuth needed
+    const param = YT_API_KEY ? `key=${YT_API_KEY}` : `access_token=${token.access_token}`;
     const res = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&access_token=${token.access_token}`
+      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&${param}`
     );
     if (!res.ok) return { stats: { thumbnail: fallbackThumbnail } };
     const data = await res.json() as any;
@@ -139,7 +140,6 @@ async function fetchYouTubeVideoData(
                    || video.snippet?.thumbnails?.high?.url
                    || video.snippet?.thumbnails?.medium?.url
                    || fallbackThumbnail,
-        description:  video.snippet?.description || null,
       },
     };
   } catch {

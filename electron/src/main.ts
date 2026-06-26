@@ -18,6 +18,8 @@ function setupEnv() {
   }
 
   process.env.PORT = String(PORT);
+  process.env.YOUTUBE_API_KEY  = 'AIzaSyCmoIlsl6l6ODbrnwgrjdvZmWHC6rRcn98';
+  process.env.CENTRAL_API      = 'https://api.esse-analytics.com';
 }
 
 function startServer() {
