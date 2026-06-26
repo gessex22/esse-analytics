@@ -118,26 +118,32 @@ async function fetchYouTubeVideoData(
   videoId: string,
   token: { access_token: string; [key: string]: any }
 ): Promise<Partial<PublishedVideo>> {
+  // Thumbnail is always available from ytimg.com without auth
+  const fallbackThumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+
   try {
     const res = await fetch(
       `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&access_token=${token.access_token}`
     );
-    if (!res.ok) return {};
-    const data = await res.json();
+    if (!res.ok) return { stats: { thumbnail: fallbackThumbnail } };
+    const data = await res.json() as any;
     const video = data.items?.[0];
-    if (!video) return {};
+    if (!video) return { stats: { thumbnail: fallbackThumbnail } };
     return {
       title: video.snippet?.title || null,
       stats: {
-        viewCount: video.statistics?.viewCount,
-        likeCount: video.statistics?.likeCount,
+        viewCount:    video.statistics?.viewCount,
+        likeCount:    video.statistics?.likeCount,
         commentCount: video.statistics?.commentCount,
-        thumbnail: video.snippet?.thumbnails?.medium?.url || null,
-        description: video.snippet?.description || null,
+        thumbnail:    video.snippet?.thumbnails?.maxres?.url
+                   || video.snippet?.thumbnails?.high?.url
+                   || video.snippet?.thumbnails?.medium?.url
+                   || fallbackThumbnail,
+        description:  video.snippet?.description || null,
       },
     };
   } catch {
-    return {};
+    return { stats: { thumbnail: fallbackThumbnail } };
   }
 }
 
