@@ -6,6 +6,7 @@ export interface IBackupFile extends Document {
   platforms: string[];
   platforms_discarded: string[];
   content_status: string;
+  tipo_contenido?: string;
   scheduled_date?: Date;
   duracion_segundos?: number;
   resolucion?: string;
@@ -20,6 +21,7 @@ const BackupFileSchema = new Schema<IBackupFile>({
   platforms:           { type: [String], default: [] },
   platforms_discarded: { type: [String], default: [] },
   content_status:      { type: String, default: 'borrador' },
+  tipo_contenido:      { type: String },
   scheduled_date:      { type: Date },
   duracion_segundos:   { type: Number },
   resolucion:          { type: String },

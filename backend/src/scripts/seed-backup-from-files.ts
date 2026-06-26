@@ -15,6 +15,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { BackupFileModel } from '../models/backup-file.model';
+import { TranscriptModel } from '../models/transcript.model';
 import { UserModel } from '../models/user.model';
 
 dotenv.config();
@@ -42,7 +43,7 @@ async function main() {
 
   console.log(`UserId: ${userId}`);
 
-  // Leer todos los files
+  // Leer todos los files y transcripts
   const files = await FileModel.find({}).lean();
   console.log(`Files en MongoDB: ${files.length}`);
 
@@ -50,6 +51,11 @@ async function main() {
     console.log('No hay files que migrar.');
     process.exit(0);
   }
+
+  // Mapa fileId → tipo_contenido desde transcripts
+  const transcripts = await TranscriptModel.find({}, { file_id: 1, tipo_contenido: 1 }).lean();
+  const tipoMap = new Map(transcripts.map(t => [String(t.file_id), t.tipo_contenido]));
+  console.log(`Transcripts con tipo: ${transcripts.length}`);
 
   // Bulk upsert a backup_files
   const ops = files.map(f => ({
@@ -61,6 +67,7 @@ async function main() {
           platforms:           f.platforms           ?? [],
           platforms_discarded: f.platforms_discarded ?? [],
           content_status:      f.content_status      ?? 'borrador',
+          tipo_contenido:      tipoMap.get(String(f._id)) ?? null,
           scheduled_date:      f.scheduled_date      ?? null,
           duracion_segundos:   f.duracion_segundos   ?? null,
           resolucion:          f.resolucion          ?? null,

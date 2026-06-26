@@ -17,12 +17,13 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
       file_name:           f.file_name,
       platforms:           f.platforms,
       platforms_discarded: f.platforms_discarded,
+      tipo_contenido:      f.tipo_contenido      ?? null,
       content_status:      f.content_status,
-      scheduled_date:      f.scheduled_date ?? null,
-      duracion_segundos:   f.duracion_segundos ?? null,
-      resolucion:          f.resolucion ?? null,
-      formato:             f.formato ?? null,
-      fecha_creacion:      f.fecha_creacion ?? null,
+      scheduled_date:      f.scheduled_date      ?? null,
+      duracion_segundos:   f.duracion_segundos   ?? null,
+      resolucion:          f.resolucion          ?? null,
+      formato:             f.formato             ?? null,
+      fecha_creacion:      f.fecha_creacion      ?? null,
       local_updated_at:    f.updated_at,
     }));
 
@@ -86,6 +87,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
           platforms:           cf.platforms           ?? [],
           platforms_discarded: cf.platforms_discarded ?? [],
           content_status:      cf.content_status      ?? localFile.content_status,
+          ...('tipo_contenido' in cf ? { tipo_contenido: cf.tipo_contenido ?? null } : {}),
           ...(cf.scheduled_date != null ? { scheduled_date: cf.scheduled_date } : {}),
         });
         updated++;

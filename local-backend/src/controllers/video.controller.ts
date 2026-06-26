@@ -45,6 +45,7 @@ export const getVideos = (req: Request, res: Response) => {
       },
       platforms: f.platforms,
       platforms_discarded: f.platforms_discarded,
+      tipo_contenido: f.tipo_contenido ?? null,
       duracion_segundos: f.duracion_segundos,
       resolucion: f.resolucion,
       formato: f.formato,

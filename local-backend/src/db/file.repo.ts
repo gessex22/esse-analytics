@@ -12,6 +12,7 @@ export interface DbFile {
   content_status: FileContentStatus;
   platforms: Platform[];
   platforms_discarded: Platform[];
+  tipo_contenido?: string;
   duracion_segundos?: number;
   resolucion?: string;
   formato?: string;
@@ -29,6 +30,7 @@ interface RawRow {
   content_status: string;
   platforms: string;
   platforms_discarded: string;
+  tipo_contenido: string | null;
   duracion_segundos: number | null;
   resolucion: string | null;
   formato: string | null;
@@ -43,6 +45,7 @@ function parse(row: RawRow): DbFile {
     ...row,
     platforms:            JSON.parse(row.platforms            || '[]'),
     platforms_discarded:  JSON.parse(row.platforms_discarded  || '[]'),
+    tipo_contenido:    row.tipo_contenido    ?? undefined,
     duracion_segundos: row.duracion_segundos ?? undefined,
     resolucion: row.resolucion ?? undefined,
     formato: row.formato ?? undefined,
@@ -151,6 +154,7 @@ export const fileRepo = {
     content_status: FileContentStatus;
     platforms: Platform[];
     platforms_discarded: Platform[];
+    tipo_contenido: string | null;
     duracion_segundos: number;
     fecha_creacion: string | Date | null;
     scheduled_date: string | Date | null;
@@ -166,6 +170,7 @@ export const fileRepo = {
     if (data.content_status !== undefined)      setStr('content_status', data.content_status);
     if (data.platforms !== undefined)           setStr('platforms', JSON.stringify(data.platforms));
     if (data.platforms_discarded !== undefined) setStr('platforms_discarded', JSON.stringify(data.platforms_discarded));
+    if ('tipo_contenido' in data)              setStr('tipo_contenido', data.tipo_contenido ?? null);
     if (data.duracion_segundos !== undefined) setStr('duracion_segundos', data.duracion_segundos);
     if ('fecha_creacion' in data)           setStr('fecha_creacion', data.fecha_creacion ? new Date(data.fecha_creacion!).toISOString() : null);
     if ('scheduled_date' in data)           setStr('scheduled_date', data.scheduled_date ? new Date(data.scheduled_date!).toISOString() : null);
