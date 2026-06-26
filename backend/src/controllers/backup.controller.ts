@@ -1,6 +1,8 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
+import { TranscriptModel } from '../models/transcript.model';
+import { FileModel } from '../models/file.model';
 
 // GET /api/backup/files
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
@@ -62,6 +64,32 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     }
 
     res.json({ updated: toUpdate.length, skipped: incoming.length - toUpdate.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/backup/transcripts
+export async function getBackupTranscripts(_req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const transcripts = await TranscriptModel.find(
+      { transcript_text: { $exists: true, $ne: '' } },
+      { file_id: 1, transcript_text: 1, language: 1 },
+    ).lean();
+
+    const fileIds = transcripts.map(t => t.file_id);
+    const files   = await FileModel.find({ _id: { $in: fileIds } }, { _id: 1, file_name: 1 }).lean();
+    const nameMap = new Map(files.map(f => [String(f._id), f.file_name]));
+
+    const result = transcripts
+      .map(t => ({
+        file_name:       nameMap.get(String(t.file_id)),
+        transcript_text: t.transcript_text,
+        language:        (t as any).language ?? 'es',
+      }))
+      .filter(t => t.file_name);
+
+    res.json({ transcripts: result, total: result.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

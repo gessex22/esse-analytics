@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { fileRepo, FileContentStatus } from '../db/file.repo';
+import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import fs from 'fs';
 import path from 'path';
@@ -139,6 +140,7 @@ export const deleteFileFromDisk = (req: Request, res: Response) => {
 export const getVideoPlayerData = (req: Request, res: Response): void => {
   const doc = fileRepo.findById(req.params.fileId);
   if (!doc) { res.status(404).json({ message: 'No encontrado.' }); return; }
+  const tr = transcriptRepo.findByFileId(doc.id);
   res.json({
     file: {
       _id: String(doc.id),
@@ -147,7 +149,13 @@ export const getVideoPlayerData = (req: Request, res: Response): void => {
       formato: doc.formato ?? 'HORIZONTAL',
       resolucion: doc.resolucion ?? '',
     },
-    transcript: null,
+    transcript: tr ? {
+      _id: String(doc.id),
+      transcript_text: tr.text,
+      tipo_contenido: doc.tipo_contenido ?? null,
+      palabras_por_minuto: 0,
+      language: tr.language,
+    } : null,
     script: null,
   });
 };
