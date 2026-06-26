@@ -16,6 +16,8 @@ db.pragma('foreign_keys = ON');
 // Migrations
 try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
+try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
+try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (

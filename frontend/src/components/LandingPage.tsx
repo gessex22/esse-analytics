@@ -8,9 +8,9 @@ import logoImg from "../assets/esseAnalytics.png";
 
 // ── URLs de descarga — actualiza estas constantes cuando subas los archivos ──
 const DOWNLOADS = {
-  windows: "https://github.com/gessex22/esse-analytics/releases/download/v1.0.23/EsseAnalytics.Setup.1.0.23.exe",
-  macArm:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.23/EsseAnalytics-1.0.23-arm64.dmg",
-  macX64:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.23/EsseAnalytics-1.0.23.dmg",
+  windows: "https://github.com/gessex22/esse-analytics/releases/download/v1.0.24/EsseAnalytics.Setup.1.0.24.exe",
+  macArm:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.24/EsseAnalytics-1.0.24-arm64.dmg",
+  macX64:  "https://github.com/gessex22/esse-analytics/releases/download/v1.0.24/EsseAnalytics-1.0.24.dmg",
 };
 
 // ── Iconos de plataforma ──────────────────────────────────────────────────────

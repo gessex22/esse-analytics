@@ -148,6 +148,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
       published_at:   new Date(),
       linked_file_id: Number(fileId),
       match_status:   'manual',
+      title:          String(title).slice(0, 300) || undefined,
     });
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'tiktok');

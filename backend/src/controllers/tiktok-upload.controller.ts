@@ -97,7 +97,7 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const state = encodeState(req.user!.id, origin);
   const params = new URLSearchParams({
     client_key:    tkKey(),
-    scope:         'user.info.basic,video.publish,video.upload',
+    scope:         'user.info.basic,video.publish,video.upload,video.list',
     response_type: 'code',
     redirect_uri:  process.env.TIKTOK_REDIRECT_URI!,
     state,

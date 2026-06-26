@@ -172,13 +172,15 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
         continue;
       }
 
-      // Base video info
+      // Base video info — stored title/description as fallback for private videos
       const baseVideo: PublishedVideo = {
         platform,
         fileName: latest.file_name ?? null,
         platformId: latest.platform_id,
         platformUrl: latest.platform_url ?? null,
         publishedAt: latest.published_at ?? null,
+        title: (latest as any).title ?? null,
+        stats: (latest as any).description ? { description: (latest as any).description } : undefined,
       };
 
       // Fetch fresh data from platform API
@@ -197,7 +199,10 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
         freshData = await fetchYouTubeVideoData(latest.platform_id, token);
       }
 
-      result.push({ ...baseVideo, ...freshData });
+      // Merge: API data wins, but fall back to stored title if API returns nothing
+      const merged = { ...baseVideo, ...freshData };
+      if (!merged.title && baseVideo.title) merged.title = baseVideo.title;
+      result.push(merged);
     }
 
     res.json(result);
