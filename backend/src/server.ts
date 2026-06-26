@@ -22,6 +22,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Detrás de Cloudflare Tunnel — confiar en el proxy para que rate-limit lea la IP real
+app.set('trust proxy', 1);
+
 // Seguridad: headers HTTP
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' }, // necesario para servir streams/archivos al frontend
@@ -54,14 +57,14 @@ app.use(scanRouter);
 app.use(componentsRouter);
 app.use(backupRouter);
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`API corriendo en http://0.0.0.0:${PORT}`);
-});
-
 mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 })
   .then(() => {
     console.log('Conectado exitosamente a MongoDB Atlas');
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`API corriendo en http://0.0.0.0:${PORT}`);
+    });
   })
   .catch((err) => {
     console.error('Error de conexion a MongoDB:', err.message);
+    process.exit(1);
   });
