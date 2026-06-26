@@ -21,6 +21,10 @@ build/
 backend/dist/
 frontend/dist/
 frontend/dist-ssr/
+# Salidas de electron-builder (artefactos con secretos embebidos — nunca commitear)
+electron/release/
+esse-release/
+/esse-release/
 *.local
 
 # ─── Logs ──────────────────────────────────────────────────────────

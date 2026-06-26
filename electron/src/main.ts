@@ -18,9 +18,9 @@ function setupEnv() {
   }
 
   process.env.PORT = String(PORT);
-  process.env.YOUTUBE_API_KEY     = 'AIzaSyCmoIlsl6l6ODbrnwgrjdvZmWHC6rRcn98';
-  process.env.CENTRAL_API         = 'https://api.esse-analytics.com';
-  process.env.CLIENT_REGISTER_KEY = 'esse_client_k7Hq3Wp9Rz2NxV5m';
+  // YOUTUBE_API_KEY y CLIENT_REGISTER_KEY se inyectan en build-time dentro del bundle
+  // (server.cjs) desde electron/.env.build — NO viven en el código fuente.
+  process.env.CENTRAL_API = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 }
 
 function startServer() {
