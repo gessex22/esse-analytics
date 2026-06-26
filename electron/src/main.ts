@@ -38,6 +38,14 @@ function createWindow() {
     // Fondo oscuro del tema → sin flash blanco al abrir y bordes limpios (Win11 redondea solo).
     backgroundColor: '#0c0c14',
     show: false,
+    // Barra de título integrada: oculta la nativa pero conserva los controles
+    // (min/max/cerrar) tematizados al modo oscuro. El header de la app hace de barra.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0e0e16',        // fondo de la zona de controles (igual que el header/card)
+      symbolColor: '#9ca3af',  // color de los íconos min/max/cerrar
+      height: 57,
+    },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
