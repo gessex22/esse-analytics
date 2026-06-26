@@ -10,6 +10,7 @@ export interface IFile extends Document {
   status: 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
   content_status: FileContentStatus;
   platforms: Platform[];
+  platforms_discarded: Platform[];
   publishCode?: string;  // código único para sync futuro — se incluye en descripción de YT/IG/TK
   duracion_segundos?: number;
   resolucion?: string;
@@ -28,6 +29,11 @@ const FileSchema = new Schema<IFile>({
     default: 'borrador',
   },
   platforms: {
+    type: [String],
+    enum: ['youtube', 'instagram', 'tiktok'],
+    default: [],
+  },
+  platforms_discarded: {
     type: [String],
     enum: ['youtube', 'instagram', 'tiktok'],
     default: [],

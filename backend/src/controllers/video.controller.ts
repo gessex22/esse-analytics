@@ -26,17 +26,19 @@ export const getVideos = async (req: Request, res: Response) => {
       fileFilters.push({ status: status });
     }
 
-    // content_status: si se pasa explícitamente, filtramos por ese valor;
-    // si NO se pasa, excluimos 'descartado' por defecto (incluyendo docs sin el campo).
-    if (content_status) {
-      fileFilters.push({ content_status: content_status });
-    } else {
-      fileFilters.push({
-        $or: [
-          { content_status: { $exists: false } },
-          { content_status: { $ne: 'descartado' } },
-        ],
-      });
+    // Filtros derivados de los arrays de plataformas (fuente de verdad).
+    // content_status como campo de DB ya no se usa para filtrar.
+    const pArr  = { $ifNull: ['$platforms', []] };
+    const pdArr = { $ifNull: ['$platforms_discarded', []] };
+    if (content_status === 'sin_publicar') {
+      fileFilters.push({ $expr: { $and: [{ $eq: [{ $size: pArr }, 0] }, { $eq: [{ $size: pdArr }, 0] }] } });
+    } else if (content_status === 'parcial') {
+      fileFilters.push({ $expr: { $and: [
+        { $gt:  [{ $size: pArr }, 0] },
+        { $lt:  [{ $add: [{ $size: pArr }, { $size: pdArr }] }, 3] },
+      ]} });
+    } else if (content_status === 'completo') {
+      fileFilters.push({ $expr: { $gte: [{ $add: [{ $size: pArr }, { $size: pdArr }] }, 3] } });
     }
 
     const matchStage = fileFilters.length > 0 ? { $and: fileFilters } : {};
@@ -84,6 +86,7 @@ export const getVideos = async (req: Request, res: Response) => {
                   fecha_creacion: { $ifNull: ['$fecha_creacion', '$createdAt'] },
                 },
                 platforms: 1,
+                platforms_discarded: 1,
                 duracion_segundos: 1,
                 resolucion: 1,
                 formato: 1,
@@ -433,18 +436,25 @@ export const updateScheduledDate = async (req: Request, res: Response): Promise<
 // ── PATCH /api/videos/:fileId/platforms ──────────────────────────────────────
 export const updateVideoPlatforms = async (req: Request, res: Response): Promise<void> => {
   const { fileId } = req.params;
-  const { platforms } = req.body as { platforms?: string[] };
+  const { platforms, platforms_discarded } = req.body as { platforms?: string[]; platforms_discarded?: string[] };
 
   const valid = ['youtube', 'instagram', 'tiktok'];
   if (!Array.isArray(platforms) || platforms.some(p => !valid.includes(p))) {
     res.status(400).json({ message: 'Plataformas inválidas.' });
     return;
   }
+  if (platforms_discarded !== undefined && (!Array.isArray(platforms_discarded) || platforms_discarded.some(p => !valid.includes(p)))) {
+    res.status(400).json({ message: 'platforms_discarded inválido.' });
+    return;
+  }
+
+  const update: any = { platforms };
+  if (platforms_discarded !== undefined) update.platforms_discarded = platforms_discarded;
 
   try {
     const fileDoc = await FileModel.findByIdAndUpdate(
       fileId,
-      { platforms },
+      update,
       { returnDocument: 'after' }
     );
     if (!fileDoc) {
