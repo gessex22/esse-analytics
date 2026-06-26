@@ -79,6 +79,30 @@ export const getCalendarConfig = async (_req: Request, res: Response): Promise<v
   }
 };
 
+// GET /api/sync/published-videos
+// Para cada plataforma: el último video publicado (platform_videos) + nombre del archivo local
+export const getPublishedVideos = (_req: Request, res: Response): void => {
+  try {
+    const platforms = ['youtube', 'tiktok', 'instagram'] as const;
+    const result = platforms.map((platform) => {
+      const latest = platformVideoRepo.findLatestWithFileName(platform);
+      if (!latest) {
+        return { platform, fileName: null, platformId: null, platformUrl: null, publishedAt: null };
+      }
+      return {
+        platform,
+        fileName:    latest.file_name ?? null,
+        platformId:  latest.platform_id,
+        platformUrl: latest.platform_url ?? null,
+        publishedAt: latest.published_at ?? null,
+      };
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // PATCH /api/sync/calendar-config/:platform
 export const updateCalendarConfig = (req: Request, res: Response): void => {
   const { platform } = req.params;

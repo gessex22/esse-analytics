@@ -60,6 +60,20 @@ export const platformVideoRepo = {
     ).all(platform, limit) as RawRow[]).map(parse);
   },
 
+  // Latest published video for a platform joined with the local file name (may be null)
+  findLatestWithFileName(platform: string): (DbPlatformVideo & { file_name?: string }) | undefined {
+    const row = db.prepare(
+      `SELECT pv.*, f.file_name AS file_name
+       FROM platform_videos pv
+       LEFT JOIN files f ON f.id = pv.linked_file_id
+       WHERE pv.platform = ? AND pv.published_at IS NOT NULL
+       ORDER BY pv.published_at DESC LIMIT 1`
+    ).get(platform) as (RawRow & { file_name: string | null }) | undefined;
+    if (!row) return undefined;
+    const { file_name, ...raw } = row;
+    return { ...parse(raw), file_name: file_name ?? undefined };
+  },
+
   upsert(data: {
     platform: string;
     platform_id: string;
