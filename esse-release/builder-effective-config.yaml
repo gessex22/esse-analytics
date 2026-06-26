@@ -1,0 +1,50 @@
+directories:
+  output: ../esse-release
+  buildResources: assets
+appId: com.esseanalytics.desktop
+productName: EsseAnalytics
+copyright: Copyright © 2025 EsseAnalytics
+publish:
+  provider: github
+  owner: gessex22
+  repo: esse-analytics
+files:
+  - filter:
+      - dist/**/*
+      - node_modules/**/*
+extraResources:
+  - from: ../frontend/dist
+    to: frontend-dist
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/icon.ico
+  signtoolOptions: null
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EsseAnalytics
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  icon: assets/icon.png
+  category: public.app-category.productivity
+dmg:
+  title: EsseAnalytics
+  window:
+    width: 540
+    height: 380
+electronVersion: 35.7.5

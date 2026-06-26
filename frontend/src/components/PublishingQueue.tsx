@@ -308,6 +308,9 @@ type PublishedVideo = {
   platformId:  string | null;
   platformUrl: string | null;
   publishedAt: string | null;
+  title?:      string | null;
+  status?:     string | null;
+  stats?:      Record<string, any>;
 };
 
 function formatPublishedAt(iso: string | null): string {
@@ -323,6 +326,26 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
   const cfg  = PLATFORM_CFG[data.platform];
   const Icon = cfg.icon;
   const empty = !data.platformId;
+
+  const getStatusBadgeColor = (status?: string): string => {
+    if (!status) return "bg-gray-500/20 text-gray-400";
+    const s = status.toLowerCase();
+    if (s === "publish_complete" || s === "published") return "bg-emerald-500/20 text-emerald-300";
+    if (s === "processing_upload" || s === "processing") return "bg-amber-500/20 text-amber-300";
+    if (s === "failed") return "bg-red-500/20 text-red-300";
+    return "bg-blue-500/20 text-blue-300";
+  };
+
+  const formatStats = (stats?: Record<string, any>): string[] => {
+    if (!stats) return [];
+    const lines: string[] = [];
+    if (stats.viewCount) lines.push(`👁 ${parseInt(stats.viewCount).toLocaleString()}`);
+    if (stats.likeCount) lines.push(`❤ ${parseInt(stats.likeCount).toLocaleString()}`);
+    if (stats.commentCount) lines.push(`💬 ${parseInt(stats.commentCount).toLocaleString()}`);
+    if (stats.media_type) lines.push(`📸 ${stats.media_type}`);
+    if (stats.video_id && !stats.viewCount) lines.push(`ID: ${stats.video_id}`);
+    return lines;
+  };
 
   return (
     <div className="flex flex-col gap-3 p-5 rounded-2xl border border-border bg-card">
@@ -345,26 +368,54 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
             <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
               Archivo local
             </p>
-            <p className="text-sm font-semibold text-foreground break-words">
+            <p className="text-sm font-semibold text-foreground break-words truncate" title={data.fileName || ""}>
               {data.fileName || "— (archivo no encontrado)"}
             </p>
           </div>
 
+          {/* Título del video (si está disponible) */}
+          {data.title && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground mb-0.5">
+                Título
+              </p>
+              <p className="text-sm text-foreground break-words line-clamp-2">
+                {data.title}
+              </p>
+            </div>
+          )}
+
           {/* Video publicado */}
-          <div className={`rounded-xl p-3 ${cfg.light} flex flex-col gap-1`}>
-            <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground">
-              Video publicado
-            </p>
-            <p className="text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">ID:</span>{" "}
-              <span className="break-all">{data.platformId}</span>
-            </p>
+          <div className={`rounded-xl p-3 ${cfg.light} flex flex-col gap-2`}>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground">
+                Estado
+              </p>
+              {data.status && (
+                <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${getStatusBadgeColor(data.status)}`}>
+                  {data.status}
+                </span>
+              )}
+            </div>
+
+            {/* Stats */}
+            {data.stats && formatStats(data.stats).length > 0 && (
+              <div className="text-xs text-muted-foreground space-y-1">
+                {formatStats(data.stats).map((line, i) => (
+                  <p key={i}>{line}</p>
+                ))}
+              </div>
+            )}
+
+            {/* Platform URL */}
             {data.platformUrl && (
               <p className="text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">URL:</span>{" "}
-                <span className="break-all">{data.platformUrl}</span>
+                <a href={data.platformUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline break-all">
+                  Ver en {cfg.label}
+                </a>
               </p>
             )}
+
             <p className={`text-xs mt-0.5 ${cfg.text}`}>
               Publicado · {formatPublishedAt(data.publishedAt)}
             </p>
