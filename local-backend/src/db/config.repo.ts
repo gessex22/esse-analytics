@@ -90,7 +90,10 @@ export const configRepo = {
     const results: Record<string, number> = {};
     const tables = ['publishing_status', 'platform_videos', 'files', 'platform_config', 'app_config', 'local_config'];
     for (const t of tables) {
-      results[t] = db.prepare(`DELETE FROM ${t}`).run().changes;
+      // Por tabla: un fallo (tabla ausente, lock, etc.) NO debe abortar el resto
+      // ni impedir el clearOwner posterior (si no, no se puede cambiar de cuenta).
+      try { results[t] = db.prepare(`DELETE FROM ${t}`).run().changes; }
+      catch { results[t] = -1; }
     }
     return results;
   },

@@ -112,13 +112,17 @@ router.post('/api/local/reset-all', (req, res) => {
     res.status(403).json({ message: 'Solo accesible desde localhost.' });
     return;
   }
+  // clearOwner es lo crítico para "cambiar de cuenta" → debe correr SIEMPRE,
+  // aunque el wipe de datos falle parcialmente.
+  let cleared: Record<string, number> = {};
+  try { cleared = configRepo.wipeAll(); } catch (e: any) { cleared = { _wipeError: -1 }; }
   try {
-    const cleared = configRepo.wipeAll();
     configRepo.clearOwner();
-    res.json({ ok: true, cleared });
   } catch (err: any) {
-    res.status(500).json({ message: 'Error al reiniciar.', detail: err.message });
+    res.status(500).json({ message: 'No se pudo desvincular la cuenta.', detail: err.message });
+    return;
   }
+  res.json({ ok: true, cleared });
 });
 
 // GET /api/local/health

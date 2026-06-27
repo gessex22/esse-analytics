@@ -126,11 +126,18 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
   // instalación, pero la cuenta sigue activa en la central y se puede volver a usar.
   const handleSwitchAccount = async () => {
     setSwitching(true);
+    setError(null);
     try {
-      await fetch(`${API_BASE}/api/local/reset-all`, { method: "POST" }).catch(() => {});
+      const res = await fetch(`${API_BASE}/api/local/reset-all`, { method: "POST" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.message || `No se pudo cambiar de cuenta (HTTP ${res.status}).`);
+      }
       localStorage.removeItem("esse_auth_token");
       window.location.reload();
-    } catch {
+    } catch (err: any) {
+      // Antes el error se tragaba y recargaba igual → quedaba bloqueado sin avisar.
+      setError(err?.message || "No se pudo cambiar de cuenta. Reinicia la app.");
       setSwitching(false);
     }
   };
