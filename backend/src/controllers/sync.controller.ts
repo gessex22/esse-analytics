@@ -107,13 +107,14 @@ export const markOrphan = async (req: AuthRequest, res: Response): Promise<void>
 };
 
 // GET /api/sync/calendar-config — configuración real del calendario por plataforma
-export const getCalendarConfig = async (_req: AuthRequest, res: Response): Promise<void> => {
+export const getCalendarConfig = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const db = (await import('mongoose')).default.connection.db!;
+    const userId = req.user!.id;   // calendario por cuenta (no compartido entre usuarios)
 
     // platform_config tiene overrides manuales para cualquier plataforma
     const stored = await db.collection('platform_config')
-      .find({ platform: { $in: ['tiktok', 'instagram', 'youtube'] } })
+      .find({ userId, platform: { $in: ['tiktok', 'instagram', 'youtube'] } })
       .toArray();
 
     const storedMap = new Map(stored.map(c => [c.platform as string, c]));
@@ -129,7 +130,7 @@ export const getCalendarConfig = async (_req: AuthRequest, res: Response): Promi
         intervalDays:       ytOverride.intervalDays ?? 4,
       };
     } else {
-      const ytVideos = await PlatformVideoModel.find({ platform: 'youtube', linkedFileId: { $ne: null } })
+      const ytVideos = await PlatformVideoModel.find({ userId, platform: 'youtube', linkedFileId: { $ne: null } })
         .sort({ publishedAt: -1 })
         .limit(7)
         .lean();
@@ -178,7 +179,7 @@ export const getCalendarConfig = async (_req: AuthRequest, res: Response): Promi
             .select('file_name duracion_segundos').lean();
         } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
         if (!file) {
-          file = await FileModel.findOne({ file_name: String(cfg.nextVideoId) })
+          file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
             .select('file_name duracion_segundos').lean();
         }
         if (!file) return { ...cfg, nextVideo: null };
@@ -214,9 +215,11 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
     if (lastVideoId        !== undefined) fields.lastVideoId        = lastVideoId;
     if (nextVideoId        !== undefined) fields.nextVideoId        = nextVideoId;
 
+    const userId = req.user!.id;
+    fields.userId = userId;
     const db = (await import('mongoose')).default.connection.db!;
     await db.collection('platform_config').updateOne(
-      { platform },
+      { userId, platform },
       { $set: fields },
       { upsert: true }
     );
