@@ -211,10 +211,15 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
       result.push(merged);
     }
 
-    // Espejo a la central para que la web/remoto pueda mostrar estas tarjetas (fire-and-forget).
+    // Espejo a la central (solo lo derivado de datos LOCALES) para que web/remoto lo vea.
     mirrorToCentral(authHeader, result).catch(() => { /* no bloquear la respuesta local */ });
 
-    res.json(result);
+    // Fallback: si una plataforma quedó vacía localmente (máquina nueva o tras wipe),
+    // rellenarla desde el espejo de la central (scopeado por tu cuenta). Así tus
+    // tarjetas se ven en cualquier equipo donde inicies tu sesión.
+    const filled = await fillEmptyFromCentral(authHeader, result);
+
+    res.json(filled);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
@@ -229,6 +234,27 @@ async function mirrorToCentral(authHeader: string, cards: PublishedVideo[]): Pro
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ cards: withId }),
   });
+}
+
+// Rellena las tarjetas vacías (sin platformId) con las del espejo de la central.
+// Permite ver tus tarjetas en un equipo que aún no tiene los registros locales.
+async function fillEmptyFromCentral(authHeader: string, result: PublishedVideo[]): Promise<PublishedVideo[]> {
+  if (!result.some(r => !r.platformId)) return result;   // ya están todas → nada que traer
+  try {
+    const res = await fetch(`${CENTRAL}/api/sync/published-videos`, {
+      headers: { Authorization: authHeader },
+    });
+    if (!res.ok) return result;
+    const mirror = (await res.json()) as PublishedVideo[];
+    const byPlatform = new Map(mirror.map(m => [m.platform, m]));
+    return result.map(r => {
+      if (r.platformId) return r;                          // local ya tiene → respetar
+      const m = byPlatform.get(r.platform);
+      return m && m.platformId ? m : r;                    // usar espejo si trae datos
+    });
+  } catch {
+    return result;
+  }
 }
 
 // AuthRequest type (assuming it exists in your middleware)
