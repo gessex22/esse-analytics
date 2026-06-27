@@ -93,7 +93,14 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
     e.preventDefault();
     setError(null); setAccountDeleted(false); setLoading(true);
     try {
-      await login(username.trim(), password);
+      const entered = username.trim();
+      // Si entra un usuario DISTINTO al dueño de esta PC → reiniciar lo local ANTES de
+      // cargar la app (evita que las vistas muestren datos del dueño anterior). Sus datos
+      // vienen de la nube: calendario siempre; catálogo de videos solo si es premium.
+      if (isLocal && localOwner && localOwner.toLowerCase() !== entered.toLowerCase()) {
+        await fetch(`${API_BASE}/api/local/reset-all`, { method: "POST" }).catch(() => {});
+      }
+      await login(entered, password);
       if (isLocal) await setLocalOwner();
     } catch (err: any) {
       const msg: string = err.message || '';
@@ -274,13 +281,14 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
 
             {localOwner && mode !== "reset" && (
               <p className="text-[11px] text-muted-foreground text-center -mt-1 mb-1">
-                Esta instalación está vinculada a <span className="text-foreground font-medium">{localOwner}</span>
+                Vinculada a <span className="text-foreground font-medium">{localOwner}</span>. Si inicias con otra cuenta,
+                los datos locales de esta PC se reiniciarán y se cargarán los de esa cuenta desde la nube.
               </p>
             )}
 
-            {/* Username — oculto en reset si localOwner ya se conoce */}
+            {/* Username — editable (permite iniciar con otra cuenta); oculto en reset si ya se conoce el dueño */}
             {!(mode === "reset" && localOwner) && (
-              <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus disabled={!!localOwner && mode !== "reset"} />
+              <Field label="Usuario" value={username} onChange={setUsername} placeholder="Ej: micanal" autoFocus disabled={false} />
             )}
 
             {mode === "register" && (

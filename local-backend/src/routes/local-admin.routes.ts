@@ -46,9 +46,14 @@ router.get('/api/local/owner', (_req, res) => {
 router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const existing = configRepo.getOwner();
+    let switched = false;
     if (existing && existing.username !== req.user!.username) {
-      res.status(409).json({ message: 'Esta instancia ya está vinculada a otra cuenta.' });
-      return;
+      // Inicia un usuario DISTINTO al dueño de esta PC → reiniciar local (borrar todo)
+      // y adoptar al nuevo. Sus datos se repueblan desde la nube (calendario siempre;
+      // catálogo solo si es premium, porque ese endpoint exige premium).
+      configRepo.wipeAll();
+      configRepo.clearOwner();
+      switched = true;
     }
     configRepo.setOwner(req.user!.username);
 
@@ -63,7 +68,7 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
       body: JSON.stringify({ installId }),
     }).catch(() => {});
 
-    res.json({ ok: true, username: req.user!.username });
+    res.json({ ok: true, username: req.user!.username, switched });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al fijar owner.', detail: err.message });
   }
