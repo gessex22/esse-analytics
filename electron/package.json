@@ -1,6 +1,6 @@
 {
   "name": "esse-analytics-desktop",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "description": "EsseAnalytics — gestión de contenido local",
   "main": "dist/main.js",
   "private": true,

@@ -13,8 +13,10 @@ import {
   X,
   Trash2,
   Loader2,
+  MonitorOff,
+  CalendarClock,
 } from "lucide-react";
-import { videoService, DashboardVideo, PaginationInfo } from "../services/api";
+import { videoService, backupService, DashboardVideo, PaginationInfo } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -117,6 +119,8 @@ export function VideosView({
 }) {
   const [videos, setVideos]           = useState<DashboardVideo[]>([]);
   const [info, setInfo]               = useState<PaginationInfo | null>(null);
+  // Catálogo de solo lectura (nombres) desde la nube, cuando esta máquina no tiene la biblioteca local.
+  const [catalog, setCatalog]         = useState<any[] | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
@@ -177,6 +181,19 @@ export function VideosView({
   );
 
   useEffect(() => { loadPage(1); }, [loadPage]);
+
+  // Si la biblioteca local está vacía, intenta traer el catálogo (solo nombres) de la nube.
+  // Señal de "esta no es tu máquina original": 0 registros locales pero sí hay backup en línea.
+  useEffect(() => {
+    if (!info) return;
+    if (info.totalRecords === 0) {
+      backupService.getCatalog()
+        .then(d => setCatalog(d.files ?? []))
+        .catch(() => setCatalog([]));
+    } else {
+      setCatalog(null);
+    }
+  }, [info]);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -259,6 +276,63 @@ export function VideosView({
   const totalPages        = info?.totalPages ?? 1;
   const hasActiveFilters  = selectedTipo !== "" || selectedStatus !== "" || selectedPlatforms.length > 0;
   const activeFilterCount = (selectedTipo ? 1 : 0) + (selectedStatus ? 1 : 0) + selectedPlatforms.length;
+
+  // ── Máquina no original: catálogo de solo lectura desde la nube ──────────────
+  if (!loading && (info?.totalRecords ?? 0) === 0 && catalog && catalog.length > 0) {
+    const fmtDur = (s?: number | null) =>
+      s ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "";
+    return (
+      <div className="space-y-4">
+        <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-sm">
+          <MonitorOff className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-400" />
+          <div>
+            <p className="font-medium">Esta no es tu máquina original</p>
+            <p className="text-xs text-amber-200/70 mt-0.5">
+              Mostrando tu catálogo desde la nube (solo nombres). Los archivos de video están en tu PC principal,
+              así que aquí no se pueden reproducir, editar ni publicar.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <h2 className="text-foreground font-semibold text-lg">Catálogo</h2>
+          <p className="text-muted-foreground text-xs font-mono">{catalog.length} videos</p>
+        </div>
+
+        <div className="space-y-2">
+          {catalog.map((f, i) => (
+            <div key={i} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
+              <Film className="w-4 h-4 flex-shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-foreground truncate">{f.file_name}</p>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  {f.content_status && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground capitalize">
+                      {f.content_status}
+                    </span>
+                  )}
+                  {(f.platforms ?? []).map((p: string) => (
+                    <span key={p} className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary capitalize">
+                      {p}
+                    </span>
+                  ))}
+                  {f.scheduled_date && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground flex items-center gap-1">
+                      <CalendarClock className="w-2.5 h-2.5" />
+                      {new Date(f.scheduled_date).toLocaleDateString()}
+                    </span>
+                  )}
+                  {fmtDur(f.duracion_segundos) && (
+                    <span className="text-[10px] text-muted-foreground/60 font-mono">{fmtDur(f.duracion_segundos)}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

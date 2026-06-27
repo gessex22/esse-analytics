@@ -669,4 +669,9 @@ export const backupService = {
 
   pull: (): Promise<BackupSyncResult> =>
     requestJson('/api/local/backup/pull', { method: 'POST' }),
+
+  // Catálogo (solo nombres/metadatos) desde la nube — para ver tu biblioteca en una
+  // máquina que no es la original (sin los .mp4). El local-backend lo proxea a la central.
+  getCatalog: (): Promise<{ files: any[] }> =>
+    requestJson('/api/backup/files'),
 };
