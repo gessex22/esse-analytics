@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Bell, Settings, BarChart2, Film, Users,
@@ -23,11 +23,6 @@ import logoImg from "./assets/esseAnalytics.png";
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
 // En remoto se ocultan: Videos, Subir, Taller, Gemas.
 const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8]);
-
-// En Electron el header hace de barra de título integrada (sin barra nativa gris).
-const isElectron = typeof navigator !== "undefined" && /electron/i.test(navigator.userAgent);
-const DRAG    = { WebkitAppRegion: "drag" } as CSSProperties;
-const NO_DRAG = { WebkitAppRegion: "no-drag" } as CSSProperties;
 
 // Sub-secciones de Ajustes
 export const SETTINGS_SECTIONS = [
@@ -158,8 +153,8 @@ export default function App() {
 
       {/* ── Sidebar (sm+) ─────────────────────────────────────────────────── */}
       <aside className="hidden sm:flex w-52 flex-shrink-0 border-r border-border flex-col bg-card">
-        {/* Logo (zona arrastrable de la barra de título en Electron) */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-border" style={isElectron ? DRAG : undefined}>
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
           <img src={logoImg} alt="EsseAnalytics" className="w-9 h-9 flex-shrink-0 rounded-lg" />
           <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "-0.02em", fontSize: "0.95rem" }}>
             <span className="text-foreground">Esse</span><span className="text-primary">Analytics</span>
@@ -258,11 +253,8 @@ export default function App() {
       {/* ── Área principal ─────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
 
-        {/* Header (en Electron hace de barra de título arrastrable) */}
-        <header
-          className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border bg-card flex-shrink-0"
-          style={isElectron ? { ...DRAG, paddingRight: 150 } : undefined}
-        >
+        {/* Header */}
+        <header className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border bg-card flex-shrink-0">
 
           {/* Mobile: solo logo */}
           <div className="flex items-center gap-2 sm:hidden">
@@ -278,7 +270,7 @@ export default function App() {
             <p className="text-muted-foreground text-sm">Gestiona y supervisa tu contenido</p>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3" style={isElectron ? NO_DRAG : undefined}>
+          <div className="flex items-center gap-2 sm:gap-3">
             {role === "todopoderoso" && (
               <>
                 <div className="relative">

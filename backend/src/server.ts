@@ -1,8 +1,8 @@
+import './load-env';   // ⚠️ DEBE ir primero: carga .env antes de que otros módulos lean process.env
 import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import videoRouter from './routes/video.routes';
 import streamRouter from './routes/stream.routes';
 import ideaRoutes from './routes/idearoutes';
@@ -16,8 +16,6 @@ import scanRouter            from './routes/scan.routes';
 import componentsRouter      from './routes/components.routes';
 import backupRouter          from './routes/backup.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4000;
