@@ -52,6 +52,11 @@ const navItems = [
 const ACTIVE_VIEWS = new Set([1, 2, 3, 5, 6, 7, 8]);
 const MOBILE_NAV   = [1, 2, 7, 5, 6];
 
+// Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
+// la navegación sigue siendo por índice, así que esto NO cambia la lógica, solo el
+// orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
+const NAV_ORDER = [0, 1, 2, 7, 5, 4, 8, 3, 6];
+
 function ProximamenteView({ label }: { label: string }) {
   return (
     <div className="flex-1 flex items-center justify-center h-full min-h-[300px]">
@@ -304,7 +309,8 @@ export default function App() {
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 overflow-y-auto">
-          {navItems.map(({ icon: Icon, label }, i) => {
+          {NAV_ORDER.map((i) => {
+            const { icon: Icon, label } = navItems[i];
             if (!isNavVisible(i)) return null;
             const isSettings = i === 6;
             const isActive   = effectiveNav === i;
