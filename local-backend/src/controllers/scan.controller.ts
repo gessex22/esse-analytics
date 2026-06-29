@@ -19,6 +19,37 @@ function walkVideos(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
+// POST /api/local/setup/auto-detect
+// Recibe la video_folder del usuario (desde la nube) y verifica si existe en esta máquina.
+// Si existe: la configura como videos_dir, arranca el watcher y escanea. Devuelve detected: true.
+export const autoDetectFolder = (req: Request, res: Response) => {
+  const { folder } = req.body as { folder?: string };
+  if (!folder) return res.status(400).json({ error: 'folder requerido' });
+
+  const exists = fs.existsSync(folder) && fs.statSync(folder).isDirectory();
+  if (!exists) return res.json({ detected: false });
+
+  configRepo.set('videos_dir', folder);
+  restartWatcher(folder);
+
+  // Escanea en background sin bloquear la respuesta
+  setImmediate(() => {
+    const diskPaths = walkVideos(folder);
+    const diskSet   = new Set(diskPaths.map(p => path.resolve(p)));
+    const { rows: existing } = fileRepo.findAll({ content_status: 'ALL' as any });
+    const existingByPath = new Map(existing.map(f => [path.resolve(f.file_path), f]));
+    for (const absPath of diskSet) {
+      if (!existingByPath.has(absPath)) {
+        let fechaCreacion: Date;
+        try { fechaCreacion = fs.statSync(absPath).mtime; } catch { fechaCreacion = new Date(); }
+        fileRepo.create({ file_name: path.basename(absPath), file_path: absPath, status: 'PENDIENTE', content_status: 'borrador', platforms: [], fecha_creacion: fechaCreacion });
+      }
+    }
+  });
+
+  res.json({ detected: true, folder });
+};
+
 export const getScanConfig = (_req: Request, res: Response) => {
   const dir = configRepo.get('videos_dir') ?? process.env.VIDEOS_DIR ?? null;
   res.json({ folder: dir, exists: dir ? fs.existsSync(dir) : false });

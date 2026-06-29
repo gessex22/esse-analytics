@@ -170,24 +170,43 @@ export default function App() {
     window.location.reload();
   };
 
-  // ── Alerta de PC no principal (solo premium, isLocal, sin videos locales) ──
+  // ── Auto-detect carpeta + alerta de PC no principal (solo premium, isLocal) ──
   const [newMachineAlert, setNewMachineAlert] = useState<{ video_folder: string | null } | null>(null);
 
   useEffect(() => {
     if (!user || !isPremium || !isLocal) return;
     let cancelled = false;
-    Promise.all([
-      backupService.getLocalStatus(),
-      backupService.getCloudStatus(),
-    ]).then(([local, cloud]) => {
-      if (!cancelled && local.localCount === 0 && !local.videosDir && cloud.total > 0) {
-        backupService.getCatalog()
-          .then(({ video_folder }) => {
-            if (!cancelled) setNewMachineAlert({ video_folder: video_folder ?? null });
-          })
-          .catch(() => { if (!cancelled) setNewMachineAlert({ video_folder: null }); });
-      }
+
+    backupService.getLocalStatus().then(local => {
+      if (cancelled) return;
+
+      // Si ya tiene carpeta configurada en SQLite, esta es la PC original → nada que hacer
+      if (local.videosDir) return;
+
+      // No hay carpeta configurada → consultar la nube (por usuario)
+      backupService.getCatalog().then(async ({ video_folder, files }) => {
+        if (cancelled) return;
+
+        if (video_folder) {
+          // Intentar auto-detectar: el backend verifica si la ruta existe en esta máquina
+          try {
+            const res = await fetch(`${API_BASE}/api/local/setup/auto-detect`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ folder: video_folder }),
+            });
+            const data = await res.json();
+            if (data.detected) return; // PC original detectada, carpeta auto-configurada
+          } catch {}
+        }
+
+        // No se pudo auto-detectar → PC nueva (o sin backup previo)
+        if (!cancelled && (files?.length ?? 0) > 0) {
+          setNewMachineAlert({ video_folder: video_folder ?? null });
+        }
+      }).catch(() => {});
     }).catch(() => {});
+
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.username]);

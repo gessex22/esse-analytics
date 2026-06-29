@@ -119,7 +119,7 @@ export function VideosView({
 }) {
   const [videos, setVideos]           = useState<DashboardVideo[]>([]);
   const [info, setInfo]               = useState<PaginationInfo | null>(null);
-  // Catálogo de solo lectura (nombres) desde la nube, cuando esta máquina no tiene la biblioteca local.
+  const [videosDir, setVideosDir]     = useState<string | null | undefined>(undefined); // undefined = cargando
   const [catalog, setCatalog]         = useState<any[] | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading]         = useState(true);
@@ -182,18 +182,24 @@ export function VideosView({
 
   useEffect(() => { loadPage(1); }, [loadPage]);
 
-  // Si la biblioteca local está vacía, intenta traer el catálogo (solo nombres) de la nube.
-  // Señal de "esta no es tu máquina original": 0 registros locales pero sí hay backup en línea.
+  // Lee si hay carpeta configurada en esta máquina (señal de PC original)
   useEffect(() => {
-    if (!info) return;
-    if (info.totalRecords === 0) {
+    backupService.getLocalStatus()
+      .then(s => setVideosDir(s.videosDir))
+      .catch(() => setVideosDir(null));
+  }, []);
+
+  // Catálogo de solo lectura desde la nube: solo si NO hay carpeta configurada y SQLite vacío
+  useEffect(() => {
+    if (!info || videosDir === undefined) return;
+    if (info.totalRecords === 0 && !videosDir) {
       backupService.getCatalog()
         .then(d => setCatalog(d.files ?? []))
         .catch(() => setCatalog([]));
     } else {
       setCatalog(null);
     }
-  }, [info]);
+  }, [info, videosDir]);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -278,7 +284,7 @@ export function VideosView({
   const activeFilterCount = (selectedTipo ? 1 : 0) + (selectedStatus ? 1 : 0) + selectedPlatforms.length;
 
   // ── Máquina no original: catálogo de solo lectura desde la nube ──────────────
-  if (!loading && (info?.totalRecords ?? 0) === 0 && catalog && catalog.length > 0) {
+  if (!loading && videosDir === null && (info?.totalRecords ?? 0) === 0 && catalog && catalog.length > 0) {
     const fmtDur = (s?: number | null) =>
       s ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "";
     return (
