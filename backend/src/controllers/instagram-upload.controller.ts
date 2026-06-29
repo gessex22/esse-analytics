@@ -223,7 +223,7 @@ export const debugAccount = async (_req: Request, res: Response) => {
 
 // ── POST /api/instagram/upload ────────────────────────────────────────────────
 export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
-  const { fileId, caption = '', tags = [], thumbOffset } = req.body;
+  const { fileId, caption = '', tags = [], thumbOffset, crossPostFacebook = false } = req.body;
   if (!fileId) return res.status(400).json({ error: 'fileId requerido' });
 
   const fileDoc = await FileModel.findOne({ _id: fileId, userId: req.user!.id }).lean();
@@ -268,6 +268,7 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
       access_token,
     };
     if (thumbOffset != null) containerPayload.thumb_offset = Math.round(Number(thumbOffset) * 1000);
+    if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
     if (!containerData.id) throw new Error(containerData.error?.message ?? 'Error al crear contenedor de media');
@@ -302,12 +303,13 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
       { upsert: true },
     );
 
+    const platformsToAdd = crossPostFacebook ? ['instagram', 'facebook'] : ['instagram'];
     await FileModel.findByIdAndUpdate(fileId, {
       $set: { content_status: 'publicado' },
-      $addToSet: { platforms: 'instagram' },
+      $addToSet: { platforms: { $each: platformsToAdd } },
     });
 
-    res.json({ ok: true, mediaId: publishData.id, postUrl });
+    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook });
   } catch (err: any) {
     console.error('Error al subir a Instagram:', err.message);
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });

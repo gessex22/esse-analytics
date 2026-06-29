@@ -103,8 +103,8 @@ export interface DashboardVideo {
   status: "published" | "draft" | "processing"; // legacy, derivado del status técnico
   thumbnail: string;
   category: string;        // tipo_contenido raw
-  platforms: ("youtube" | "instagram" | "tiktok")[];
-  platforms_discarded: ("youtube" | "instagram" | "tiktok")[];
+  platforms: ("youtube" | "instagram" | "tiktok" | "facebook")[];
+  platforms_discarded: ("youtube" | "instagram" | "tiktok" | "facebook")[];
 }
 
 export interface PublishingStatus {
@@ -125,8 +125,8 @@ export interface CalendarVideo {
   title: string;
   date: string;            // ISO date string — effective_date del servidor
   content_status: VideoContentStatus;
-  target_platforms: ('youtube' | 'instagram' | 'tiktok')[];
-  published_platforms: ('youtube' | 'instagram' | 'tiktok')[];
+  target_platforms: ('youtube' | 'instagram' | 'tiktok' | 'facebook')[];
+  published_platforms: ('youtube' | 'instagram' | 'tiktok' | 'facebook')[];
   tipo_contenido: string;
   duracion_segundos?: number;
   calendarStatus: CalendarStatus;
@@ -360,9 +360,9 @@ function toTallerIdeas(items: any[]): IdeaCollection[] {
 }
 
 function toCalendarVideo(item: any): CalendarVideo {
-  const targetPlatforms: ('youtube' | 'instagram' | 'tiktok')[] =
+  const targetPlatforms: ('youtube' | 'instagram' | 'tiktok' | 'facebook')[] =
     Array.isArray(item.target_platforms) ? item.target_platforms : [];
-  const publishedPlatforms: ('youtube' | 'instagram' | 'tiktok')[] =
+  const publishedPlatforms: ('youtube' | 'instagram' | 'tiktok' | 'facebook')[] =
     Array.isArray(item.published_platforms) ? item.published_platforms : [];
   const contentStatus: VideoContentStatus = item.content_status || 'borrador';
 
@@ -672,6 +672,13 @@ export const backupService = {
 
   // Catálogo (solo nombres/metadatos) desde la nube — para ver tu biblioteca en una
   // máquina que no es la original (sin los .mp4). El local-backend lo proxea a la central.
-  getCatalog: (): Promise<{ files: any[] }> =>
+  getCatalog: (): Promise<{ files: any[]; video_folder?: string | null }> =>
     requestJson('/api/backup/files'),
+
+  // Limpia todos los datos locales y desvincula la instalación.
+  // Soft-fail: si algún step falla, continúa igual para no dejar al usuario bloqueado.
+  wipeLocalData: async (): Promise<void> => {
+    await requestJson('/api/local/wipe', { method: 'POST' }).catch(() => {});
+    await requestJson('/api/local/owner/reset', { method: 'POST' }).catch(() => {});
+  },
 };

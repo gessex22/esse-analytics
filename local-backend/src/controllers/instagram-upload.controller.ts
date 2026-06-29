@@ -71,7 +71,7 @@ function streamFileToMeta(uri: string, token: string, filePath: string, fileSize
 
 // POST /api/instagram/upload
 export const uploadToInstagram = async (req: Request, res: Response): Promise<void> => {
-  const { fileId, caption = '', tags = [], thumbOffset } = req.body;
+  const { fileId, caption = '', tags = [], thumbOffset, crossPostFacebook = false } = req.body;
   if (!fileId) { res.status(400).json({ error: 'fileId requerido' }); return; }
 
   const fileDoc = fileRepo.findById(fileId);
@@ -102,6 +102,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       access_token,
     };
     if (thumbOffset != null) containerPayload.thumb_offset = Math.round(Number(thumbOffset) * 1000);
+    if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
     if (!containerData.id) throw new Error(containerData.error?.message ?? 'Error al crear contenedor de media');
@@ -148,10 +149,22 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       match_status:   'manual',
       title:          fullCaption.slice(0, 300) || undefined,
     });
+    if (crossPostFacebook) {
+      platformVideoRepo.upsert({
+        platform:       'facebook',
+        platform_id:    `fb_xpost_${publishData.id}`,
+        platform_url:   '',
+        published_at:   new Date(),
+        linked_file_id: Number(fileId),
+        match_status:   'manual',
+        title:          fullCaption.slice(0, 300) || undefined,
+      });
+    }
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'instagram');
+    if (crossPostFacebook) fileRepo.addPlatform(fileId, 'facebook');
 
-    res.json({ ok: true, mediaId: publishData.id, postUrl });
+    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook });
   } catch (err: any) {
     console.error('Error al subir a Instagram:', err.message);
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });

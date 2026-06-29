@@ -2,7 +2,7 @@ import { db } from './database';
 
 export type FileStatus = 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
 export type FileContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
-export type Platform = 'youtube' | 'instagram' | 'tiktok';
+export type Platform = 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 
 export interface DbFile {
   id: number;

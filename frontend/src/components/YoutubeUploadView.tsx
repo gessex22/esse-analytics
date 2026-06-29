@@ -37,6 +37,13 @@ function TiktokIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+function FacebookIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+    </svg>
+  );
+}
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type Platform  = "youtube" | "instagram" | "tiktok";
@@ -653,16 +660,18 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
   selected: SlimVideo | null;
   onChangeVideo: () => void;
 }) {
-  const [connected,    setConnected]    = useState<boolean | null>(null);
-  const [account,      setAccount]      = useState<{ name: string; username: string; avatarUrl: string } | null>(null);
-  const [caption,      setCaption]      = useState("");
-  const [tags,         setTags]         = useState<string[]>([]);
-  const [thumbOffset,  setThumbOffset]  = useState<number | null>(null);
-  const [showScrubber, setShowScrubber] = useState(false);
-  const [step,         setStep]         = useState<"details" | "uploading" | "done">("details");
-  const [doneUrl,      setDoneUrl]      = useState<string | null>(null);
-  const [uploadError,  setUploadError]  = useState<string | null>(null);
-  const [previewVideo, setPreviewVideo] = useState<SlimVideo | null>(null);
+  const [connected,        setConnected]        = useState<boolean | null>(null);
+  const [account,          setAccount]          = useState<{ name: string; username: string; avatarUrl: string } | null>(null);
+  const [caption,          setCaption]          = useState("");
+  const [tags,             setTags]             = useState<string[]>([]);
+  const [thumbOffset,      setThumbOffset]      = useState<number | null>(null);
+  const [showScrubber,     setShowScrubber]     = useState(false);
+  const [crossPostFacebook, setCrossPostFacebook] = useState(false);
+  const [step,             setStep]             = useState<"details" | "uploading" | "done">("details");
+  const [doneUrl,          setDoneUrl]          = useState<string | null>(null);
+  const [doneFacebook,     setDoneFacebook]     = useState(false);
+  const [uploadError,      setUploadError]      = useState<string | null>(null);
+  const [previewVideo,     setPreviewVideo]     = useState<SlimVideo | null>(null);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
@@ -740,11 +749,12 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
       const res = await fetch(`${API}/api/instagram/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ fileId: selected.fileId, caption, tags, thumbOffset }),
+        body: JSON.stringify({ fileId: selected.fileId, caption, tags, thumbOffset, crossPostFacebook }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
       setDoneUrl(data.postUrl);
+      setDoneFacebook(crossPostFacebook);
       setStep("done");
     } catch (err: any) {
       setUploadError(err.message);
@@ -756,7 +766,7 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
     setStep("details");
     setCaption(selected ? selected.title.replace(/\.[^.]+$/, "") : "");
     setTags([]); setThumbOffset(null); setShowScrubber(false);
-    setUploadError(null); setDoneUrl(null);
+    setUploadError(null); setDoneUrl(null); setDoneFacebook(false);
   };
 
   return (
@@ -863,12 +873,19 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
             <p className="text-foreground font-semibold">¡Reel publicado!</p>
             <p className="text-muted-foreground text-xs mt-1 truncate max-w-xs">{caption}</p>
           </div>
-          {doneUrl && (
-            <a href={doneUrl} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-sm text-pink-400 hover:underline">
-              Ver en Instagram <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          )}
+          <div className="flex flex-col items-center gap-2">
+            {doneUrl && (
+              <a href={doneUrl} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-sm text-pink-400 hover:underline">
+                <InstagramIcon className="w-3.5 h-3.5" /> Ver en Instagram <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+            {doneFacebook && (
+              <span className="flex items-center gap-1.5 text-sm text-blue-400">
+                <FacebookIcon className="w-3.5 h-3.5" /> También publicado en Facebook
+              </span>
+            )}
+          </div>
           <button onClick={reset} className="px-5 py-2 rounded-lg border border-border bg-secondary text-sm text-foreground hover:bg-secondary/80 transition-colors">
             Publicar otro
           </button>
@@ -942,6 +959,24 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
             )}
           </div>
 
+          {/* Cross-post a Facebook */}
+          <label className="flex items-center gap-3 cursor-pointer select-none group">
+            <div className="relative flex-shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={crossPostFacebook}
+                onChange={e => setCrossPostFacebook(e.target.checked)}
+              />
+              <div className="w-9 h-5 rounded-full bg-secondary border border-border peer-checked:bg-blue-600 peer-checked:border-blue-600 transition-colors" />
+              <div className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-muted-foreground peer-checked:bg-white peer-checked:translate-x-4 transition-all" />
+            </div>
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground group-hover:text-foreground transition-colors">
+              <FacebookIcon className="w-4 h-4 text-blue-400" />
+              También publicar en Facebook
+            </div>
+          </label>
+
           {uploadError && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
@@ -951,7 +986,8 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
 
           <button onClick={handleUpload} disabled={!connected || !selected || !caption.trim()}
             className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium bg-gradient-to-r from-purple-500 to-pink-500 hover:opacity-90 text-white transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
-            <InstagramIcon className="w-4 h-4" /> Publicar Reel
+            <InstagramIcon className="w-4 h-4" />
+            {crossPostFacebook ? "Publicar en Instagram + Facebook" : "Publicar Reel"}
           </button>
         </div>
       )}
