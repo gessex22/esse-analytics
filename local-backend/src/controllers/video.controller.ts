@@ -84,7 +84,7 @@ export const updateVideoContentStatus = (req: Request, res: Response): void => {
 export const updateVideoPlatforms = (req: Request, res: Response): void => {
   const { fileId } = req.params;
   const { platforms, platforms_discarded } = req.body as { platforms?: string[]; platforms_discarded?: string[] };
-  const valid = ['youtube', 'instagram', 'tiktok'];
+  const valid = ['youtube', 'instagram', 'tiktok', 'facebook'];
   if (!Array.isArray(platforms) || platforms.some(p => !valid.includes(p))) {
     res.status(400).json({ message: 'Plataformas inválidas.' }); return;
   }

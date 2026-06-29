@@ -19,48 +19,46 @@ try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
 
-// Backfill platforms[] desde platform_videos y publishing_status (campo muerto).
-// Corre solo en filas donde platforms sigue vacío ('[]').
-try {
-  db.exec(`
-    UPDATE files
-    SET platforms = (
-      SELECT json_group_array(DISTINCT pv.platform)
-      FROM platform_videos pv
-      WHERE pv.linked_file_id = files.id
-        AND pv.platform IS NOT NULL
-    )
-    WHERE json_array_length(platforms) = 0
-      AND EXISTS (
-        SELECT 1 FROM platform_videos pv
-        WHERE pv.linked_file_id = files.id
-      );
-  `);
-} catch {}
-
+// Backfill platforms[] desde platform_videos (DISTINCT via subquery — SQLite no soporta json_group_array(DISTINCT)).
 try {
   db.exec(`
     UPDATE files
     SET platforms = (
       SELECT json_group_array(p) FROM (
-        SELECT DISTINCT value AS p FROM (
-          SELECT value FROM json_each(files.platforms)
-          UNION
-          SELECT 'youtube'   WHERE (SELECT youtube_published   FROM publishing_status ps WHERE ps.file_id = files.id) = 1
-          UNION
-          SELECT 'instagram' WHERE (SELECT instagram_published FROM publishing_status ps WHERE ps.file_id = files.id) = 1
-          UNION
-          SELECT 'tiktok'    WHERE (SELECT tiktok_published    FROM publishing_status ps WHERE ps.file_id = files.id) = 1
-        )
+        SELECT DISTINCT pv.platform AS p
+        FROM platform_videos pv
+        WHERE pv.linked_file_id = files.id
+          AND pv.platform IS NOT NULL
       )
     )
-    WHERE EXISTS (
-      SELECT 1 FROM publishing_status ps
-      WHERE ps.file_id = files.id
-        AND (ps.youtube_published = 1 OR ps.instagram_published = 1 OR ps.tiktok_published = 1)
-    );
+    WHERE json_array_length(platforms) = 0
+      AND EXISTS (
+        SELECT 1 FROM platform_videos pv WHERE pv.linked_file_id = files.id
+      );
   `);
-} catch {}
+} catch (e) { console.warn('Backfill platform_videos→files.platforms falló:', e); }
+
+// Backfill desde publishing_status (campo legado: youtube_published, instagram_published, tiktok_published).
+try {
+  db.exec(`
+    UPDATE files
+    SET platforms = (
+      SELECT json_group_array(p) FROM (
+        SELECT 'youtube'   AS p WHERE (SELECT youtube_published   FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+        UNION ALL
+        SELECT 'instagram' AS p WHERE (SELECT instagram_published FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+        UNION ALL
+        SELECT 'tiktok'    AS p WHERE (SELECT tiktok_published    FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+      )
+    )
+    WHERE json_array_length(platforms) = 0
+      AND EXISTS (
+        SELECT 1 FROM publishing_status ps
+        WHERE ps.file_id = files.id
+          AND (ps.youtube_published = 1 OR ps.instagram_published = 1 OR ps.tiktok_published = 1)
+      );
+  `);
+} catch (e) { console.warn('Backfill publishing_status→files.platforms falló:', e); }
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
