@@ -14,6 +14,21 @@ const isRemote = () => {
 import { videoService, syncService } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { API_BASE as API } from "../config";
+import { Skeleton } from "./ui/skeleton";
+
+// Placeholder de la tarjeta de cuenta mientras se verifica el estado OAuth
+// (evita que el perfil "aparezca de golpe" al terminar la consulta).
+function AccountCardSkeleton() {
+  return (
+    <div className="bg-card border border-border rounded-xl p-3 flex items-center gap-3">
+      <Skeleton className="w-9 h-9 rounded-full flex-shrink-0" />
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <Skeleton className="h-3.5 w-32 rounded" />
+        <Skeleton className="h-2.5 w-20 rounded" />
+      </div>
+    </div>
+  );
+}
 
 // ── Iconos de plataforma ──────────────────────────────────────────────────────
 function YoutubeIcon({ className }: { className?: string }) {
@@ -374,6 +389,7 @@ function TikTokUploadForm({ selected, onChangeVideo }: {
       </div>
 
       {/* Estado OAuth */}
+      {connected === null && <AccountCardSkeleton />}
       {connected === false && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-start gap-2">
@@ -391,7 +407,13 @@ function TikTokUploadForm({ selected, onChangeVideo }: {
       {connected === true && (
         <div className="bg-card border border-border rounded-xl p-3 flex items-center justify-between gap-3">
           {creatorLoading ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Cargando cuenta…</div>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <Skeleton className="w-9 h-9 rounded-full flex-shrink-0" />
+              <div className="min-w-0 flex-1 space-y-1.5">
+                <Skeleton className="h-3.5 w-32 rounded" />
+                <Skeleton className="h-2.5 w-20 rounded" />
+              </div>
+            </div>
           ) : creator ? (
             <div className="flex items-center gap-3 min-w-0">
               {creator.avatarUrl
@@ -806,6 +828,7 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
       </div>
 
       {/* Estado OAuth */}
+      {connected === null && <AccountCardSkeleton />}
       {connected === false && (
         <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-start gap-2">
@@ -1420,6 +1443,7 @@ export function YoutubeUploadView() {
               </div>
 
               {/* Estado OAuth */}
+              {connected === null && <AccountCardSkeleton />}
               {connected === false && (
                 <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
                   <div className="flex items-start gap-2">

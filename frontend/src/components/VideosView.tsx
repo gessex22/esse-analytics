@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { videoService, backupService, DashboardVideo, PaginationInfo } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
+import { Skeleton } from "./ui/skeleton";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type TipoFilter = "" | "GUION_ESTRUCTURADO" | "CLIP_RANDOM" | "CLIP_SIN_VOZ";
@@ -106,6 +107,38 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+
+// ── Skeleton de lista (imita el layout real para evitar el salto de carga) ────
+function VideoListSkeleton({ rows = 10 }: { rows?: number }) {
+  return (
+    <div className="bg-card border border-border rounded-xl divide-y divide-border">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 px-4 py-3">
+          {/* Número (desktop) */}
+          <Skeleton className="hidden sm:block w-6 h-4 flex-shrink-0" />
+          {/* Miniatura */}
+          <Skeleton className="w-20 h-12 sm:w-24 sm:h-14 rounded-lg flex-shrink-0" />
+          {/* Título + metadata */}
+          <div className="flex-1 min-w-0 space-y-2">
+            <Skeleton className="h-3.5 rounded" style={{ width: `${55 + ((i * 7) % 35)}%` }} />
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-2.5 w-16 rounded" />
+              <Skeleton className="h-2.5 w-10 rounded" />
+            </div>
+          </div>
+          {/* Plataformas */}
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+            <Skeleton className="w-4 h-4 rounded-full" />
+            <Skeleton className="w-4 h-4 rounded-full" />
+            <Skeleton className="w-4 h-4 rounded-full" />
+          </div>
+          {/* Fecha (desktop) */}
+          <Skeleton className="hidden sm:block w-14 h-3 flex-shrink-0" />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export function VideosView({
@@ -471,17 +504,8 @@ export function VideosView({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            className="flex flex-col items-center justify-center py-16 gap-4"
           >
-            <div className="relative w-10 h-10">
-              <motion.span
-                className="absolute inset-0 rounded-full border-2 border-primary/30"
-                style={{ borderTopColor: "var(--primary)" }}
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}
-              />
-            </div>
-            <p className="text-muted-foreground text-sm">Cargando videos...</p>
+            <VideoListSkeleton rows={LIMIT} />
           </motion.div>
         )}
 
