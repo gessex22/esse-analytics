@@ -182,6 +182,7 @@ interface ApiVideoItem {
     file_name: string;
     file_path: string;
     status: ApiVideoStatus;
+    content_status?: string;
     duracion_segundos?: number;
     resolucion?: string;
     formato?: string;
@@ -195,7 +196,8 @@ interface ApiVideoItem {
   tipo_contenido?: "GUION_ESTRUCTURADO" | "CLIP_RANDOM" | "CLIP_SIN_VOZ";
   palabras_por_minuto?: number;
   processed_at?: string;
-  platforms?: ("youtube" | "instagram" | "tiktok")[];
+  platforms?: ("youtube" | "instagram" | "tiktok" | "facebook")[];
+  platforms_discarded?: ("youtube" | "instagram" | "tiktok" | "facebook")[];
 }
 
 interface ApiVideosResponse {
