@@ -19,6 +19,49 @@ try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
 
+// Backfill platforms[] desde platform_videos y publishing_status (campo muerto).
+// Corre solo en filas donde platforms sigue vacío ('[]').
+try {
+  db.exec(`
+    UPDATE files
+    SET platforms = (
+      SELECT json_group_array(DISTINCT pv.platform)
+      FROM platform_videos pv
+      WHERE pv.linked_file_id = files.id
+        AND pv.platform IS NOT NULL
+    )
+    WHERE json_array_length(platforms) = 0
+      AND EXISTS (
+        SELECT 1 FROM platform_videos pv
+        WHERE pv.linked_file_id = files.id
+      );
+  `);
+} catch {}
+
+try {
+  db.exec(`
+    UPDATE files
+    SET platforms = (
+      SELECT json_group_array(p) FROM (
+        SELECT DISTINCT value AS p FROM (
+          SELECT value FROM json_each(files.platforms)
+          UNION
+          SELECT 'youtube'   WHERE (SELECT youtube_published   FROM publishing_status ps WHERE ps.file_id = files.id) = 1
+          UNION
+          SELECT 'instagram' WHERE (SELECT instagram_published FROM publishing_status ps WHERE ps.file_id = files.id) = 1
+          UNION
+          SELECT 'tiktok'    WHERE (SELECT tiktok_published    FROM publishing_status ps WHERE ps.file_id = files.id) = 1
+        )
+      )
+    )
+    WHERE EXISTS (
+      SELECT 1 FROM publishing_status ps
+      WHERE ps.file_id = files.id
+        AND (ps.youtube_published = 1 OR ps.instagram_published = 1 OR ps.tiktok_published = 1)
+    );
+  `);
+} catch {}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
