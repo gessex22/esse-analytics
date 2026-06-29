@@ -13,6 +13,8 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
   try {
     const { rows } = fileRepo.findAll({ limit: 50000, offset: 0 });
 
+    const video_folder = configRepo.get('videos_dir') ?? null;
+
     const files = rows.map(f => ({
       file_name:           f.file_name,
       platforms:           f.platforms,
@@ -30,7 +32,7 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
     const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-      body: JSON.stringify({ files }),
+      body: JSON.stringify({ files, video_folder }),
     });
 
     if (!upstream.ok) {

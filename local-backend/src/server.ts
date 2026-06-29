@@ -19,6 +19,7 @@ import gemsRoutes             from './routes/gems.routes';
 import backupSyncRoutes       from './routes/backup-sync.routes';
 import tiktokUploadRoutes     from './routes/tiktok-upload.routes';
 import instagramUploadRoutes  from './routes/instagram-upload.routes';
+import { initWatcherFromConfig } from './watcher';
 
 dotenv.config();
 
@@ -62,4 +63,5 @@ if (frontendDist && fs.existsSync(frontendDist)) {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Local backend corriendo en http://0.0.0.0:${PORT}`);
   console.log('Base de datos: SQLite (esse_local.db)');
+  initWatcherFromConfig();
 });

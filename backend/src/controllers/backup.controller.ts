@@ -3,13 +3,17 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptModel } from '../models/transcript.model';
 import { FileModel } from '../models/file.model';
+import { UserModel } from '../models/user.model';
 
 // GET /api/backup/files
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const files = await BackupFileModel.find({ userId }).lean();
-    res.json({ files, total: files.length });
+    const [files, user] = await Promise.all([
+      BackupFileModel.find({ userId }).lean(),
+      UserModel.findById(userId, { video_folder: 1 }).lean(),
+    ]);
+    res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -61,6 +65,11 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
           },
         })),
       );
+    }
+
+    const { video_folder } = req.body;
+    if (video_folder && typeof video_folder === 'string') {
+      await UserModel.findByIdAndUpdate(userId, { video_folder });
     }
 
     res.json({ updated: toUpdate.length, skipped: incoming.length - toUpdate.length });

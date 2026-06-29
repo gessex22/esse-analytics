@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Bell, Settings, BarChart2, Film, Users,
   Upload, Clock, TrendingUp, Wrench, Palette, ShieldCheck, Tv2, ChevronDown, LogOut,
-  CalendarDays, FolderOpen, Gem, Database,
+  CalendarDays, FolderOpen, Gem, Database, AlertTriangle, Loader2, MonitorOff, X,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -19,6 +19,8 @@ import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import logoImg from "./assets/esseAnalytics.png";
+import { backupService } from "./services/api";
+import { API_BASE } from "./config";
 
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
 // En remoto se ocultan: Videos, Subir, Taller, Gemas.
@@ -67,8 +69,67 @@ function ProximamenteView({ label }: { label: string }) {
   );
 }
 
+// ── Diálogo de cierre de sesión ───────────────────────────────────────────────
+type LogoutPhase = "idle" | "backing-up" | "wiping";
+
+function LogoutDialog({
+  isPremium, phase, onConfirm, onCancel,
+}: { isPremium: boolean; phase: LogoutPhase; onConfirm: () => void; onCancel: () => void }) {
+  const busy = phase !== "idle";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4"
+      >
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-full bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+            <LogOut className="w-4 h-4 text-amber-400" />
+          </div>
+          <div>
+            <h3 className="text-foreground font-semibold text-sm">Cerrar sesión</h3>
+            <p className="text-muted-foreground text-xs mt-1 leading-snug">
+              {isPremium
+                ? "Se guardará una copia de tu catálogo en la nube antes de limpiar los datos locales."
+                : "Al cerrar sesión se borrarán todos los datos locales de esta instalación (biblioteca, calendario, configuración). Esta acción no se puede deshacer."}
+            </p>
+          </div>
+        </div>
+
+        {busy && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs">
+            <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+            {phase === "backing-up" ? "Guardando copia de seguridad en la nube…" : "Limpiando datos locales…"}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm border border-border bg-secondary text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-40"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm bg-red-600 hover:bg-red-500 text-white font-medium transition-colors disabled:opacity-40 flex items-center gap-2"
+          >
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogOut className="w-3.5 h-3.5" />}
+            {isPremium ? "Guardar y salir" : "Sí, cerrar sesión"}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 export default function App() {
-  const { user, logout, loading } = useAuth();
+  const { user, token, logout, loading } = useAuth();
   const { isLocal } = useBackendType();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
 
@@ -81,6 +142,55 @@ export default function App() {
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
   const [notifUnread, setNotifUnread]       = useState(true);
+
+  // ── Logout con limpieza ─────────────────────────────────────────────────────
+  const [showLogoutDialog, setShowLogoutDialog]   = useState(false);
+  const [logoutPhase, setLogoutPhase]             = useState<LogoutPhase>("idle");
+
+  const handleLogoutClick = () => {
+    // Solo el owner de la instalación tiene datos locales que limpiar
+    if (!isLocal || !user?.isOwner) { logout(); return; }
+    setShowLogoutDialog(true);
+  };
+
+  const doLogout = async () => {
+    if (isPremium) {
+      setLogoutPhase("backing-up");
+      try { await backupService.push(); } catch {}
+    }
+    setLogoutPhase("wiping");
+    try {
+      await fetch(`${API_BASE}/api/local/wipe`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {}
+    try { await fetch(`${API_BASE}/api/local/owner/reset`, { method: "POST" }); } catch {}
+    logout();
+    window.location.reload();
+  };
+
+  // ── Alerta de PC no principal (solo premium, isLocal, sin videos locales) ──
+  const [newMachineAlert, setNewMachineAlert] = useState<{ video_folder: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!user || !isPremium || !isLocal) return;
+    let cancelled = false;
+    Promise.all([
+      backupService.getLocalStatus(),
+      backupService.getCloudStatus(),
+    ]).then(([local, cloud]) => {
+      if (!cancelled && local.localCount === 0 && cloud.total > 0) {
+        backupService.getCatalog()
+          .then(({ video_folder }) => {
+            if (!cancelled) setNewMachineAlert({ video_folder: video_folder ?? null });
+          })
+          .catch(() => { if (!cancelled) setNewMachineAlert({ video_folder: null }); });
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.username]);
 
   function openVideoPlayer(fileId: string, title: string) {
     setPendingPlayer({ fileId, title });
@@ -241,7 +351,7 @@ export default function App() {
             <p className="text-[10px] text-muted-foreground/50 font-mono">v{__APP_VERSION__}</p>
           </div>
           <button
-            onClick={logout}
+            onClick={handleLogoutClick}
             title="Cerrar sesión"
             className="text-muted-foreground hover:text-foreground transition-colors p-1 flex-shrink-0"
           >
@@ -315,7 +425,7 @@ export default function App() {
             )}
             {/* Logout móvil */}
             <button
-              onClick={logout}
+              onClick={handleLogoutClick}
               className="sm:hidden text-muted-foreground hover:text-foreground p-1 transition-colors"
               title="Cerrar sesión"
             >
@@ -388,6 +498,52 @@ export default function App() {
         </nav>
       </div>
     </div>
+
+      {/* ── Banner: PC no principal ─────────────────────────────────────────── */}
+      <AnimatePresence>
+        {newMachineAlert && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.22 }}
+            className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4"
+          >
+            <div className="flex items-start gap-3 bg-card border border-amber-500/30 rounded-xl shadow-2xl p-4">
+              <MonitorOff className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground">Esta no es tu PC principal</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  Tu catálogo está en la nube, pero los videos físicos no están en este equipo.
+                  {newMachineAlert.video_folder && (
+                    <span className="block mt-1 font-mono text-[11px] text-muted-foreground/70 truncate">
+                      Carpeta original: {newMachineAlert.video_folder}
+                    </span>
+                  )}
+                </p>
+              </div>
+              <button
+                onClick={() => setNewMachineAlert(null)}
+                className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Diálogo de logout ───────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {showLogoutDialog && (
+          <LogoutDialog
+            isPremium={isPremium}
+            phase={logoutPhase}
+            onConfirm={doLogout}
+            onCancel={() => { if (logoutPhase === "idle") setShowLogoutDialog(false); }}
+          />
+        )}
+      </AnimatePresence>
     </RemoteGate>
   );
 }

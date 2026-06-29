@@ -27,6 +27,7 @@ export interface IUser extends Document {
   installId?: string;
   // Preferencia de tema (se sincroniza con la cuenta para tenerla en cualquier dispositivo).
   theme?: string;
+  video_folder?: string;
   createdAt: Date;
 }
 
@@ -46,6 +47,7 @@ const userSchema = new Schema<IUser>({
   deletedAt:          { type: Date },
   installId:          { type: String },
   theme:              { type: String },
+  video_folder:       { type: String },
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 export const UserModel = model<IUser>('User', userSchema);

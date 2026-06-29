@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
+import { restartWatcher } from '../watcher';
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm']);
 
@@ -29,6 +30,7 @@ export const updateScanConfig = (req: Request, res: Response) => {
   if (!fs.existsSync(folder)) return res.status(400).json({ error: 'La carpeta no existe en este equipo', folder });
   if (!fs.statSync(folder).isDirectory()) return res.status(400).json({ error: 'La ruta no es una carpeta', folder });
   configRepo.set('videos_dir', folder);
+  restartWatcher(folder);
   res.json({ ok: true, folder });
 };
 
