@@ -15,6 +15,8 @@ import { YoutubeUploadView } from "./components/YoutubeUploadView";
 import { useAuth } from "./hooks/useAuth";
 import { RemoteGate } from "./components/RemoteGate";
 import { useBackendType } from "./hooks/useBackendType";
+import { useIsMobile } from "./hooks/useIsMobile";
+import { canPublishOnMobile } from "./lib/mobileMode";
 import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
@@ -131,7 +133,14 @@ function LogoutDialog({
 export default function App() {
   const { user, token, logout, loading } = useAuth();
   const { isLocal } = useBackendType();
+  const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
+
+  // Modo móvil: teléfono hablando con el backend local (vía túnel Acceso Remoto o LAN).
+  // En ese contexto la publicación se restringe a quien tenga permiso (owner ahora,
+  // premium cuando se active el flag en lib/mobileMode).
+  const mobileMode      = isMobile && isLocal;
+  const mobileCanUpload = canPublishOnMobile(user);
 
   // Backup automático: solo en el dispositivo central y para premium.
   useAutoBackup(isLocal && isPremium);
@@ -250,6 +259,9 @@ export default function App() {
   const isNavVisible = (i: number) => {
     if (role === "editor" && !allowedNavForEditor.has(i)) return false;
     if (!isLocal && LOCAL_ONLY_NAV.has(i)) return false;
+    // En modo móvil, "Subir" (2) solo para quien puede publicar desde el celular
+    // (owner ahora; premium cuando se habilite el rollout).
+    if (i === 2 && mobileMode && !mobileCanUpload) return false;
     return true;
   };
 
@@ -460,6 +472,14 @@ export default function App() {
             <span>
               Modo remoto — funciones limitadas. Para subir y gestionar videos usá la app en tu PC.
             </span>
+          </div>
+        )}
+
+        {/* Banner modo móvil — el dueño puede publicar desde el celular vía túnel */}
+        {mobileMode && mobileCanUpload && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 border-b border-primary/20 text-primary text-xs">
+            <Upload className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>Modo móvil — podés publicar tus videos de la PC desde acá.</span>
           </div>
         )}
 
