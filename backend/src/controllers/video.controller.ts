@@ -29,6 +29,9 @@ export const getVideos = async (req: Request, res: Response) => {
     }
     if (status) {
       fileFilters.push({ status: status });
+    } else {
+      // Por defecto el catálogo remoto no muestra archivos borrados del disco.
+      fileFilters.push({ status: { $ne: 'ELIMINADO_DISCO' } });
     }
 
     // Filtros derivados de los arrays de plataformas (fuente de verdad).
@@ -355,56 +358,42 @@ export const getCalendarVideos = async (req: Request, res: Response) => {
     const startDate = new Date(year, month - 1, 1);
     const endDate   = new Date(year, month, 1);
 
-    const results = await TranscriptModel.aggregate([
-      {
-        $lookup: {
-          from: 'files',
-          localField: 'file_id',
-          foreignField: '_id',
-          as: 'file_info',
-        },
-      },
-      { $unwind: '$file_info' },
-      { $match: { 'file_info.userId': ownerId(req) } },
+    // Files-driven (antes era transcript-driven, lo que ocultaba los videos sin
+    // transcripción). Arranca de FileModel = la colección que el push mantiene
+    // fresca. platforms es la fuente de verdad de "publicado" (no platformvideos,
+    // que está incompleta). Excluye borrados y descartados.
+    const results = await FileModel.aggregate([
+      { $match: { userId: ownerId(req), status: { $ne: 'ELIMINADO_DISCO' } } },
       {
         $addFields: {
-          effective_date: {
-            $ifNull: [
-              '$file_info.scheduled_date',
-              { $ifNull: ['$file_info.fecha_creacion', '$file_info.createdAt'] },
-            ],
-          },
+          effective_date: { $ifNull: ['$scheduled_date', { $ifNull: ['$fecha_creacion', '$createdAt'] }] },
         },
       },
       {
         $match: {
           effective_date: { $gte: startDate, $lt: endDate },
           $or: [
-            { 'file_info.content_status': { $exists: false } },
-            { 'file_info.content_status': { $ne: 'descartado' } },
+            { content_status: { $exists: false } },
+            { content_status: { $ne: 'descartado' } },
           ],
         },
       },
       {
-        $lookup: {
-          from: 'platformvideos',
-          localField: 'file_info._id',
-          foreignField: 'linkedFileId',
-          as: 'platform_videos',
-        },
+        $lookup: { from: 'transcripts', localField: '_id', foreignField: 'file_id', as: 'transcript_data' },
       },
+      { $unwind: { path: '$transcript_data', preserveNullAndEmptyArrays: true } },
       {
         $project: {
           _id: 1,
-          fileId: '$file_info._id',
-          title: '$file_info.file_name',
+          fileId: '$_id',
+          title: '$file_name',
           date: '$effective_date',
-          content_status: { $ifNull: ['$file_info.content_status', 'borrador'] },
-          target_platforms: { $ifNull: ['$file_info.platforms', []] },
-          published_platforms: '$platform_videos.platform',
-          tipo_contenido: 1,
-          duracion_segundos: '$file_info.duracion_segundos',
-          scheduled_date: '$file_info.scheduled_date',
+          content_status: { $ifNull: ['$content_status', 'borrador'] },
+          target_platforms: { $ifNull: ['$platforms', []] },
+          published_platforms: { $ifNull: ['$platforms', []] },
+          tipo_contenido: '$transcript_data.tipo_contenido',
+          duracion_segundos: '$duracion_segundos',
+          scheduled_date: '$scheduled_date',
         },
       },
       { $sort: { date: 1 } },

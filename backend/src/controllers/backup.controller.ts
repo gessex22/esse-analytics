@@ -67,12 +67,59 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       );
     }
 
+    // ── Sincroniza también la colección `files` (FileModel) ────────────────────
+    // Es la que leen TODOS los endpoints remotos (catálogo, slim, calendario).
+    // Sin esto el remoto queda congelado en el scan viejo. Upsert por
+    // {userId, file_name}: conserva el _id (y los enlaces a transcripts/platformvideos).
+    await FileModel.bulkWrite(
+      incoming.map(f => ({
+        updateOne: {
+          filter: { userId, file_name: f.file_name },
+          update: {
+            $set: {
+              platforms:           f.platforms           ?? [],
+              platforms_discarded: f.platforms_discarded ?? [],
+              content_status:      f.content_status      ?? 'borrador',
+              scheduled_date:      f.scheduled_date      ?? null,
+              duracion_segundos:   f.duracion_segundos   ?? null,
+              resolucion:          f.resolucion          ?? null,
+              formato:             f.formato             ?? null,
+              fecha_creacion:      f.fecha_creacion      ?? null,
+            },
+            // Solo al crear: campos requeridos que la app no envía (el remoto no
+            // hace stream, así que file_path es un placeholder).
+            $setOnInsert: { userId, file_name: f.file_name, file_path: f.file_name, status: 'PENDIENTE' },
+          },
+          upsert: true,
+        },
+      })),
+    );
+
+    // Revivir: un archivo que vuelve en el push pero estaba archivado se reactiva.
+    // Hace el sync autocorrectivo (un push parcial previo no deja nada perdido).
+    await FileModel.updateMany(
+      { userId, file_name: { $in: fileNames }, status: 'ELIMINADO_DISCO' },
+      { $set: { status: 'PENDIENTE' } },
+    );
+
+    // Reconciliación: si el push es completo (fullSync), lo que ya no está local
+    // se marca ELIMINADO_DISCO en el central (los endpoints remotos lo excluyen).
+    // No se borra físico → se preservan transcripts/platformvideos enlazados.
+    let archived = 0;
+    if (req.body.fullSync === true) {
+      const r = await FileModel.updateMany(
+        { userId, file_name: { $nin: fileNames }, status: { $ne: 'ELIMINADO_DISCO' } },
+        { $set: { status: 'ELIMINADO_DISCO' } },
+      );
+      archived = r.modifiedCount ?? 0;
+    }
+
     const { video_folder } = req.body;
     if (video_folder && typeof video_folder === 'string') {
       await UserModel.findByIdAndUpdate(userId, { video_folder });
     }
 
-    res.json({ updated: toUpdate.length, skipped: incoming.length - toUpdate.length });
+    res.json({ updated: toUpdate.length, skipped: incoming.length - toUpdate.length, filesSynced: incoming.length, archived });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

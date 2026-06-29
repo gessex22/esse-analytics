@@ -7,7 +7,8 @@ const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 // Lee todo el SQLite y lo sube al espejo central. Reutilizable desde el endpoint
 // y desde los controllers de subida (push inmediato tras publicar).
 export async function pushFilesToCloud(authHeader: string): Promise<{ localCount: number; [k: string]: any }> {
-  const { rows } = fileRepo.findAll({ limit: 50000, offset: 0 });
+  // Solo archivos activos: los borrados del disco no deben verse en el remoto.
+  const { rows } = fileRepo.findAll({ excludeStatus: 'ELIMINADO_DISCO', limit: 50000, offset: 0 });
   const video_folder = configRepo.get('videos_dir') ?? null;
 
   const files = rows.map(f => ({
@@ -24,10 +25,12 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
     local_updated_at:    f.updated_at,
   }));
 
+  // fullSync: este push contiene TODOS los archivos activos → el central puede
+  // reconciliar (quitar del remoto lo que ya no existe localmente).
   const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-    body: JSON.stringify({ files, video_folder }),
+    body: JSON.stringify({ files, video_folder, fullSync: true }),
   });
 
   if (!upstream.ok) {
