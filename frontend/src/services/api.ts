@@ -641,6 +641,7 @@ export interface BackupLocalStatus {
   lastPush: string | null;
   lastPull: string | null;
   lastSync: string | null;
+  videosDir: string | null;
 }
 
 export interface BackupCloudStatus {

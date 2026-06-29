@@ -180,7 +180,7 @@ export default function App() {
       backupService.getLocalStatus(),
       backupService.getCloudStatus(),
     ]).then(([local, cloud]) => {
-      if (!cancelled && local.localCount === 0 && cloud.total > 0) {
+      if (!cancelled && local.localCount === 0 && !local.videosDir && cloud.total > 0) {
         backupService.getCatalog()
           .then(({ video_folder }) => {
             if (!cancelled) setNewMachineAlert({ video_folder: video_folder ?? null });

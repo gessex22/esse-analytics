@@ -110,8 +110,9 @@ export function getLocalBackupStatus(_req: Request, res: Response): void {
   const localCount = fileRepo.countAll();
   const lastPush   = configRepo.get('backup_last_push');
   const lastPull   = configRepo.get('backup_last_pull');
+  const videosDir  = configRepo.get('videos_dir') ?? null;
   const lastSync   = lastPush && lastPull
     ? new Date(Math.max(new Date(lastPush).getTime(), new Date(lastPull).getTime())).toISOString()
     : lastPush ?? lastPull ?? null;
-  res.json({ localCount, lastPush, lastPull, lastSync });
+  res.json({ localCount, lastPush, lastPull, lastSync, videosDir });
 }
