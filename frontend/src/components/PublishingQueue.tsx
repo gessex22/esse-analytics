@@ -14,9 +14,9 @@ import {
 // ── Config ────────────────────────────────────────────────────────────────────
 
 const PLATFORM_CFG = {
-  tiktok:    { label: "TikTok",    icon: Music2,  bg: "bg-pink-500",   ring: "ring-pink-500/30",   border: "border-l-pink-500"   },
-  instagram: { label: "Instagram", icon: Camera,  bg: "bg-purple-500", ring: "ring-purple-500/30", border: "border-l-purple-500" },
-  youtube:   { label: "YouTube",   icon: Play,    bg: "bg-red-500",    ring: "ring-red-500/30",    border: "border-l-red-500"    },
+  tiktok:    { label: "TikTok",    icon: Music2,  bg: "bg-pink-500",   ring: "ring-pink-500/30",   border: "border-l-pink-500",   grad: "from-pink-500 to-rose-600"      },
+  instagram: { label: "Instagram", icon: Camera,  bg: "bg-purple-500", ring: "ring-purple-500/30", border: "border-l-purple-500", grad: "from-purple-500 to-fuchsia-600" },
+  youtube:   { label: "YouTube",   icon: Play,    bg: "bg-red-500",    ring: "ring-red-500/30",    border: "border-l-red-500",    grad: "from-red-500 to-red-700"        },
 } as const;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -270,16 +270,19 @@ function PublishedRow({ data }: { data: PublishedVideo }) {
   const empty     = !data.platformId;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-card">
+    <div className="flex items-center gap-3 px-3.5 py-3 rounded-xl border border-border bg-card">
 
-      {/* Thumbnail 9:16 */}
+      {/* Thumbnail 9:16 — con placeholder cuando no hay miniatura (ej. TikTok) */}
       {thumbnail ? (
-        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 32, aspectRatio: "9/16" }}>
+        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 40, aspectRatio: "9/16" }}>
           <img src={thumbnail} alt="" className="w-full h-full object-cover" />
         </div>
       ) : (
-        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`} style={{ width: 32, aspectRatio: "9/16" }}>
-          <Icon className="w-3.5 h-3.5 text-white" />
+        <div
+          className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`}
+          style={{ width: 40, aspectRatio: "9/16" }}
+        >
+          <Icon className="w-5 h-5 text-white/90" />
         </div>
       )}
 
@@ -457,12 +460,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   const PLATFORM_ORDER: Platform[] = ["youtube", "instagram", "tiktok"];
 
   return (
-    <div className="flex flex-col gap-5 pb-4 max-w-3xl">
+    <div className="flex flex-col gap-6 pb-4 w-full max-w-4xl mx-auto">
 
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-foreground">Calendario</h2>
+          <h2 className="text-xl font-semibold text-foreground">Calendario</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Navegá entre videos · <Pin className="inline w-3 h-3 mb-0.5" /> fija el publicado · click en "cada Nd" para cambiar intervalo
           </p>
