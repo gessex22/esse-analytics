@@ -36,8 +36,9 @@ router.get('/api/gems', (_req, res) => {
   // Gemas plugin
   const pluginStatuses = PLUGIN_GEMS.map(g => ({ id: g.id, status: pluginStatus(g) }));
 
-  // Gemas built-in: estado guardado en config
-  const localEnabled  = configRepo.get('gem_local_access_enabled') === 'true';
+  // Gemas built-in: estado guardado en config.
+  // Acceso Local está activo por defecto (solo se desactiva si el usuario lo apagó explícitamente).
+  const localEnabled  = configRepo.get('gem_local_access_enabled') !== 'false';
   const backupEnabled = configRepo.get('gem_backup_enabled') === 'true';
 
   res.json([
