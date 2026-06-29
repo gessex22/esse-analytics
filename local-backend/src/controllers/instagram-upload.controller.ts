@@ -4,6 +4,8 @@ import https from 'https';
 import http from 'http';
 import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
+import { configRepo } from '../db/config.repo';
+import { pushFilesToCloudInBackground } from './backup-sync.controller';
 
 const IG_GRAPH = 'https://graph.instagram.com/v22.0';
 const CENTRAL  = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -162,7 +164,10 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     }
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'instagram');
+    const nextIg = fileRepo.findNewerAdjacent(fileDoc);
+    configRepo.markPublished('instagram', fileDoc.file_name, fileId, nextIg ? String(nextIg.id) : null);
     if (crossPostFacebook) fileRepo.addPlatform(fileId, 'facebook');
+    pushFilesToCloudInBackground(req.headers.authorization);
 
     res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook });
   } catch (err: any) {

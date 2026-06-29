@@ -62,6 +62,20 @@ export const configRepo = {
     }
   },
 
+  // Reinicia el contador del calendario al publicar de verdad un video en una
+  // plataforma: fecha = hoy, título e id del publicado, y AVANZA el próximo al
+  // adyacente más nuevo (mismo criterio que "Fijar"). nextVideoId puede ser null
+  // si ya se llegó al más reciente. Cada plataforma avanza independiente.
+  markPublished(platform: string, title: string, fileId: number | string, nextVideoId: string | null): void {
+    const today = new Date().toISOString().slice(0, 10);
+    this.setPlatformConfig(platform, {
+      last_published_date:  today,
+      last_published_title: title,
+      last_video_id:        String(fileId),
+      next_video_id:        nextVideoId,
+    });
+  },
+
   // ── local_config (owner) ──────────────────────────────────────────────────
   getOwner(): { username: string; linked_at: string } | null {
     const row = db.prepare("SELECT username, linked_at FROM local_config WHERE key = 'owner'")

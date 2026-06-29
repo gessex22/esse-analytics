@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
+import { configRepo } from '../db/config.repo';
+import { pushFilesToCloudInBackground } from './backup-sync.controller';
 
 const TK_BASE    = 'https://open.tiktokapis.com/v2';
 const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -152,6 +154,9 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     });
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'tiktok');
+    const nextTk = fileRepo.findNewerAdjacent(fileDoc);
+    configRepo.markPublished('tiktok', fileDoc.file_name, fileId, nextTk ? String(nextTk.id) : null);
+    pushFilesToCloudInBackground(req.headers.authorization);
 
     res.json({ ok: true, publishId: publish_id, status: publishStatus, sentToInbox: publishStatus === 'SEND_TO_USER_INBOX' });
   } catch (err: any) {

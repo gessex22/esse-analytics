@@ -4,6 +4,53 @@ import { configRepo } from '../db/config.repo';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
+// Lee todo el SQLite y lo sube al espejo central. Reutilizable desde el endpoint
+// y desde los controllers de subida (push inmediato tras publicar).
+export async function pushFilesToCloud(authHeader: string): Promise<{ localCount: number; [k: string]: any }> {
+  const { rows } = fileRepo.findAll({ limit: 50000, offset: 0 });
+  const video_folder = configRepo.get('videos_dir') ?? null;
+
+  const files = rows.map(f => ({
+    file_name:           f.file_name,
+    platforms:           f.platforms,
+    platforms_discarded: f.platforms_discarded,
+    tipo_contenido:      f.tipo_contenido      ?? null,
+    content_status:      f.content_status,
+    scheduled_date:      f.scheduled_date      ?? null,
+    duracion_segundos:   f.duracion_segundos   ?? null,
+    resolucion:          f.resolucion          ?? null,
+    formato:             f.formato             ?? null,
+    fecha_creacion:      f.fecha_creacion      ?? null,
+    local_updated_at:    f.updated_at,
+  }));
+
+  const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: JSON.stringify({ files, video_folder }),
+  });
+
+  if (!upstream.ok) {
+    const detail = await upstream.json().catch(() => ({}));
+    throw Object.assign(new Error('Error en central'), { detail, status: 502 });
+  }
+
+  const result = await upstream.json();
+  configRepo.set('backup_last_push', new Date().toISOString());
+  return { localCount: files.length, ...result };
+}
+
+// Dispara un push en segundo plano sin bloquear la respuesta del caller.
+// Pensado para llamarse tras una publicación: deja la nube fresca al instante.
+export function pushFilesToCloudInBackground(authHeader?: string): void {
+  if (!authHeader) return;
+  setImmediate(() => {
+    pushFilesToCloud(authHeader).catch(err => {
+      console.warn('[backup] push automático tras publicar falló:', err.message);
+    });
+  });
+}
+
 // POST /api/local/backup/push
 // Reads all SQLite files and sends them to the central cloud.
 export async function pushToCloud(req: Request, res: Response): Promise<void> {
@@ -11,40 +58,10 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
   if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
 
   try {
-    const { rows } = fileRepo.findAll({ limit: 50000, offset: 0 });
-
-    const video_folder = configRepo.get('videos_dir') ?? null;
-
-    const files = rows.map(f => ({
-      file_name:           f.file_name,
-      platforms:           f.platforms,
-      platforms_discarded: f.platforms_discarded,
-      tipo_contenido:      f.tipo_contenido      ?? null,
-      content_status:      f.content_status,
-      scheduled_date:      f.scheduled_date      ?? null,
-      duracion_segundos:   f.duracion_segundos   ?? null,
-      resolucion:          f.resolucion          ?? null,
-      formato:             f.formato             ?? null,
-      fecha_creacion:      f.fecha_creacion      ?? null,
-      local_updated_at:    f.updated_at,
-    }));
-
-    const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-      body: JSON.stringify({ files, video_folder }),
-    });
-
-    if (!upstream.ok) {
-      const detail = await upstream.json().catch(() => ({}));
-      res.status(502).json({ error: 'Error en central', detail });
-      return;
-    }
-
-    const result = await upstream.json();
-    configRepo.set('backup_last_push', new Date().toISOString());
-    res.json({ ok: true, localCount: files.length, ...result });
+    const result = await pushFilesToCloud(authHeader);
+    res.json({ ok: true, ...result });
   } catch (err: any) {
+    if (err.status === 502) { res.status(502).json({ error: 'Error en central', detail: err.detail }); return; }
     res.status(500).json({ error: err.message });
   }
 }
@@ -71,8 +88,14 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
     let updated = 0;
     let skipped = 0;
     let orphans = 0;
+    let recovered = 0;
+    let cloudWithPlatforms = 0;
+
+    const hasData = (arr: any) => Array.isArray(arr) && arr.length > 0;
 
     for (const cf of cloudFiles) {
+      if (hasData(cf.platforms) || hasData(cf.platforms_discarded)) cloudWithPlatforms++;
+
       const { rows } = fileRepo.findAll({ search: cf.file_name, limit: 5, offset: 0 });
       const localFile = rows.find(r => r.file_name === cf.file_name);
 
@@ -84,6 +107,11 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       const cloudTs = new Date(cf.local_updated_at).getTime();
       const localTs = new Date(localFile.updated_at).getTime();
 
+      // Modo recuperación: si el local no tiene platforms pero la nube sí,
+      // aplicamos sin importar el timestamp (máquina nueva / DB reescaneada).
+      const localEmpty = !hasData(localFile.platforms) && !hasData(localFile.platforms_discarded);
+      const cloudHas   = hasData(cf.platforms) || hasData(cf.platforms_discarded);
+
       if (cloudTs > localTs) {
         fileRepo.update(localFile.id, {
           platforms:           cf.platforms           ?? [],
@@ -93,13 +121,20 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
           ...(cf.scheduled_date != null ? { scheduled_date: cf.scheduled_date } : {}),
         });
         updated++;
+      } else if (localEmpty && cloudHas) {
+        fileRepo.update(localFile.id, {
+          platforms:           cf.platforms           ?? [],
+          platforms_discarded: cf.platforms_discarded ?? [],
+          ...('tipo_contenido' in cf && !localFile.tipo_contenido ? { tipo_contenido: cf.tipo_contenido ?? null } : {}),
+        });
+        recovered++;
       } else {
         skipped++;
       }
     }
 
     configRepo.set('backup_last_pull', new Date().toISOString());
-    res.json({ ok: true, cloudCount: cloudFiles.length, updated, skipped, orphans });
+    res.json({ ok: true, cloudCount: cloudFiles.length, cloudWithPlatforms, updated, recovered, skipped, orphans });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

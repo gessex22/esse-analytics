@@ -3,75 +3,47 @@ import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 
+// Intervalo por defecto por plataforma cuando no hay nada configurado.
+const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instagram: 3 };
+
+function fmtDuration(secs?: number): string {
+  if (!secs) return '';
+  return `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+}
+
+// Resuelve un next_video_id guardado (puede ser un id numérico o un file_name) al
+// archivo local. Datos viejos guardaban el TÍTULO; los nuevos guardan el id.
+function resolveStoredVideo(stored: unknown) {
+  if (stored == null || stored === '') return undefined;
+  const s = String(stored);
+  return (/^\d+$/.test(s) ? fileRepo.findById(s) : undefined) ?? fileRepo.findByName(s);
+}
+
 // GET /api/sync/calendar-config
+// El "próximo video" es por plataforma y se RESPETA el guardado en platform_config
+// (lo setea publicar y el botón "Fijar"). Solo si no hay nada guardado se computa un
+// fallback razonable (el más reciente sin publicar). Última publicación e intervalo
+// también salen de platform_config. Cada plataforma avanza independiente.
 export const getCalendarConfig = async (_req: Request, res: Response): Promise<void> => {
   try {
-    const stored = configRepo.getAllPlatformConfigs();
-    const storedMap = new Map(stored.map(c => [c.platform as string, c]));
+    const storedMap = new Map(configRepo.getAllPlatformConfigs().map(c => [c.platform as string, c]));
+    const platforms = ['youtube', 'tiktok', 'instagram'] as const;
 
-    // YouTube: usa override si existe, si no calcula desde platform_videos
-    let ytConfig: { platform: string; lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number };
-    const ytOverride = storedMap.get('youtube');
-
-    if (ytOverride) {
-      ytConfig = {
-        platform:           'youtube',
-        lastPublishedTitle: (ytOverride.last_published_title as string) ?? '',
-        lastPublishedDate:  (ytOverride.last_published_date  as string) ?? '',
-        intervalDays:       (ytOverride.interval_days as number) ?? 4,
-      };
-    } else {
-      const ytVideos = platformVideoRepo.findByPlatformLinked('youtube', 7);
-
-      ytConfig = { platform: 'youtube', lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 4 };
-      if (ytVideos.length > 0) {
-        const diffs: number[] = [];
-        for (let i = 0; i < Math.min(6, ytVideos.length - 1); i++) {
-          diffs.push(Math.round(
-            (new Date(ytVideos[i].published_at!).getTime() - new Date(ytVideos[i + 1].published_at!).getTime())
-            / (1000 * 60 * 60 * 24)
-          ));
-        }
-        const interval = diffs.length ? Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length) : 4;
-        const linkedFile = ytVideos[0].linked_file_id ? fileRepo.findById(ytVideos[0].linked_file_id) : undefined;
-        ytConfig = {
-          platform:           'youtube',
-          lastPublishedTitle: linkedFile?.file_name ?? '',
-          lastPublishedDate:  ytVideos[0].published_at!.slice(0, 10),
-          intervalDays:       interval,
-        };
-      }
-    }
-
-    const igTk = ['tiktok', 'instagram'].map(p => {
+    const enriched = platforms.map((p) => {
       const c = storedMap.get(p);
-      return c
-        ? { platform: p, lastPublishedTitle: c.last_published_title, lastPublishedDate: c.last_published_date, intervalDays: (c.interval_days as number) ?? 3, lastVideoId: c.last_video_id ?? null, nextVideoId: c.next_video_id ?? null }
-        : { platform: p, lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 3, lastVideoId: null, nextVideoId: null };
+      const next = resolveStoredVideo(c?.next_video_id) ?? fileRepo.findNextUnpublished(p);
+      return {
+        platform:           p,
+        lastPublishedTitle: (c?.last_published_title as string) ?? '',
+        lastPublishedDate:  (c?.last_published_date  as string) ?? '',
+        intervalDays:       (c?.interval_days as number) ?? DEFAULT_INTERVAL[p],
+        lastVideoId:        c?.last_video_id ?? null,
+        nextVideoId:        next ? String(next.id) : null,
+        nextVideo:          next
+          ? { fileId: String(next.id), title: next.file_name, duration: fmtDuration(next.duracion_segundos) }
+          : null,
+      };
     });
-
-    const allConfigs = [
-      { ...ytConfig, lastVideoId: ytOverride?.last_video_id ?? null, nextVideoId: ytOverride?.next_video_id ?? null },
-      ...igTk,
-    ];
-
-    const enriched = await Promise.all(allConfigs.map(async (cfg) => {
-      if (!cfg.nextVideoId) return { ...cfg, nextVideo: null };
-      try {
-        const file = fileRepo.findById(String(cfg.nextVideoId));
-        if (!file) return { ...cfg, nextVideo: null };
-        return {
-          ...cfg,
-          nextVideo: {
-            fileId:   String(file.id),
-            title:    file.file_name,
-            duration: file.duracion_segundos ? `${Math.floor(file.duracion_segundos / 60)}:${String(Math.floor(file.duracion_segundos % 60)).padStart(2, '0')}` : '',
-          },
-        };
-      } catch {
-        return { ...cfg, nextVideo: null };
-      }
-    }));
 
     res.json(enriched);
   } catch (err: any) {

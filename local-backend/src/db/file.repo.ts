@@ -65,6 +65,30 @@ export const fileRepo = {
     return row ? parse(row) : undefined;
   },
 
+  findByName(fileName: string): DbFile | undefined {
+    const row = db.prepare('SELECT * FROM files WHERE file_name = ? LIMIT 1').get(fileName) as RawRow | undefined;
+    return row ? parse(row) : undefined;
+  },
+
+  /**
+   * El video inmediatamente MÁS NUEVO que el dado (por fecha_creacion).
+   * Es "el siguiente" en la secuencia de publicación: al publicar uno, el próximo
+   * avanza hacia lo más reciente (mismo criterio que el botón "Fijar" del calendario).
+   */
+  findNewerAdjacent(file: DbFile): DbFile | undefined {
+    const ref = file.fecha_creacion ?? file.created_at;
+    const row = db.prepare(`
+      SELECT * FROM files
+      WHERE status != 'ELIMINADO_DISCO'
+        AND content_status != 'descartado'
+        AND id != ?
+        AND COALESCE(fecha_creacion, created_at) > ?
+      ORDER BY COALESCE(fecha_creacion, created_at) ASC, id ASC
+      LIMIT 1
+    `).get(file.id, ref) as RawRow | undefined;
+    return row ? parse(row) : undefined;
+  },
+
   findAll(opts: {
     status?: string;
     content_status?: string;
@@ -188,6 +212,25 @@ export const fileRepo = {
     if (!file.platforms.includes(platform)) {
       this.update(id, { platforms: [...file.platforms, platform] });
     }
+  },
+
+  /**
+   * Próximo video a publicar en una plataforma: el MÁS RECIENTE que todavía no está
+   * publicado ahí (ni descartado para esa plataforma, ni borrado del disco, ni descartado global).
+   * Es la fuente de verdad del "video por defecto" en la vista de subir y del calendario.
+   * Avanza solo: al publicar uno, queda excluido y aparece el siguiente más reciente.
+   */
+  findNextUnpublished(platform: Platform): DbFile | undefined {
+    const row = db.prepare(`
+      SELECT * FROM files
+      WHERE status != 'ELIMINADO_DISCO'
+        AND content_status != 'descartado'
+        AND NOT EXISTS (SELECT 1 FROM json_each(platforms)           WHERE value = ?)
+        AND NOT EXISTS (SELECT 1 FROM json_each(platforms_discarded) WHERE value = ?)
+      ORDER BY COALESCE(fecha_creacion, created_at) DESC, id DESC
+      LIMIT 1
+    `).get(platform, platform) as RawRow | undefined;
+    return row ? parse(row) : undefined;
   },
 
   countAll(): number {

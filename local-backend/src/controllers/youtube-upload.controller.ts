@@ -3,6 +3,8 @@ import fs from 'fs';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
+import { configRepo } from '../db/config.repo';
+import { pushFilesToCloudInBackground } from './backup-sync.controller';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -138,6 +140,9 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
 
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'youtube');
+    const nextYt = fileRepo.findNewerAdjacent(fileDoc);
+    configRepo.markPublished('youtube', fileDoc.file_name, fileId, nextYt ? String(nextYt.id) : null);
+    pushFilesToCloudInBackground(req.headers.authorization);
 
     res.json({ ok: true, ...result });
   } catch (err: any) {
