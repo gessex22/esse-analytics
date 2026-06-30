@@ -129,20 +129,23 @@ function IntervalChip({ days, onChange }: { days: number; onChange: (n: number) 
 function getStatChips(stats?: Record<string, any>, platform?: Platform) {
   if (!stats || !platform) return [];
   const n = (v: any) => Number.isFinite(+v) ? (+v).toLocaleString() : "—";
+  // Mostrar el chip cuando el dato existe, incluso si es 0 (video recién subido).
+  // Solo se oculta cuando el dato está ausente (undefined/null) o la métrica no tiene permiso.
+  const has = (v: any) => v != null && v !== "";
   if (platform === "youtube")   return [
-    stats.viewCount    ? { l: "vistas",   v: n(stats.viewCount) }    : null,
-    stats.likeCount    ? { l: "likes",    v: n(stats.likeCount) }    : null,
-    stats.commentCount ? { l: "coment.",  v: n(stats.commentCount) } : null,
+    has(stats.viewCount)    ? { l: "vistas",   v: n(stats.viewCount) }    : null,
+    has(stats.likeCount)    ? { l: "likes",    v: n(stats.likeCount) }    : null,
+    has(stats.commentCount) ? { l: "coment.",  v: n(stats.commentCount) } : null,
   ].filter(Boolean) as { l: string; v: string }[];
   if (platform === "instagram") return [
-    stats.views          ? { l: "vistas",  v: n(stats.views) }          : null,
-    stats.like_count     ? { l: "likes",   v: n(stats.like_count) }     : null,
-    stats.comments_count ? { l: "coment.", v: n(stats.comments_count) } : null,
+    has(stats.views)          ? { l: "vistas",  v: n(stats.views) }          : null,
+    has(stats.like_count)     ? { l: "likes",   v: n(stats.like_count) }     : null,
+    has(stats.comments_count) ? { l: "coment.", v: n(stats.comments_count) } : null,
   ].filter(Boolean) as { l: string; v: string }[];
   if (platform === "tiktok") return [
-    stats.views    ? { l: "vistas",  v: n(stats.views) }    : null,
-    stats.likes    ? { l: "likes",   v: n(stats.likes) }    : null,
-    stats.comments ? { l: "coment.", v: n(stats.comments) } : null,
+    has(stats.views)    ? { l: "vistas",  v: n(stats.views) }    : null,
+    has(stats.likes)    ? { l: "likes",   v: n(stats.likes) }    : null,
+    has(stats.comments) ? { l: "coment.", v: n(stats.comments) } : null,
   ].filter(Boolean) as { l: string; v: string }[];
   return [];
 }
