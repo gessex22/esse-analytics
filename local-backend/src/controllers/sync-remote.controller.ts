@@ -117,3 +117,55 @@ export const getLastRemoteUpload = async (req: AuthRequest, res: Response): Prom
     res.status(500).json({ error: err.message });
   }
 };
+
+// POST /api/sync/pull-next-videos
+// Sincroniza los próximos videos configurados en la central con el local
+export const pullNextVideos = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      res.status(401).json({ error: 'Sin autenticación' });
+      return;
+    }
+
+    // Obtener próximos videos de la central
+    const centralRes = await fetch(`${CENTRAL}/api/sync/next-videos`, {
+      headers: { Authorization: authHeader },
+    });
+
+    if (!centralRes.ok) {
+      res.status(centralRes.status).json({ error: 'No se pudo obtener próximos videos de la central' });
+      return;
+    }
+
+    const data = await centralRes.json() as {
+      ok: boolean;
+      nextVideos: Array<{
+        platform: string;
+        nextVideoId: string | null;
+        nextVideoTitle: string | null;
+      }>;
+    };
+
+    if (!data.ok || !data.nextVideos) {
+      res.json({ ok: true, synced: 0 });
+      return;
+    }
+
+    let synced = 0;
+
+    for (const config of data.nextVideos) {
+      // Actualizar en SQLite local
+      configRepo.setPlatformConfig(config.platform as any, {
+        next_video_id: config.nextVideoId ?? null,
+        next_video_title: config.nextVideoTitle ?? null,
+      });
+      synced++;
+    }
+
+    res.json({ ok: true, synced, message: `Sincronizados ${synced} próximos videos` });
+  } catch (err: any) {
+    console.error('Error in pullNextVideos:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+};

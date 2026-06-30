@@ -641,6 +641,16 @@ export const syncService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
+
+  getNextVideos: (): Promise<{ ok: boolean; nextVideos: Array<{ platform: string; nextVideoId: string | null; nextVideoTitle: string | null }> }> =>
+    requestJson('/api/sync/next-videos'),
+
+  updateNextVideo: (platform: string, data: { nextVideoId?: string; nextVideoTitle?: string }): Promise<void> =>
+    requestJson(`/api/sync/next-video/${platform}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
 };
 
 // ==========================================

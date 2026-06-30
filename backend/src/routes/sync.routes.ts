@@ -3,6 +3,7 @@ import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
   getCalendarConfig, updateCalendarConfig, getRemoteUploads,
+  getNextVideos, updateNextVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
 import { getPublishedStats, refreshAllStats } from '../controllers/published-stats.controller';
@@ -29,6 +30,10 @@ router.post('/api/sync/review/:pvId/link',         verifyToken, requireRole('tod
 router.post('/api/sync/review/:pvId/orphan',       verifyToken, requireRole('todopoderoso'), markOrphan);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
+
+// Próximos videos (sincronización bidireccional)
+router.get ('/api/sync/next-videos',               verifyToken, getNextVideos);
+router.patch('/api/sync/next-video/:platform',     verifyToken, updateNextVideo);
 
 // router.post('/api/sync/instagram',   verifyToken, requireRole('todopoderoso'), triggerInstagramSync);
 // router.post('/api/sync/tiktok',      verifyToken, requireRole('todopoderoso'), triggerTikTokSync);

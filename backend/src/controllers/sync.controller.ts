@@ -229,6 +229,61 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
   }
 };
 
+// GET /api/sync/next-videos — obtiene próximos videos configurados por plataforma (para sincronización bidireccional)
+export const getNextVideos = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+
+    const db = (await import('mongoose')).default.connection.db!;
+    const configs = await db.collection('platform_config')
+      .find({ userId })
+      .toArray() as any[];
+
+    const result = configs.map(c => ({
+      platform: c.platform,
+      nextVideoId: c.next_video_id ?? null,
+      nextVideoTitle: c.next_video_title ?? null,
+      lastPublishedTitle: c.last_published_title ?? null,
+      lastPublishedDate: c.last_published_date ?? null,
+      intervalDays: c.interval_days ?? 3,
+    }));
+
+    res.json({ ok: true, nextVideos: result });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// PATCH /api/sync/next-video/:platform — actualiza el próximo video de una plataforma
+export const updateNextVideo = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { platform } = req.params;
+    const { nextVideoId, nextVideoTitle } = req.body;
+
+    if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' });
+      return;
+    }
+
+    const db = (await import('mongoose')).default.connection.db!;
+    await db.collection('platform_config').updateOne(
+      { userId, platform },
+      {
+        $set: {
+          next_video_id: nextVideoId ?? null,
+          next_video_title: nextVideoTitle ?? null,
+        },
+      },
+      { upsert: true }
+    );
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // GET /api/sync/remote-uploads — obtiene uploads remotos del usuario (para que local pueda sincronizar)
 export const getRemoteUploads = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
