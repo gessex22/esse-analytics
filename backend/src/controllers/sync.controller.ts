@@ -228,3 +228,38 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
     res.status(500).json({ message: err.message });
   }
 };
+
+// GET /api/sync/remote-uploads — obtiene uploads remotos del usuario (para que local pueda sincronizar)
+export const getRemoteUploads = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const sinceSecs = parseInt(req.query.sinceSecs as string) || 86400; // Último día por defecto
+
+    const since = new Date(Date.now() - sinceSecs * 1000);
+
+    const uploads = await PlatformVideoModel.find({
+      userId,
+      matchStatus: 'remote',
+      publishedAt: { $gte: since },
+    })
+      .sort({ publishedAt: -1 })
+      .lean();
+
+    res.json({
+      ok: true,
+      count: uploads.length,
+      uploads: uploads.map(u => ({
+        platform: u.platform,
+        platformId: u.platformId,
+        platformUrl: u.platformUrl,
+        title: u.title,
+        description: u.description,
+        thumbnail: u.thumbnail,
+        publishedAt: u.publishedAt,
+        stats: { viewCount: u.views, likeCount: u.likes, commentCount: u.comments },
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};

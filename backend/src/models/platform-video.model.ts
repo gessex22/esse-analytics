@@ -4,6 +4,7 @@ export type SyncPlatform = 'youtube' | 'instagram' | 'tiktok';
 export type PlatformVideoStatus = 'public' | 'private' | 'unlisted' | 'deleted';
 
 export interface IPlatformVideo extends Document {
+  userId?: string;              // Para uploads remotos, quién los hizo
   platform: SyncPlatform;
   platformId: string;           // ID nativo de la plataforma (ej: YouTube video ID)
   platformUrl: string;
@@ -17,13 +18,14 @@ export interface IPlatformVideo extends Document {
   comments: number;
   status: PlatformVideoStatus;
   linkedFileId?: Types.ObjectId; // referencia al archivo local — null hasta que se vincule
-  matchStatus?: 'auto_duration' | 'auto_text' | 'auto_code' | 'manual' | 'revisar_manual' | 'sin_match';
+  matchStatus?: 'auto_duration' | 'auto_text' | 'auto_code' | 'manual' | 'revisar_manual' | 'sin_match' | 'remote';
   matchScore?: number;
   matchCandidates?: string[];  // IDs de archivos locales candidatos (guardados por el script Python)
   lastSyncedAt: Date;
 }
 
 const platformVideoSchema = new Schema<IPlatformVideo>({
+  userId:         { type: String, default: null },
   platform:       { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok'] },
   platformId:     { type: String, required: true },
   platformUrl:    { type: String, required: true },
@@ -37,7 +39,7 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   comments:       { type: Number, default: 0 },
   status:         { type: String, enum: ['public', 'private', 'unlisted', 'deleted'], default: 'public' },
   linkedFileId:   { type: Schema.Types.ObjectId, ref: 'File', default: null },
-  matchStatus:      { type: String, enum: ['auto_duration','auto_text','auto_code','manual','revisar_manual','sin_match'] },
+  matchStatus:      { type: String, enum: ['auto_duration','auto_text','auto_code','manual','revisar_manual','sin_match','remote'] },
   matchScore:       { type: Number },
   matchCandidates:  { type: [String], default: undefined },
   lastSyncedAt:     { type: Date, default: Date.now },

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
-  getCalendarConfig, updateCalendarConfig,
+  getCalendarConfig, updateCalendarConfig, getRemoteUploads,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
 import { getPublishedStats, refreshAllStats } from '../controllers/published-stats.controller';
@@ -17,6 +17,9 @@ router.post('/api/sync/published-videos', verifyToken, mirrorPublishedCards);
 // Stats de plataformas reales (views, likes, comments, etc.)
 router.get ('/api/sync/published-stats/:platform/:platformId', verifyToken, getPublishedStats);
 router.post('/api/sync/refresh-all-stats', verifyToken, refreshAllStats);
+
+// Remote uploads (para sincronización local-backend)
+router.get ('/api/sync/remote-uploads', verifyToken, getRemoteUploads);
 
 router.post('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), triggerYouTubeSync);
 router.get ('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), getYouTubeList);
