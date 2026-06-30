@@ -135,6 +135,7 @@ function getStatChips(stats?: Record<string, any>, platform?: Platform) {
     stats.commentCount ? { l: "coment.",  v: n(stats.commentCount) } : null,
   ].filter(Boolean) as { l: string; v: string }[];
   if (platform === "instagram") return [
+    stats.views          ? { l: "vistas",  v: n(stats.views) }          : null,
     stats.like_count     ? { l: "likes",   v: n(stats.like_count) }     : null,
     stats.comments_count ? { l: "coment.", v: n(stats.comments_count) } : null,
   ].filter(Boolean) as { l: string; v: string }[];

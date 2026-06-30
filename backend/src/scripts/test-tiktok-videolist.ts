@@ -23,7 +23,7 @@ async function main() {
   console.log('  access_token:', tokenDoc.access_token?.slice(0, 30) + '...');
 
   console.log('\n=== Calling /v2/video/list/ ===\n');
-  const fields = 'id,video_description,video_cover_url,duration,create_time,like_count,view_count,share_count,comment_count,privacy_level,title';
+  const fields = 'id,video_description,cover_image_url,share_url,duration,create_time,like_count,view_count,share_count,comment_count,title';
 
   // Attempt 1: video/list (public only by default)
   console.log('--- Attempt 1: video/list (default) ---');

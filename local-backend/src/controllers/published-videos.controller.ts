@@ -111,6 +111,22 @@ async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVid
   }
 }
 
+// Vistas de un Reel via insights. Requiere el scope instagram_business_manage_insights;
+// si el token no lo tiene, la API responde "permission" y devolvemos undefined (sin romper).
+async function fetchInstagramViews(mediaId: string, accessToken: string): Promise<number | undefined> {
+  try {
+    const r = await fetch(
+      `https://graph.instagram.com/v22.0/${mediaId}/insights?metric=views&access_token=${accessToken}`
+    );
+    const d = await r.json() as any;
+    if (!r.ok || d.error) return undefined;
+    const val = d.data?.[0]?.values?.[0]?.value ?? d.data?.[0]?.total_value?.value;
+    return typeof val === 'number' ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | null> {
   try {
     const fields = 'id,caption,media_type,media_product_type,permalink,thumbnail_url,like_count,comments_count,timestamp';
@@ -123,6 +139,10 @@ async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | 
     const m = data.data?.[0];
     if (!m) return null;
 
+    // Las vistas solo aplican a video/Reels y dependen del permiso de insights.
+    const isVideo = m.media_product_type === 'REELS' || m.media_type === 'VIDEO';
+    const views = isVideo ? await fetchInstagramViews(m.id, token.access_token) : undefined;
+
     return {
       platform:    'instagram',
       fileName:    null,
@@ -132,6 +152,7 @@ async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | 
       title:       m.caption ?? null,
       stats: {
         media_type:     m.media_product_type || m.media_type,
+        views,
         like_count:     m.like_count ?? 0,
         comments_count: m.comments_count ?? 0,
         thumbnail:      m.thumbnail_url || null,
@@ -145,8 +166,9 @@ async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | 
 async function fetchTikTokLatest(token: TokenLike): Promise<PublishedVideo | null> {
   try {
     // /v2/video/list/ devuelve los videos del usuario ordenados por fecha desc.
-    // Campos confirmados en scripts/test-tiktok-videolist.ts.
-    const fields = 'id,video_description,video_cover_url,share_url,like_count,view_count,comment_count,share_count,create_time';
+    // OJO: el campo de miniatura es cover_image_url (NO video_cover_url, que da
+    // invalid_params y tumba toda la request). Confirmado con scripts/test-tiktok-videolist.ts.
+    const fields = 'id,video_description,cover_image_url,share_url,like_count,view_count,comment_count,share_count,create_time';
     const res = await fetch(
       `https://open.tiktokapis.com/v2/video/list/?fields=${fields}`,
       {
@@ -173,7 +195,7 @@ async function fetchTikTokLatest(token: TokenLike): Promise<PublishedVideo | nul
       publishedAt: v.create_time ? new Date(v.create_time * 1000).toISOString() : null,
       title:       v.video_description ?? null,
       stats: {
-        thumbnail: v.video_cover_url || null,
+        thumbnail: v.cover_image_url || null,
         // Claves que espera getStatChips() en el frontend.
         views:    v.view_count ?? undefined,
         likes:    v.like_count ?? undefined,

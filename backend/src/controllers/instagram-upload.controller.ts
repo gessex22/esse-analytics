@@ -123,7 +123,8 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const params = new URLSearchParams({
     client_id:     igAppId(),
     redirect_uri:  process.env.META_REDIRECT_URI!,
-    scope:         'instagram_business_basic,instagram_business_content_publish',
+    // manage_insights habilita /{media}/insights (views, reach). Requiere reconectar IG.
+    scope:         'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights',
     response_type: 'code',
     state,
   });
