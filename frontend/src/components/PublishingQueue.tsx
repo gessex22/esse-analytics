@@ -511,7 +511,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   };
 
   return (
-    <div className="flex flex-col gap-5 pb-4 w-full max-w-4xl mx-auto">
+    <div className="flex flex-col gap-5 pb-4 w-full">
 
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
