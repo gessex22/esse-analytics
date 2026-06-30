@@ -4,7 +4,6 @@ export type SyncPlatform = 'youtube' | 'instagram' | 'tiktok';
 export type PlatformVideoStatus = 'public' | 'private' | 'unlisted' | 'deleted';
 
 export interface IPlatformVideo extends Document {
-  userId?: string;              // Para uploads remotos, quién los hizo
   platform: SyncPlatform;
   platformId: string;           // ID nativo de la plataforma (ej: YouTube video ID)
   platformUrl: string;
@@ -25,7 +24,6 @@ export interface IPlatformVideo extends Document {
 }
 
 const platformVideoSchema = new Schema<IPlatformVideo>({
-  userId:         { type: String, default: null },
   platform:       { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok'] },
   platformId:     { type: String, required: true },
   platformUrl:    { type: String, required: true },

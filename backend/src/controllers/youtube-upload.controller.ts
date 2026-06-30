@@ -321,7 +321,7 @@ export const remoteUploadToYoutube = async (req: AuthRequest, res: Response) => 
 
     await PlatformVideoModel.findOneAndUpdate(
       { platform: 'youtube', platformId: videoId },
-      { userId: req.user!.id, platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), matchStatus: 'remote' },
+      { platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), matchStatus: 'remote' },
       { upsert: true },
     );
 

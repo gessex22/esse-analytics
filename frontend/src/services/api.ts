@@ -626,27 +626,8 @@ export const syncService = {
   getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null; title?: string | null; status?: string | null; stats?: Record<string, any> }[]> =>
     requestJson('/api/sync/published-videos'),
 
-  getPublishedStats: (platform: string, platformId: string): Promise<{ ok: boolean; stats: Record<string, any> }> =>
-    requestJson(`/api/sync/published-stats/${platform}/${platformId}`),
-
-  refreshAllStats: (): Promise<{ ok: boolean; results: Record<string, any> }> =>
-    requestJson('/api/sync/refresh-all-stats', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    }),
-
   updateCalendarConfig: (platform: string, data: { lastPublishedDate?: string; lastPublishedTitle?: string; intervalDays?: number; nextVideoId?: string }): Promise<void> =>
     requestJson(`/api/sync/calendar-config/${platform}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    }),
-
-  getNextVideos: (): Promise<{ ok: boolean; nextVideos: Array<{ platform: string; nextVideoId: string | null; nextVideoTitle: string | null }> }> =>
-    requestJson('/api/sync/next-videos'),
-
-  updateNextVideo: (platform: string, data: { nextVideoId?: string; nextVideoTitle?: string }): Promise<void> =>
-    requestJson(`/api/sync/next-video/${platform}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
