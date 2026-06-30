@@ -51,11 +51,14 @@ async function fetchTikTokVideoData(
 
     let videoInfo: any = {};
 
-    // Step 2: If we have video_id, fetch description and thumbnail from /video/list/
+    // Step 2: If we have video_id, fetch description, thumbnail y métricas de engagement
+    // desde /video/list/. Los campos like/view/comment/share_count están soportados
+    // (ver scripts/test-tiktok-videolist.ts) — sin ellos las tarjetas no muestran stats.
     if (videoId) {
       try {
+        const fields = 'id,video_description,video_cover_url,duration,create_time,like_count,view_count,comment_count,share_count';
         const listRes = await fetch(
-          `https://open.tiktokapis.com/v2/video/list/?fields=id,video_description,video_cover_url,duration,create_time&access_token=${token.access_token}`,
+          `https://open.tiktokapis.com/v2/video/list/?fields=${fields}&access_token=${token.access_token}`,
           { headers: { Authorization: `Bearer ${token.access_token}` } }
         );
         if (listRes.ok) {
@@ -66,6 +69,10 @@ async function fetchTikTokVideoData(
               description: video.video_description || null,
               thumbnail: video.video_cover_url || null,
               duration: video.duration || null,
+              views: video.view_count ?? null,
+              likes: video.like_count ?? null,
+              comments: video.comment_count ?? null,
+              shares: video.share_count ?? null,
             };
           }
         }
@@ -81,6 +88,11 @@ async function fetchTikTokVideoData(
         video_id: videoId,
         fail_reason: videoData.fail_reason,
         thumbnail: videoInfo.thumbnail || null,
+        // Claves que espera getStatChips() en el frontend (views/likes/comments).
+        views:    videoInfo.views ?? undefined,
+        likes:    videoInfo.likes ?? undefined,
+        comments: videoInfo.comments ?? undefined,
+        shares:   videoInfo.shares ?? undefined,
       },
     };
   } catch {

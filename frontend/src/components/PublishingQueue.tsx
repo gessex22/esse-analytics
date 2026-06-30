@@ -402,19 +402,10 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       .catch(() => {})
       .finally(() => { configOk = true; resolve(); });
 
+    // El endpoint /api/sync/published-videos ya hace fetch en vivo por plataforma
+    // (YouTube por API key; IG/TikTok por token OAuth) y espeja a la central.
     syncService.getPublishedVideos()
-      .then(data => {
-        setPublished(data as PublishedVideo[]);
-        // Refrescar stats reales automáticamente
-        return syncService.refreshAllStats();
-      })
-      .then(refreshResult => {
-        // Los stats se actualizaron en el backend, volver a cargar tarjetas
-        return syncService.getPublishedVideos();
-      })
-      .then(data => {
-        setPublished(data as PublishedVideo[]);
-      })
+      .then(data => setPublished(data as PublishedVideo[]))
       .catch(() => {})
       .finally(() => { publishedOk = true; resolve(); });
   }
