@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { platformVideoRepo } from '../db/platform-video.repo';
 
 const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
@@ -15,10 +14,13 @@ type PublishedVideo = {
   stats?: Record<string, any>;
 };
 
+type TokenLike = { access_token: string; open_id?: string; [key: string]: any };
+
+// Pide a la central el token OAuth del usuario para una plataforma.
 async function fetchToken(
   platform: 'tiktok' | 'instagram' | 'youtube',
   authHeader: string
-): Promise<{ access_token: string; [key: string]: any } | null> {
+): Promise<TokenLike | null> {
   try {
     const res = await fetch(`${CENTRAL}/api/${platform}/token`, {
       headers: { Authorization: authHeader },
@@ -30,138 +32,162 @@ async function fetchToken(
   }
 }
 
-async function fetchTikTokVideoData(
-  publishId: string,
-  token: { access_token: string; [key: string]: any }
-): Promise<Partial<PublishedVideo>> {
+// ── Último publicado por plataforma — SIEMPRE en vivo desde la API ───────────────
+// La tarjeta refleja lo que realmente está publicado en la plataforma, sin depender
+// de platform_videos local. Si fue subido por fuera de la app, igual aparece.
+
+async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVideo | null> {
   try {
-    // Step 1: Get status and video_id
-    const statusRes = await fetch('https://open.tiktokapis.com/v2/post/publish/status/fetch/', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token.access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ publish_id: publishId }),
-    });
-    if (!statusRes.ok) return {};
-    const statusData = await statusRes.json();
-    const videoData = statusData.data ?? {};
-    const videoId = videoData.video_id;
+    // 1. Resolver la playlist "uploads" del canal. Con OAuth → canal del usuario (mine).
+    //    Sin token → fallback a API key + YOUTUBE_CHANNEL_ID (solo el dueño).
+    let uploadsPlaylistId: string | null = null;
 
-    let videoInfo: any = {};
+    if (token?.access_token) {
+      const chRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true&access_token=${token.access_token}`
+      );
+      if (chRes.ok) {
+        const chData = await chRes.json() as any;
+        uploadsPlaylistId = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads ?? null;
+      }
+    }
+    if (!uploadsPlaylistId && YT_API_KEY && process.env.YOUTUBE_CHANNEL_ID) {
+      const chRes = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id=${process.env.YOUTUBE_CHANNEL_ID}&key=${YT_API_KEY}`
+      );
+      if (chRes.ok) {
+        const chData = await chRes.json() as any;
+        uploadsPlaylistId = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads ?? null;
+      }
+    }
+    if (!uploadsPlaylistId) return null;
 
-    // Step 2: If we have video_id, fetch description, thumbnail y métricas de engagement
-    // desde /video/list/. Los campos like/view/comment/share_count están soportados
-    // (ver scripts/test-tiktok-videolist.ts) — sin ellos las tarjetas no muestran stats.
-    if (videoId) {
-      try {
-        const fields = 'id,video_description,video_cover_url,duration,create_time,like_count,view_count,comment_count,share_count';
-        const listRes = await fetch(
-          `https://open.tiktokapis.com/v2/video/list/?fields=${fields}&access_token=${token.access_token}`,
-          { headers: { Authorization: `Bearer ${token.access_token}` } }
-        );
-        if (listRes.ok) {
-          const listData = await listRes.json();
-          const video = listData.data?.videos?.find((v: any) => v.id === videoId);
-          if (video) {
-            videoInfo = {
-              description: video.video_description || null,
-              thumbnail: video.video_cover_url || null,
-              duration: video.duration || null,
-              views: video.view_count ?? null,
-              likes: video.like_count ?? null,
-              comments: video.comment_count ?? null,
-              shares: video.share_count ?? null,
-            };
-          }
-        }
-      } catch {
-        // video/list fetch failed, continue with status-only data
+    // 2. Primer item de la playlist = último video subido.
+    const authParam = token?.access_token ? `access_token=${token.access_token}` : `key=${YT_API_KEY}`;
+    const plRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlistItems?playlistId=${uploadsPlaylistId}&part=snippet,contentDetails&maxResults=1&${authParam}`
+    );
+    if (!plRes.ok) return null;
+    const plData = await plRes.json() as any;
+    const item = plData.items?.[0];
+    if (!item) return null;
+
+    const videoId = item.contentDetails?.videoId ?? item.snippet?.resourceId?.videoId;
+    if (!videoId) return null;
+
+    const stats: Record<string, any> = {
+      thumbnail: item.snippet?.thumbnails?.maxres?.url
+              || item.snippet?.thumbnails?.high?.url
+              || item.snippet?.thumbnails?.medium?.url
+              || `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+    };
+
+    // 3. Estadísticas del video (API key pública es suficiente).
+    const statParam = YT_API_KEY ? `key=${YT_API_KEY}` : `access_token=${token?.access_token}`;
+    const vRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=statistics&${statParam}`
+    );
+    if (vRes.ok) {
+      const vData = await vRes.json() as any;
+      const v = vData.items?.[0];
+      if (v) {
+        stats.viewCount    = v.statistics?.viewCount;
+        stats.likeCount    = v.statistics?.likeCount;
+        stats.commentCount = v.statistics?.commentCount;
       }
     }
 
     return {
-      status: videoData.status,
-      title: videoInfo.description || null,
-      stats: {
-        video_id: videoId,
-        fail_reason: videoData.fail_reason,
-        thumbnail: videoInfo.thumbnail || null,
-        // Claves que espera getStatChips() en el frontend (views/likes/comments).
-        views:    videoInfo.views ?? undefined,
-        likes:    videoInfo.likes ?? undefined,
-        comments: videoInfo.comments ?? undefined,
-        shares:   videoInfo.shares ?? undefined,
-      },
+      platform:    'youtube',
+      fileName:    null,
+      platformId:  videoId,
+      platformUrl: `https://www.youtube.com/watch?v=${videoId}`,
+      publishedAt: item.snippet?.publishedAt ?? null,
+      title:       item.snippet?.title ?? null,
+      stats,
     };
   } catch {
-    return {};
+    return null;
   }
 }
 
-async function fetchInstagramVideoData(
-  publishId: string,
-  token: { access_token: string; [key: string]: any }
-): Promise<Partial<PublishedVideo>> {
+async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | null> {
   try {
     const fields = 'id,caption,media_type,media_product_type,permalink,thumbnail_url,like_count,comments_count,timestamp';
     const res = await fetch(
-      `https://graph.instagram.com/v22.0/${publishId}?fields=${fields}&access_token=${token.access_token}`
+      `https://graph.instagram.com/v22.0/me/media?fields=${fields}&limit=1&access_token=${token.access_token}`
     );
-    if (!res.ok) return {};
+    if (!res.ok) return null;
     const data = await res.json() as any;
-    if (data.error) return {};
+    if (data.error) return null;
+    const m = data.data?.[0];
+    if (!m) return null;
 
     return {
-      title: data.caption || null,
+      platform:    'instagram',
+      fileName:    null,
+      platformId:  m.id,
+      platformUrl: m.permalink ?? null,
+      publishedAt: m.timestamp ?? null,
+      title:       m.caption ?? null,
       stats: {
-        media_type:     data.media_product_type || data.media_type,
-        like_count:     data.like_count ?? 0,
-        comments_count: data.comments_count ?? 0,
-        thumbnail:      data.thumbnail_url || null,
+        media_type:     m.media_product_type || m.media_type,
+        like_count:     m.like_count ?? 0,
+        comments_count: m.comments_count ?? 0,
+        thumbnail:      m.thumbnail_url || null,
       },
     };
   } catch {
-    return {};
+    return null;
   }
 }
 
-async function fetchYouTubeVideoData(
-  videoId: string,
-  token?: { access_token: string; [key: string]: any }
-): Promise<Partial<PublishedVideo>> {
-  const fallbackThumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+async function fetchTikTokLatest(token: TokenLike): Promise<PublishedVideo | null> {
   try {
-    // API key is sufficient for public video stats — no OAuth needed
-    const param = YT_API_KEY ? `key=${YT_API_KEY}` : `access_token=${token?.access_token}`;
-    if (!YT_API_KEY && !token) return { stats: { thumbnail: fallbackThumbnail } };
+    // /v2/video/list/ devuelve los videos del usuario ordenados por fecha desc.
+    // Campos confirmados en scripts/test-tiktok-videolist.ts.
+    const fields = 'id,video_description,video_cover_url,share_url,like_count,view_count,comment_count,share_count,create_time';
     const res = await fetch(
-      `https://www.googleapis.com/youtube/v3/videos?id=${videoId}&part=snippet,statistics&${param}`
+      `https://open.tiktokapis.com/v2/video/list/?fields=${fields}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ max_count: 1 }),
+      }
     );
-    if (!res.ok) return { stats: { thumbnail: fallbackThumbnail } };
+    if (!res.ok) return null;
     const data = await res.json() as any;
-    const video = data.items?.[0];
-    if (!video) return { stats: { thumbnail: fallbackThumbnail } };
+    const v = data.data?.videos?.[0];
+    if (!v) return null;
+
+    const openId = token.open_id;
     return {
-      title: video.snippet?.title || null,
+      platform:    'tiktok',
+      fileName:    null,
+      platformId:  v.id,
+      platformUrl: v.share_url
+                || (openId ? `https://www.tiktok.com/@${openId}/video/${v.id}` : null),
+      publishedAt: v.create_time ? new Date(v.create_time * 1000).toISOString() : null,
+      title:       v.video_description ?? null,
       stats: {
-        viewCount:    video.statistics?.viewCount,
-        likeCount:    video.statistics?.likeCount,
-        commentCount: video.statistics?.commentCount,
-        thumbnail:    video.snippet?.thumbnails?.maxres?.url
-                   || video.snippet?.thumbnails?.high?.url
-                   || video.snippet?.thumbnails?.medium?.url
-                   || fallbackThumbnail,
+        thumbnail: v.video_cover_url || null,
+        // Claves que espera getStatChips() en el frontend.
+        views:    v.view_count ?? undefined,
+        likes:    v.like_count ?? undefined,
+        comments: v.comment_count ?? undefined,
+        shares:   v.share_count ?? undefined,
       },
     };
   } catch {
-    return { stats: { thumbnail: fallbackThumbnail } };
+    return null;
   }
 }
 
-// GET /api/sync/published-videos/refresh
-// Fetches live data from each platform's API for the latest published video
+// GET /api/sync/published-videos
+// Trae el último video publicado de cada plataforma EN VIVO desde su API.
 export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const authHeader = req.headers.authorization;
@@ -174,61 +200,32 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
     const result: PublishedVideo[] = [];
 
     for (const platform of platforms) {
-      const latest = platformVideoRepo.findLatestWithFileName(platform);
+      const token = await fetchToken(platform, authHeader);
 
-      if (!latest || !latest.platform_id) {
-        result.push({
-          platform,
-          fileName: null,
-          platformId: null,
-          platformUrl: null,
-          publishedAt: null,
-        });
-        continue;
-      }
-
-      // Base video info — stored title/description as fallback for private videos
-      const baseVideo: PublishedVideo = {
-        platform,
-        fileName: latest.file_name ?? null,
-        platformId: latest.platform_id,
-        platformUrl: latest.platform_url ?? null,
-        publishedAt: latest.published_at ?? null,
-        title: (latest as any).title ?? null,
-        stats: (latest as any).description ? { description: (latest as any).description } : undefined,
-      };
-
-      let freshData: Partial<PublishedVideo> = {};
-
+      let card: PublishedVideo | null = null;
       if (platform === 'youtube') {
-        // YouTube usa API key pública — no necesita token OAuth
-        freshData = await fetchYouTubeVideoData(latest.platform_id);
-      } else {
-        // TikTok e Instagram sí requieren token OAuth
-        const token = await fetchToken(platform, authHeader);
-        if (!token) {
-          result.push(baseVideo);
-          continue;
-        }
-        if (platform === 'tiktok') {
-          freshData = await fetchTikTokVideoData(latest.platform_id, token);
-        } else if (platform === 'instagram') {
-          freshData = await fetchInstagramVideoData(latest.platform_id, token);
-        }
+        // YouTube puede resolverse con token (canal del usuario) o API key + channel env.
+        card = await fetchYouTubeLatest(token);
+      } else if (token) {
+        card = platform === 'tiktok'
+          ? await fetchTikTokLatest(token)
+          : await fetchInstagramLatest(token);
       }
 
-      // Merge: API data wins, but fall back to stored title if API returns nothing
-      const merged = { ...baseVideo, ...freshData };
-      if (!merged.title && baseVideo.title) merged.title = baseVideo.title;
-      result.push(merged);
+      result.push(card ?? {
+        platform,
+        fileName: null,
+        platformId: null,
+        platformUrl: null,
+        publishedAt: null,
+      });
     }
 
-    // Espejo a la central (solo lo derivado de datos LOCALES) para que web/remoto lo vea.
+    // Espejo a la central para que web/remoto vea las mismas tarjetas (ya frescas).
     mirrorToCentral(authHeader, result).catch(() => { /* no bloquear la respuesta local */ });
 
-    // Fallback: si una plataforma quedó vacía localmente (máquina nueva o tras wipe),
-    // rellenarla desde el espejo de la central (scopeado por tu cuenta). Así tus
-    // tarjetas se ven en cualquier equipo donde inicies tu sesión.
+    // Fallback: si una plataforma no devolvió nada (sin token en este equipo, API caída),
+    // rellenarla desde el espejo de la central para no dejar la tarjeta vacía.
     const filled = await fillEmptyFromCentral(authHeader, result);
 
     res.json(filled);
@@ -249,7 +246,6 @@ async function mirrorToCentral(authHeader: string, cards: PublishedVideo[]): Pro
 }
 
 // Rellena las tarjetas vacías (sin platformId) con las del espejo de la central.
-// Permite ver tus tarjetas en un equipo que aún no tiene los registros locales.
 async function fillEmptyFromCentral(authHeader: string, result: PublishedVideo[]): Promise<PublishedVideo[]> {
   if (!result.some(r => !r.platformId)) return result;   // ya están todas → nada que traer
   try {

@@ -305,8 +305,9 @@ function PublishedRow({ data }: { data: PublishedVideo }) {
           <p className="text-xs text-muted-foreground">Sin publicaciones</p>
         ) : (
           <>
-            <p className="text-xs font-medium text-foreground truncate">{data.fileName ?? "—"}</p>
-            {data.title && data.platform !== "tiktok" && (
+            {/* Tarjeta API-first: normalmente no hay fileName local, mostramos el título de la plataforma. */}
+            <p className="text-xs font-medium text-foreground truncate">{data.fileName ?? data.title ?? "—"}</p>
+            {data.fileName && data.title && data.platform !== "tiktok" && (
               <p className="text-[10px] text-muted-foreground truncate italic">{data.title}</p>
             )}
           </>
