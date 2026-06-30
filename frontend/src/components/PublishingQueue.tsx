@@ -359,9 +359,10 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     let loadedNextIds: Partial<Record<Platform, string>> = {};
     let videosOk = false;
     let configOk = false;
+    let publishedOk = false;
 
     function resolve() {
-      if (!videosOk || !configOk) return;
+      if (!videosOk || !configOk || !publishedOk) return;
       setLoading(false);
       setRefreshing(false);
       const idx: Record<Platform, number> = { tiktok: 0, instagram: 0, youtube: 0 };
@@ -402,8 +403,15 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       .finally(() => { configOk = true; resolve(); });
 
     syncService.getPublishedVideos()
-      .then(data => setPublished(data as PublishedVideo[]))
-      .catch(() => {});
+      .then(data => {
+        setPublished(data as PublishedVideo[]);
+        // Si showRefresh = true, refrescar stats también
+        if (showRefresh) {
+          syncService.refreshAllStats().catch(() => {});
+        }
+      })
+      .catch(() => {})
+      .finally(() => { publishedOk = true; resolve(); });
   }
 
   useEffect(() => { loadAll(); }, []);

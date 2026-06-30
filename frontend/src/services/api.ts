@@ -623,8 +623,17 @@ export const syncService = {
   getCalendarConfig: (): Promise<{ platform: string; lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number; lastVideoId?: string; nextVideoId?: string; nextVideo?: { fileId: string; title: string; duration: string } | null }[]> =>
     requestJson('/api/sync/calendar-config'),
 
-  getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null }[]> =>
+  getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null; title?: string | null; status?: string | null; stats?: Record<string, any> }[]> =>
     requestJson('/api/sync/published-videos'),
+
+  getPublishedStats: (platform: string, platformId: string): Promise<{ ok: boolean; stats: Record<string, any> }> =>
+    requestJson(`/api/sync/published-stats/${platform}/${platformId}`),
+
+  refreshAllStats: (): Promise<{ ok: boolean; results: Record<string, any> }> =>
+    requestJson('/api/sync/refresh-all-stats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }),
 
   updateCalendarConfig: (platform: string, data: { lastPublishedDate?: string; lastPublishedTitle?: string; intervalDays?: number; nextVideoId?: string }): Promise<void> =>
     requestJson(`/api/sync/calendar-config/${platform}`, {

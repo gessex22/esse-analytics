@@ -5,6 +5,7 @@ import {
   getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
+import { getPublishedStats, refreshAllStats } from '../controllers/published-stats.controller';
 import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -12,6 +13,10 @@ const router = Router();
 // Tarjetas de "último publicado" — la app las espeja (POST) y la web/remoto las lee (GET).
 router.get ('/api/sync/published-videos', verifyToken, getPublishedCards);
 router.post('/api/sync/published-videos', verifyToken, mirrorPublishedCards);
+
+// Stats de plataformas reales (views, likes, comments, etc.)
+router.get ('/api/sync/published-stats/:platform/:platformId', verifyToken, getPublishedStats);
+router.post('/api/sync/refresh-all-stats', verifyToken, refreshAllStats);
 
 router.post('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), triggerYouTubeSync);
 router.get ('/api/sync/youtube',            verifyToken, requireRole('todopoderoso'), getYouTubeList);
