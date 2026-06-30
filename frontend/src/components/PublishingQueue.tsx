@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import {
-  Play, Camera, Music2, AlertTriangle,
+  Play, Camera, Music2,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
 } from "lucide-react";
 import { videoService, syncService } from "../services/api";
@@ -158,7 +158,7 @@ function getStatChips(stats?: Record<string, any>, platform?: Platform) {
   return [];
 }
 
-// ── Upcoming / overdue card ─────────────────────────────────────────────────────
+// ── Upcoming / overdue card — fila horizontal full-width ────────────────────────
 
 function UpcomingCard({
   slot, video, index, total, overdue,
@@ -172,68 +172,76 @@ function UpcomingCard({
   const Icon    = cfg.icon;
   const urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
 
-  const navRow = (
-    <div className="flex items-center gap-1.5">
-      <button
-        onClick={onOlder}
-        disabled={loading || index >= total - 1}
-        className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors"
-      >
-        <ChevronLeft className="w-3.5 h-3.5" />
-      </button>
-      <span className="text-[10px] text-muted-foreground tabular-nums">{total > 0 ? `${index + 1}/${total}` : "—"}</span>
-      <button
-        onClick={onNewer}
-        disabled={loading || index <= 0}
-        className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors"
-      >
-        <ChevronRight className="w-3.5 h-3.5" />
-      </button>
-      <span className={`text-[10px] font-medium ${URG_TEXT[urgency]}`}>
-        {slot.nextDate ? urgencyLabel(slot.nextDate) : "sin fecha"}
-      </span>
-      <div className="flex-1" />
-      <IntervalChip days={slot.intervalDays} onChange={onIntervalChange} />
-    </div>
-  );
-
-  const body = (
-    <div className="flex items-center gap-3 px-3.5 py-3 lg:px-4 lg:py-4 lg:gap-4">
+  return (
+    <motion.div
+      layout initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
+      className={`flex items-center gap-3 lg:gap-4 px-3.5 py-3 lg:px-5 lg:py-4 rounded-xl bg-card border ${
+        overdue ? "border-red-500/50 border-l-4 border-l-red-500" : "border-border"
+      }`}
+    >
       {/* Platform icon */}
       <div className={`w-9 h-9 min-w-9 lg:w-11 lg:h-11 lg:min-w-11 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
         <Icon className="w-4 h-4 lg:w-5 lg:h-5 text-white" />
       </div>
 
-      {/* Main */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center justify-between gap-2 mb-1">
-          <span className="text-xs font-semibold text-foreground">{cfg.label}</span>
-          <span className={`text-xs font-bold ${URG_TEXT[urgency]}`}>
-            {overdue ? "Vencido" : (slot.nextDate ? formatShortDate(slot.nextDate) : "—")}
-          </span>
-        </div>
-        <p className="text-[11px] text-muted-foreground truncate mb-1.5">{video?.title ?? "—"}</p>
-        {navRow}
+      {/* Name + urgency */}
+      <div className="w-[84px] lg:w-[110px] flex-shrink-0">
+        <p className="text-xs lg:text-sm font-semibold text-foreground leading-tight">{cfg.label}</p>
+        <p className={`text-[10px] lg:text-xs font-medium mt-0.5 ${URG_TEXT[urgency]}`}>
+          {overdue ? "Vencido" : (slot.nextDate ? urgencyLabel(slot.nextDate) : "sin fecha")}
+        </p>
       </div>
 
-      {/* Actions */}
-      <div className="flex flex-col items-center justify-center gap-1.5 flex-shrink-0">
+      {/* Video navigator (ocupa el ancho) */}
+      <div className="flex-1 flex items-center gap-1.5 min-w-0">
+        <button onClick={onOlder} disabled={loading || index >= total - 1}
+          className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors flex-shrink-0">
+          <ChevronLeft className="w-4 h-4 lg:w-5 lg:h-5" />
+        </button>
+        <div className="flex-1 min-w-0 text-center px-1">
+          {loading ? (
+            <p className="text-xs text-muted-foreground">…</p>
+          ) : total === 0 ? (
+            <p className="text-xs text-muted-foreground">Sin videos</p>
+          ) : (
+            <>
+              <p className="text-xs lg:text-sm font-medium text-foreground truncate">{video?.title ?? "—"}</p>
+              <p className="text-[10px] text-muted-foreground tabular-nums">{total > 0 ? `${index + 1} / ${total}` : ""}</p>
+            </>
+          )}
+        </div>
+        <button onClick={onNewer} disabled={loading || index <= 0}
+          className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors flex-shrink-0">
+          <ChevronRight className="w-4 h-4 lg:w-5 lg:h-5" />
+        </button>
+      </div>
+
+      {/* Fecha + intervalo */}
+      <div className="hidden sm:flex flex-col items-end gap-0.5 flex-shrink-0 w-[72px] lg:w-[88px]">
+        {slot.nextDate && (
+          <span className="text-[10px] lg:text-xs text-muted-foreground">{formatShortDate(slot.nextDate)}</span>
+        )}
+        <IntervalChip days={slot.intervalDays} onChange={onIntervalChange} />
+      </div>
+
+      {/* Acciones */}
+      <div className="flex items-center gap-1.5 flex-shrink-0">
         <button
           onClick={onOpen}
           disabled={loading || !video}
           title="Ver video"
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-20 transition-colors"
         >
-          <Clapperboard className="w-3.5 h-3.5" />
+          <Clapperboard className="w-4 h-4" />
         </button>
         {overdue ? (
           <button
             onClick={onPin}
             disabled={loading || pinning || pinned || !video}
             title="Marcar como publicado"
-            className="flex items-center gap-1 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold px-2.5 py-1.5 disabled:opacity-40 transition-colors whitespace-nowrap"
+            className="flex items-center gap-1 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[11px] lg:text-xs font-semibold px-2.5 py-1.5 disabled:opacity-40 transition-colors whitespace-nowrap"
           >
-            {pinning ? <Loader2 className="w-3 h-3 animate-spin" /> : pinned ? <Check className="w-3 h-3" /> : <>Publicar <ArrowRight className="w-3 h-3" /></>}
+            {pinning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : pinned ? <Check className="w-3.5 h-3.5" /> : <>Publicar <ArrowRight className="w-3.5 h-3.5" /></>}
           </button>
         ) : (
           <button
@@ -244,31 +252,10 @@ function UpcomingCard({
               pinned ? "text-emerald-500 bg-emerald-500/10 cursor-default" : "text-primary hover:bg-primary/10 disabled:opacity-30"
             }`}
           >
-            {pinning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : pinned ? <Check className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+            {pinning ? <Loader2 className="w-4 h-4 animate-spin" /> : pinned ? <Check className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
           </button>
         )}
       </div>
-    </div>
-  );
-
-  if (overdue) {
-    return (
-      <motion.div layout initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-        className="rounded-xl overflow-hidden border border-red-500/40 bg-red-500/5">
-        <div className="flex items-center gap-2 bg-red-500/90 px-3.5 py-1">
-          <AlertTriangle className="w-3 h-3 text-white" />
-          <span className="text-[10px] font-bold text-white tracking-wide">VENCIDO</span>
-          {slot.nextDate && <span className="text-[10px] text-white/80">debía publicar el {formatShortDate(slot.nextDate)} · {urgencyLabel(slot.nextDate)}</span>}
-        </div>
-        {body}
-      </motion.div>
-    );
-  }
-
-  return (
-    <motion.div layout initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-      className="rounded-xl bg-card border border-border">
-      {body}
     </motion.div>
   );
 }
@@ -283,40 +270,50 @@ function HistoryRow({ data }: { data: PublishedVideo }) {
   const empty     = !data.platformId;
 
   return (
-    <div className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-card border border-border">
+    <div className="flex items-center gap-3 lg:gap-4 px-3.5 py-3 lg:px-5 rounded-xl bg-card border border-border">
       {/* Thumbnail 9:16 */}
       {thumbnail ? (
-        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 34, aspectRatio: "9/16" }}>
+        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 40, aspectRatio: "9/16" }}>
           <img src={thumbnail} alt="" className="w-full h-full object-cover" />
         </div>
       ) : (
-        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`} style={{ width: 34, aspectRatio: "9/16" }}>
-          <Icon className="w-4 h-4 text-white/90" />
+        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`} style={{ width: 40, aspectRatio: "9/16" }}>
+          <Icon className="w-5 h-5 text-white/90" />
         </div>
       )}
 
-      {/* Platform + filename */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5">
-          <span className={`w-2.5 h-2.5 rounded-sm flex-shrink-0 ${cfg.bg}`} />
-          <span className="text-[10px] text-muted-foreground">
-            {cfg.label}{data.publishedAt ? ` · ${formatLongDate(data.publishedAt)}` : ""}
-          </span>
+      {/* Platform + fecha */}
+      <div className="w-[96px] lg:w-[120px] flex-shrink-0">
+        <div className="flex items-center gap-1.5">
+          <span className={`w-3 h-3 rounded-sm flex-shrink-0 ${cfg.bg}`} />
+          <span className="text-xs font-semibold text-foreground">{cfg.label}</span>
         </div>
+        {data.publishedAt && (
+          <p className="text-[10px] text-muted-foreground mt-0.5">{formatLongDate(data.publishedAt)}</p>
+        )}
+      </div>
+
+      {/* Filename + título */}
+      <div className="flex-1 min-w-0">
         {empty ? (
           <p className="text-xs text-muted-foreground">Sin publicaciones</p>
         ) : (
-          <p className="text-xs font-medium text-foreground truncate">{data.fileName ?? data.title ?? "—"}</p>
+          <>
+            <p className="text-xs lg:text-sm font-medium text-foreground truncate">{data.fileName ?? data.title ?? "—"}</p>
+            {data.fileName && data.title && data.platform !== "tiktok" && (
+              <p className="text-[10px] text-muted-foreground truncate italic">{data.title}</p>
+            )}
+          </>
         )}
       </div>
 
       {/* Stats */}
       {!empty && (
         chips.length > 0 ? (
-          <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="hidden sm:flex items-center gap-4 lg:gap-5 flex-shrink-0">
             {chips.map((c, i) => (
               <div key={i} className="text-center">
-                <p className="text-xs font-bold text-foreground leading-none">{c.v}</p>
+                <p className="text-xs lg:text-sm font-bold text-foreground leading-none">{c.v}</p>
                 <p className="text-[9px] text-muted-foreground mt-0.5">{c.l}</p>
               </div>
             ))}
@@ -329,7 +326,7 @@ function HistoryRow({ data }: { data: PublishedVideo }) {
       {/* Link */}
       {data.platformUrl && data.platform !== "tiktok" && (
         <a href={data.platformUrl} target="_blank" rel="noopener noreferrer"
-          className="text-[11px] text-primary hover:underline flex-shrink-0">↗</a>
+          className="text-sm text-primary hover:underline flex-shrink-0">↗</a>
       )}
     </div>
   );
@@ -480,8 +477,11 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     const urg: Urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
     return { p, slot, urg };
   });
-  const overdue  = withUrg.filter(x => x.urg === "past").sort(byDate);
-  const upcoming = withUrg.filter(x => x.urg !== "past").sort(byDate);
+  // Buckets por urgencia: Vencido → Hoy → Mañana → Próximo.
+  const overdueB  = withUrg.filter(x => x.urg === "past").sort(byDate);
+  const todayB    = withUrg.filter(x => x.urg === "today").sort(byDate);
+  const soonB     = withUrg.filter(x => x.urg === "soon").sort(byDate);
+  const laterB    = withUrg.filter(x => x.urg === "ok").sort(byDate);
 
   // Historial por fecha de publicación desc (vacíos al final).
   const history = ORDER
@@ -511,15 +511,15 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   };
 
   return (
-    <div className="flex flex-col gap-5 pb-4 w-full max-w-2xl lg:max-w-5xl mx-auto">
+    <div className="flex flex-col gap-5 pb-4 w-full max-w-4xl mx-auto">
 
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold text-foreground">Calendario</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {overdue.length > 0
-              ? <span className="text-red-500 font-medium">⚠ {overdue.length === 1 ? "1 plataforma vencida" : `${overdue.length} plataformas vencidas`} · publicá ahora</span>
+            {overdueB.length > 0
+              ? <span className="text-red-500 font-medium">⚠ {overdueB.length === 1 ? "1 plataforma vencida" : `${overdueB.length} plataformas vencidas`} · publicá ahora</span>
               : <>Hoy, {formatLongDate(todayStr())}</>}
           </p>
         </div>
@@ -538,34 +538,45 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
           <Loader2 className="w-5 h-5 animate-spin" />
         </div>
       ) : (
-        // PC: 2 columnas (acciones | historial). Celular: una sola columna apilada.
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem] gap-5 lg:gap-6 items-start">
+        <>
+          {/* Vencido */}
+          {overdueB.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
+              {overdueB.map(x => renderCard(x, true))}
+            </section>
+          )}
 
-          {/* Columna de acciones */}
-          <div className="flex flex-col gap-5 min-w-0">
-            {/* Vencido — publicar ahora */}
-            {overdue.length > 0 && (
-              <section className="flex flex-col gap-2">
-                <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
-                {overdue.map(x => renderCard(x, true))}
-              </section>
-            )}
+          {/* Hoy */}
+          {todayB.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-orange-500 px-1">Hoy</p>
+              {todayB.map(x => renderCard(x, false))}
+            </section>
+          )}
 
-            {/* Próximo */}
-            {upcoming.length > 0 && (
-              <section className="flex flex-col gap-2">
-                <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
-                {upcoming.map(x => renderCard(x, false))}
-              </section>
-            )}
-          </div>
+          {/* Mañana */}
+          {soonB.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-amber-500 px-1">Mañana</p>
+              {soonB.map(x => renderCard(x, false))}
+            </section>
+          )}
 
-          {/* Columna historial */}
-          <section className="flex flex-col gap-2 min-w-0">
-            <Divider label="Último publicado" />
+          {/* Próximo */}
+          {laterB.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
+              {laterB.map(x => renderCard(x, false))}
+            </section>
+          )}
+
+          {/* Últimos publicados */}
+          <section className="flex flex-col gap-2 mt-1">
+            <Divider label="Últimos publicados" />
             {history.map(d => <HistoryRow key={d.platform} data={d} />)}
           </section>
-        </div>
+        </>
       )}
 
     </div>
