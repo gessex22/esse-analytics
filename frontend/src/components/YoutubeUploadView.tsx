@@ -1138,7 +1138,9 @@ export function YoutubeUploadView() {
   const [thumbnailBlob,   setThumbnailBlob]   = useState<Blob | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
   const [showScrubber,    setShowScrubber]    = useState(false);
-  const [videoSource,     setVideoSource]     = useState<"library" | "device">(() => isRemote() ? "device" : "library");
+  // En remoto (owner) publicamos desde el catálogo de la central por fileId, no por
+  // archivo del dispositivo. El selector de fuente (línea ~1355) solo se ve en local.
+  const [videoSource,     setVideoSource]     = useState<"library" | "device">("library");
   const [localFile,       setLocalFile]       = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 

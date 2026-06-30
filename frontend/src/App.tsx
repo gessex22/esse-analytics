@@ -263,7 +263,12 @@ export default function App() {
   // Visibilidad de cada item: rol + entorno (en remoto se ocultan las vistas locales).
   const isNavVisible = (i: number) => {
     if (role === "editor" && !allowedNavForEditor.has(i)) return false;
-    if (!isLocal && LOCAL_ONLY_NAV.has(i)) return false;
+    if (!isLocal && LOCAL_ONLY_NAV.has(i)) {
+      // Excepción: el owner puede publicar en remoto desde el catálogo (la central
+      // tiene sus archivos co-localizados y publica por fileId). Solo "Subir" (2);
+      // el resto (Videos/Taller/Gemas) sigue siendo local-only.
+      if (!(i === 2 && !!user.isOwner)) return false;
+    }
     // En modo móvil, "Subir" (2) solo para quien puede publicar desde el celular
     // (owner ahora; premium cuando se habilite el rollout).
     if (i === 2 && mobileMode && !mobileCanUpload) return false;
