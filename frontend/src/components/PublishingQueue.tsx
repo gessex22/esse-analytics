@@ -198,10 +198,10 @@ function UpcomingCard({
   );
 
   const body = (
-    <div className="flex items-center gap-3 px-3.5 py-3">
+    <div className="flex items-center gap-3 px-3.5 py-3 lg:px-4 lg:py-4 lg:gap-4">
       {/* Platform icon */}
-      <div className={`w-9 h-9 min-w-9 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
-        <Icon className="w-4 h-4 text-white" />
+      <div className={`w-9 h-9 min-w-9 lg:w-11 lg:h-11 lg:min-w-11 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
+        <Icon className="w-4 h-4 lg:w-5 lg:h-5 text-white" />
       </div>
 
       {/* Main */}
@@ -511,7 +511,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   };
 
   return (
-    <div className="flex flex-col gap-5 pb-4 w-full max-w-2xl mx-auto">
+    <div className="flex flex-col gap-5 pb-4 w-full max-w-2xl lg:max-w-5xl mx-auto">
 
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
@@ -538,29 +538,34 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
           <Loader2 className="w-5 h-5 animate-spin" />
         </div>
       ) : (
-        <>
-          {/* Vencido — publicar ahora */}
-          {overdue.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
-              {overdue.map(x => renderCard(x, true))}
-            </section>
-          )}
+        // PC: 2 columnas (acciones | historial). Celular: una sola columna apilada.
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem] gap-5 lg:gap-6 items-start">
 
-          {/* Próximo */}
-          {upcoming.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
-              {upcoming.map(x => renderCard(x, false))}
-            </section>
-          )}
+          {/* Columna de acciones */}
+          <div className="flex flex-col gap-5 min-w-0">
+            {/* Vencido — publicar ahora */}
+            {overdue.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
+                {overdue.map(x => renderCard(x, true))}
+              </section>
+            )}
 
-          {/* Historial */}
-          <section className="flex flex-col gap-2">
+            {/* Próximo */}
+            {upcoming.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
+                {upcoming.map(x => renderCard(x, false))}
+              </section>
+            )}
+          </div>
+
+          {/* Columna historial */}
+          <section className="flex flex-col gap-2 min-w-0">
             <Divider label="Último publicado" />
             {history.map(d => <HistoryRow key={d.platform} data={d} />)}
           </section>
-        </>
+        </div>
       )}
 
     </div>
