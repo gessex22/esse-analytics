@@ -405,10 +405,15 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     syncService.getPublishedVideos()
       .then(data => {
         setPublished(data as PublishedVideo[]);
-        // Si showRefresh = true, refrescar stats también
-        if (showRefresh) {
-          syncService.refreshAllStats().catch(() => {});
-        }
+        // Refrescar stats reales automáticamente
+        return syncService.refreshAllStats();
+      })
+      .then(refreshResult => {
+        // Los stats se actualizaron en el backend, volver a cargar tarjetas
+        return syncService.getPublishedVideos();
+      })
+      .then(data => {
+        setPublished(data as PublishedVideo[]);
       })
       .catch(() => {})
       .finally(() => { publishedOk = true; resolve(); });
