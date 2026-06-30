@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import {
-  Play, Camera, Music2,
+  Play, Camera, Music2, AlertTriangle, Clock,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
 } from "lucide-react";
 import { videoService, syncService } from "../services/api";
@@ -69,6 +69,21 @@ const URG_TEXT: Record<Urgency, string> = {
   today: "text-orange-500",
   soon:  "text-amber-500",
   ok:    "text-emerald-500",
+};
+
+// Estilos del diseño clásico (PC).
+const URGENCY_STYLE: Record<Urgency, { pill: string; label: string; icon: typeof AlertTriangle | typeof Clock }> = {
+  past:  { pill: "bg-red-500/15 text-red-500",        label: "Vencido", icon: AlertTriangle },
+  today: { pill: "bg-orange-500/15 text-orange-500",  label: "Hoy",     icon: Clock },
+  soon:  { pill: "bg-amber-400/15 text-amber-600",    label: "Mañana",  icon: Clock },
+  ok:    { pill: "bg-secondary text-muted-foreground", label: "",       icon: Clock },
+};
+
+const URGENCY_BORDER: Record<Urgency, string> = {
+  past:  "border-l-red-500",
+  today: "border-l-orange-500",
+  soon:  "border-l-amber-400",
+  ok:    "border-l-transparent",
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -344,6 +359,198 @@ function Divider({ label }: { label: string }) {
   );
 }
 
+// ── Diseño clásico (PC): fila por plataforma ─────────────────────────────────────
+
+function PlatformRow({
+  slot, videos, index, onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading,
+}: {
+  slot: PlatformSlot; videos: SlimVideo[]; index: number;
+  onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
+  onIntervalChange: (d: number) => void; pinning: boolean; pinned: boolean; loading: boolean;
+}) {
+  const cfg     = PLATFORM_CFG[slot.platform];
+  const Icon    = cfg.icon;
+  const urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
+  const urg     = URGENCY_STYLE[urgency];
+  const UrgIcon = urg.icon;
+  const video   = videos[index];
+  const total   = videos.length;
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl bg-card border border-border border-l-4 ${URGENCY_BORDER[urgency]}`}
+    >
+      {/* Platform icon */}
+      <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
+        <Icon className="w-4 h-4 text-white" />
+      </div>
+
+      {/* Name + urgency */}
+      <div className="w-[90px] flex-shrink-0">
+        <p className="text-xs font-semibold text-foreground leading-tight">{cfg.label}</p>
+        {slot.nextDate && (
+          <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${urg.pill} px-1 py-0 rounded-full`}>
+            {urgency !== "ok" && <UrgIcon className="w-2.5 h-2.5" />}
+            {urg.label || formatShortDate(slot.nextDate)}
+          </span>
+        )}
+      </div>
+
+      {/* Video navigator */}
+      <div className="flex-1 flex items-center gap-1 min-w-0">
+        <button
+          onClick={onOlder}
+          disabled={loading || index >= total - 1}
+          className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors flex-shrink-0"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+
+        <div className="flex-1 min-w-0 text-center px-1">
+          {loading ? (
+            <p className="text-xs text-muted-foreground flex items-center justify-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> Cargando…
+            </p>
+          ) : total === 0 ? (
+            <p className="text-xs text-muted-foreground">Sin videos</p>
+          ) : (
+            <>
+              <p className="text-xs font-medium text-foreground truncate">{video?.title ?? "—"}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {video?.duration ?? ""}
+                {total > 0 && <span className="ml-1 opacity-60">{index + 1}/{total}</span>}
+              </p>
+            </>
+          )}
+        </div>
+
+        <button
+          onClick={onNewer}
+          disabled={loading || index <= 0}
+          className="p-0.5 rounded hover:bg-secondary disabled:opacity-20 transition-colors flex-shrink-0"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Date + interval */}
+      <div className="hidden sm:flex flex-col items-end gap-0.5 flex-shrink-0 w-[80px]">
+        {slot.nextDate && (
+          <span className="text-[10px] text-muted-foreground">{formatShortDate(slot.nextDate)}</span>
+        )}
+        <IntervalChip days={slot.intervalDays} onChange={onIntervalChange} />
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-1 flex-shrink-0">
+        <button
+          onClick={onOpen}
+          disabled={loading || !video}
+          title="Ver video"
+          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-20 transition-colors"
+        >
+          <Clapperboard className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={onPin}
+          disabled={loading || pinning || pinned || !video}
+          title={pinned ? "Fijado" : "Fijar como publicado y avanzar"}
+          className={`p-1.5 rounded-lg transition-colors ${
+            pinned
+              ? "text-emerald-500 bg-emerald-500/10 cursor-default"
+              : "text-primary hover:bg-primary/10 disabled:opacity-30"
+          }`}
+        >
+          {pinning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+           pinned  ? <Check   className="w-3.5 h-3.5" /> :
+                     <Pin     className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+function PublishedRow({ data }: { data: PublishedVideo }) {
+  const cfg       = PLATFORM_CFG[data.platform];
+  const Icon      = cfg.icon;
+  const chips     = getStatChips(data.stats, data.platform).slice(0, 3);
+  const thumbnail = data.stats?.thumbnail as string | undefined;
+  const empty     = !data.platformId;
+
+  return (
+    <div className="flex items-center gap-3 px-3.5 py-3 rounded-xl border border-border bg-card">
+
+      {/* Thumbnail 9:16 — con placeholder cuando no hay miniatura (ej. TikTok) */}
+      {thumbnail ? (
+        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 40, aspectRatio: "9/16" }}>
+          <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+        </div>
+      ) : (
+        <div
+          className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`}
+          style={{ width: 40, aspectRatio: "9/16" }}
+        >
+          <Icon className="w-5 h-5 text-white/90" />
+        </div>
+      )}
+
+      {/* Platform */}
+      <div className="w-[90px] flex-shrink-0">
+        <div className="flex items-center gap-1.5">
+          <div className={`w-5 h-5 rounded-md flex items-center justify-center ${cfg.bg}`}>
+            <Icon className="w-2.5 h-2.5 text-white" />
+          </div>
+          <span className="text-xs font-semibold text-foreground">{cfg.label}</span>
+        </div>
+        {data.publishedAt && (
+          <p className="text-[10px] text-muted-foreground mt-0.5">{formatLongDate(data.publishedAt)}</p>
+        )}
+      </div>
+
+      {/* Filename + title */}
+      <div className="flex-1 min-w-0">
+        {empty ? (
+          <p className="text-xs text-muted-foreground">Sin publicaciones</p>
+        ) : (
+          <>
+            <p className="text-xs font-medium text-foreground truncate">{data.fileName ?? data.title ?? "—"}</p>
+            {data.fileName && data.title && data.platform !== "tiktok" && (
+              <p className="text-[10px] text-muted-foreground truncate italic">{data.title}</p>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Stats */}
+      {chips.length > 0 && (
+        <div className="hidden sm:flex items-center gap-3 flex-shrink-0">
+          {chips.map((c, i) => (
+            <div key={i} className="text-center">
+              <p className="text-xs font-bold text-foreground leading-none">{c.v}</p>
+              <p className="text-[9px] text-muted-foreground">{c.l}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Link */}
+      {data.platformUrl && data.platform !== "tiktok" && (
+        <a
+          href={data.platformUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[11px] text-primary hover:underline flex-shrink-0"
+        >
+          ↗
+        </a>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; onOpenVideo?: (fileId: string, title: string) => void }) {
@@ -539,43 +746,71 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         </div>
       ) : (
         <>
-          {/* Vencido */}
-          {overdueB.length > 0 && (
+          {/* ── PC (lg+): diseño clásico — 3 próximas + 3 últimas en horizontal ── */}
+          <div className="hidden lg:flex lg:flex-col gap-6">
             <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
-              {overdueB.map(x => renderCard(x, true))}
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próxima publicación</p>
+              {ORDER.map(p => {
+                const currentVideo = videos[indices[p]];
+                return (
+                  <PlatformRow
+                    key={p}
+                    slot={slotFor(p)}
+                    videos={videos}
+                    index={indices[p]}
+                    onOlder={() => navigate(p, "older")}
+                    onNewer={() => navigate(p, "newer")}
+                    onPin={() => pinVideo(p)}
+                    onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
+                    onIntervalChange={d => updateInterval(p, d)}
+                    pinning={pinning[p]}
+                    pinned={pinned[p]}
+                    loading={loading}
+                  />
+                );
+              })}
             </section>
-          )}
-
-          {/* Hoy */}
-          {todayB.length > 0 && (
             <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-orange-500 px-1">Hoy</p>
-              {todayB.map(x => renderCard(x, false))}
+              <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Último publicado</p>
+              {ORDER.map(p => {
+                const data = published.find(d => d.platform === p)
+                  ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo;
+                return <PublishedRow key={p} data={data} />;
+              })}
             </section>
-          )}
+          </div>
 
-          {/* Mañana */}
-          {soonB.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-amber-500 px-1">Mañana</p>
-              {soonB.map(x => renderCard(x, false))}
+          {/* ── Mobile (< lg): feed por urgencia ── */}
+          <div className="lg:hidden flex flex-col gap-5">
+            {overdueB.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
+                {overdueB.map(x => renderCard(x, true))}
+              </section>
+            )}
+            {todayB.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-orange-500 px-1">Hoy</p>
+                {todayB.map(x => renderCard(x, false))}
+              </section>
+            )}
+            {soonB.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-amber-500 px-1">Mañana</p>
+                {soonB.map(x => renderCard(x, false))}
+              </section>
+            )}
+            {laterB.length > 0 && (
+              <section className="flex flex-col gap-2">
+                <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
+                {laterB.map(x => renderCard(x, false))}
+              </section>
+            )}
+            <section className="flex flex-col gap-2 mt-1">
+              <Divider label="Últimos publicados" />
+              {history.map(d => <HistoryRow key={d.platform} data={d} />)}
             </section>
-          )}
-
-          {/* Próximo */}
-          {laterB.length > 0 && (
-            <section className="flex flex-col gap-2">
-              <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
-              {laterB.map(x => renderCard(x, false))}
-            </section>
-          )}
-
-          {/* Últimos publicados */}
-          <section className="flex flex-col gap-2 mt-1">
-            <Divider label="Últimos publicados" />
-            {history.map(d => <HistoryRow key={d.platform} data={d} />)}
-          </section>
+          </div>
         </>
       )}
 
