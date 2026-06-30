@@ -16,6 +16,14 @@ type PublishedVideo = {
 
 type TokenLike = { access_token: string; open_id?: string; [key: string]: any };
 
+// Recorta texto largo (captions de IG / descripciones de TikTok pueden tener cientos
+// de caracteres) para que no desborde las tarjetas ni infle el espejo a la central.
+function clip(s: string | null | undefined, max = 90): string | null {
+  if (s == null) return null;
+  const t = String(s).replace(/\s+/g, ' ').trim();
+  return t.length > max ? t.slice(0, max).trimEnd() + '…' : t;
+}
+
 // Pide a la central el token OAuth del usuario para una plataforma.
 async function fetchToken(
   platform: 'tiktok' | 'instagram' | 'youtube',
@@ -103,7 +111,7 @@ async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVid
       platformId:  videoId,
       platformUrl: `https://www.youtube.com/watch?v=${videoId}`,
       publishedAt: item.snippet?.publishedAt ?? null,
-      title:       item.snippet?.title ?? null,
+      title:       clip(item.snippet?.title),
       stats,
     };
   } catch {
@@ -149,7 +157,7 @@ async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | 
       platformId:  m.id,
       platformUrl: m.permalink ?? null,
       publishedAt: m.timestamp ?? null,
-      title:       m.caption ?? null,
+      title:       clip(m.caption),
       stats: {
         media_type:     m.media_product_type || m.media_type,
         views,
@@ -193,7 +201,7 @@ async function fetchTikTokLatest(token: TokenLike): Promise<PublishedVideo | nul
       platformUrl: v.share_url
                 || (openId ? `https://www.tiktok.com/@${openId}/video/${v.id}` : null),
       publishedAt: v.create_time ? new Date(v.create_time * 1000).toISOString() : null,
-      title:       v.video_description ?? null,
+      title:       clip(v.video_description),
       stats: {
         thumbnail: v.cover_image_url || null,
         // Claves que espera getStatChips() en el frontend.
