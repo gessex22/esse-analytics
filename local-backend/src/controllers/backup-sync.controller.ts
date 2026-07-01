@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
+import { transcriptRepo } from '../db/transcript.repo';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -138,6 +139,46 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
 
     configRepo.set('backup_last_pull', new Date().toISOString());
     res.json({ ok: true, cloudCount: cloudFiles.length, cloudWithPlatforms, updated, recovered, skipped, orphans });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// POST /api/local/backup/pull-transcripts
+// Trae las transcripciones desde la central y las escribe en SQLite, matcheando por
+// file_name. No hay push de transcripciones (no hay otra copia), así que nunca pisa
+// una que ya exista localmente — solo rellena las que faltan (p.ej. tras un wipe).
+export async function pullTranscriptsFromCloud(req: Request, res: Response): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
+
+  try {
+    const upstream = await fetch(`${CENTRAL}/api/backup/transcripts`, {
+      headers: { Authorization: authHeader },
+    });
+
+    if (!upstream.ok) {
+      res.status(502).json({ error: 'No se pudo obtener transcripts del cloud' });
+      return;
+    }
+
+    const { transcripts: cloudTranscripts }: { transcripts: { file_name: string; transcript_text: string; language: string }[] } =
+      await upstream.json();
+
+    let recovered = 0, skipped = 0, orphans = 0;
+
+    for (const ct of cloudTranscripts) {
+      const file = fileRepo.findByName(ct.file_name);
+      if (!file) { orphans++; continue; }
+
+      const existing = transcriptRepo.findByFileId(file.id);
+      if (existing) { skipped++; continue; }
+
+      transcriptRepo.upsert(file.id, ct.transcript_text, ct.language || 'es');
+      recovered++;
+    }
+
+    res.json({ ok: true, cloudCount: cloudTranscripts.length, recovered, skipped, orphans });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -231,10 +231,15 @@ export default function App() {
             });
             const data = await res.json();
             if (data.detected) {
-              // El catálogo se acaba de reconstruir desde disco (platforms vacío).
-              // Traemos YA el estado real desde la nube, antes de que el auto-backup
-              // (useAutoBackup) tenga chance de pushear el catálogo vacío primero.
-              await backupService.pull().catch(() => {});
+              // El catálogo se acaba de reconstruir desde disco (platforms vacío,
+              // sin transcripciones). Traemos YA el estado real desde la nube, antes
+              // de que el auto-backup (useAutoBackup) tenga chance de pushear el
+              // catálogo vacío primero. Las transcripciones no tienen push (no hay
+              // otra copia), así que este pull solo rellena lo que falta localmente.
+              await Promise.all([
+                backupService.pull().catch(() => {}),
+                backupService.pullTranscripts().catch(() => {}),
+              ]);
               return;
             }
           } catch {}
