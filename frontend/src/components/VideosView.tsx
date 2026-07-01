@@ -154,6 +154,7 @@ export function VideosView({
   const [info, setInfo]               = useState<PaginationInfo | null>(null);
   const [videosDir, setVideosDir]     = useState<string | null | undefined>(undefined); // undefined = cargando
   const [catalog, setCatalog]         = useState<any[] | null>(null);
+  const [restoring, setRestoring]     = useState(false); // reintentando antes de asumir "otra máquina"
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
@@ -222,16 +223,60 @@ export function VideosView({
       .catch(() => setVideosDir(null));
   }, []);
 
-  // Catálogo de solo lectura desde la nube: solo si NO hay carpeta configurada y SQLite vacío
+  // Catálogo de solo lectura desde la nube: solo si NO hay carpeta configurada y SQLite vacío.
+  // OJO: justo después de un wipe/login, App.tsx puede estar en medio de un
+  // auto-detect + pull (reconstruyendo files/platforms/transcripts local) en paralelo.
+  // Si asumimos "máquina distinta" con la primera foto vacía, esta vista queda
+  // congelada mostrando el catálogo remoto aunque el auto-detect ya haya terminado
+  // segundos después. Reintentamos unas veces antes de asumirlo definitivo.
   useEffect(() => {
     if (!info || videosDir === undefined) return;
-    if (info.totalRecords === 0 && !videosDir) {
-      backupService.getCatalog()
-        .then(d => setCatalog(d.files ?? []))
-        .catch(() => setCatalog([]));
-    } else {
+    if (!(info.totalRecords === 0 && !videosDir)) {
       setCatalog(null);
+      return;
     }
+
+    let cancelled = false;
+    let attempt = 0;
+    const MAX_ATTEMPTS = 5;
+    const RETRY_MS = 1500;
+
+    setRestoring(true);
+
+    const recheck = () => {
+      if (cancelled) return;
+      attempt++;
+      Promise.all([
+        backupService.getLocalStatus(),
+        videoService.getAllVideos(1, LIMIT),
+      ]).then(([status, result]) => {
+        if (cancelled) return;
+        if (status.videosDir || result.info.totalRecords > 0) {
+          // El auto-detect ya terminó: esta sí es la máquina original.
+          setVideosDir(status.videosDir);
+          setVideos(result.videos);
+          setInfo(result.info);
+          setRestoring(false);
+          return;
+        }
+        if (attempt < MAX_ATTEMPTS) {
+          setTimeout(recheck, RETRY_MS);
+        } else {
+          // Después de reintentar, asumimos que de verdad es otra máquina.
+          backupService.getCatalog()
+            .then(d => { if (!cancelled) setCatalog(d.files ?? []); })
+            .catch(() => { if (!cancelled) setCatalog([]); })
+            .finally(() => { if (!cancelled) setRestoring(false); });
+        }
+      }).catch(() => {
+        if (cancelled) return;
+        if (attempt < MAX_ATTEMPTS) setTimeout(recheck, RETRY_MS);
+        else setRestoring(false);
+      });
+    };
+
+    const t = setTimeout(recheck, RETRY_MS);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [info, videosDir]);
 
   useEffect(() => {
@@ -316,12 +361,45 @@ export function VideosView({
   const hasActiveFilters  = selectedTipo !== "" || selectedStatus !== "" || selectedPlatforms.length > 0;
   const activeFilterCount = (selectedTipo ? 1 : 0) + (selectedStatus ? 1 : 0) + selectedPlatforms.length;
 
+  // ── Reintentando antes de decidir si es "otra máquina" ───────────────────────
+  if (restoring) {
+    return (
+      <motion.div
+        key="restoring"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.25 }}
+        className="flex flex-col items-center justify-center gap-4 py-20 text-center"
+      >
+        <motion.div
+          animate={{ rotate: 360 }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }}
+          className="w-10 h-10 rounded-full border-2 border-primary/20 border-t-primary"
+        />
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+        >
+          <p className="text-foreground font-medium text-sm">Restaurando tu catálogo…</p>
+          <p className="text-muted-foreground text-xs mt-1">Buscando tus videos y sincronizando con la nube</p>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
   // ── Máquina no original: catálogo de solo lectura desde la nube ──────────────
   if (!loading && videosDir === null && (info?.totalRecords ?? 0) === 0 && catalog && catalog.length > 0) {
     const fmtDur = (s?: number | null) =>
       s ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "";
     return (
-      <div className="space-y-4">
+      <motion.div
+        key="cloud-catalog"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3 }}
+        className="space-y-4">
         <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-sm">
           <MonitorOff className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-400" />
           <div>
@@ -340,7 +418,13 @@ export function VideosView({
 
         <div className="space-y-2">
           {catalog.map((f, i) => (
-            <div key={i} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border">
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2, delay: Math.min(i, 20) * 0.02 }}
+              className="flex items-center gap-3 px-4 py-3 rounded-xl bg-card border border-border"
+            >
               <Film className="w-4 h-4 flex-shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-foreground truncate">{f.file_name}</p>
@@ -366,15 +450,21 @@ export function VideosView({
                   )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           ))}
         </div>
-      </div>
+      </motion.div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <motion.div
+      key="videos-view"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.25 }}
+      className="space-y-4"
+    >
 
       {/* ── Cabecera ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
@@ -847,6 +937,6 @@ export function VideosView({
           </button>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
