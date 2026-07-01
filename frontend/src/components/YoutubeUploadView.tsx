@@ -183,9 +183,10 @@ function durationToSeconds(d?: string): number {
   return parts.reduce((acc, v) => acc * 60 + v, 0);
 }
 
-function TikTokUploadForm({ selected, onChangeVideo }: {
+function TikTokUploadForm({ selected, onChangeVideo, onUploaded }: {
   selected: SlimVideo | null;
   onChangeVideo: () => void;
+  onUploaded: () => void;
 }) {
   const [connected,      setConnected]      = useState<boolean | null>(null);
   const [creator,        setCreator]        = useState<CreatorInfo | null>(null);
@@ -325,6 +326,7 @@ function TikTokUploadForm({ selected, onChangeVideo }: {
       setPublishId(data.publishId);
       setSentToInbox(data.sentToInbox ?? false);
       setStep("done");
+      onUploaded();
     } catch (err: any) {
       setUploadError(err.message);
       setStep("details");
@@ -678,9 +680,10 @@ function ThumbOffsetPicker({ fileId, onSelect }: {
 }
 
 // ── Formulario de subida a Instagram ─────────────────────────────────────────
-function InstagramUploadForm({ selected, onChangeVideo }: {
+function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
   selected: SlimVideo | null;
   onChangeVideo: () => void;
+  onUploaded: () => void;
 }) {
   const [connected,        setConnected]        = useState<boolean | null>(null);
   const [account,          setAccount]          = useState<{ name: string; username: string; avatarUrl: string } | null>(null);
@@ -778,6 +781,7 @@ function InstagramUploadForm({ selected, onChangeVideo }: {
       setDoneUrl(data.postUrl);
       setDoneFacebook(crossPostFacebook);
       setStep("done");
+      onUploaded();
     } catch (err: any) {
       setUploadError(err.message);
       setStep("details");
@@ -1144,8 +1148,11 @@ export function YoutubeUploadView() {
   const [localFile,       setLocalFile]       = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    Promise.all([
+  // Carga (o recarga) el "próximo video" por plataforma. Se usa al montar y después
+  // de cada upload exitoso, para que la tarjeta avance al siguiente video real en
+  // vez de seguir mostrando el que se acaba de subir.
+  const loadNextVideos = () => {
+    return Promise.all([
       syncService.getCalendarConfig(),
       videoService.getSlimList().catch(() => [] as SlimVideo[]),
     ])
@@ -1163,6 +1170,24 @@ export function YoutubeUploadView() {
             : c.nextVideo;
         }
         setNextVideos(map);
+        return map;
+      });
+  };
+
+  // Tras un upload exitoso: recarga el próximo video y actualiza la selección de la
+  // plataforma activa para que la tarjeta refleje el video correcto de inmediato.
+  const refreshAfterUpload = (platform: Platform) => {
+    loadNextVideos().then(map => {
+      if (platform === activePlatform) {
+        setSelected(map[platform]);
+        setTitle(map[platform] ? map[platform]!.title.replace(/\.[^.]+$/, "") : "");
+      }
+    }).catch(() => {});
+  };
+
+  useEffect(() => {
+    loadNextVideos()
+      .then(map => {
         // Pre-selecciona el de youtube
         if (map.youtube) {
           setSelected(map.youtube);
@@ -1285,6 +1310,7 @@ export function YoutubeUploadView() {
 
       setDoneUrl(data.videoUrl);
       setStep("done");
+      refreshAfterUpload("youtube");
     } catch (err: any) {
       setUploadError(err.message);
       setStep("visibility");
@@ -1334,6 +1360,7 @@ export function YoutubeUploadView() {
             <InstagramUploadForm
               selected={selected}
               onChangeVideo={() => setShowPicker(true)}
+              onUploaded={() => refreshAfterUpload("instagram")}
             />
           )}
 
@@ -1342,6 +1369,7 @@ export function YoutubeUploadView() {
             <TikTokUploadForm
               selected={selected}
               onChangeVideo={() => setShowPicker(true)}
+              onUploaded={() => refreshAfterUpload("tiktok")}
             />
           )}
 

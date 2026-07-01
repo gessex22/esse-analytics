@@ -1,4 +1,6 @@
 import { Request, Response } from 'express';
+import { platformVideoRepo } from '../db/platform-video.repo';
+import { fileRepo } from '../db/file.repo';
 
 const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
@@ -42,7 +44,17 @@ async function fetchToken(
 
 // ── Último publicado por plataforma — SIEMPRE en vivo desde la API ───────────────
 // La tarjeta refleja lo que realmente está publicado en la plataforma, sin depender
-// de platform_videos local. Si fue subido por fuera de la app, igual aparece.
+// de platform_videos local para DECIDIR cuál es el último. Si fue subido por fuera
+// de la app, igual aparece (fileName queda null porque no hay match local).
+
+// Si ese platformId coincide con un video subido desde esta app, resuelve el nombre
+// del archivo local vinculado (linked_file_id) para mostrarlo en la tarjeta.
+function resolveLocalFileName(platform: string, platformId: string | null): string | null {
+  if (!platformId) return null;
+  const pv = platformVideoRepo.findByPlatformAndId(platform, platformId);
+  if (!pv?.linked_file_id) return null;
+  return fileRepo.findById(pv.linked_file_id)?.file_name ?? null;
+}
 
 async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVideo | null> {
   try {
@@ -241,6 +253,8 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
           ? await fetchTikTokLatest(token)
           : await fetchInstagramLatest(token);
       }
+
+      if (card) card.fileName = resolveLocalFileName(platform, card.platformId);
 
       result.push(card ?? {
         platform,

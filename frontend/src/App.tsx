@@ -80,8 +80,8 @@ function ProximamenteView({ label }: { label: string }) {
 type LogoutPhase = "idle" | "backing-up" | "wiping";
 
 function LogoutDialog({
-  isPremium, phase, onConfirm, onCancel,
-}: { isPremium: boolean; phase: LogoutPhase; onConfirm: () => void; onCancel: () => void }) {
+  isPremium, phase, error, onConfirm, onCancel,
+}: { isPremium: boolean; phase: LogoutPhase; error: string | null; onConfirm: () => void; onCancel: () => void }) {
   const busy = phase !== "idle";
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -110,6 +110,13 @@ function LogoutDialog({
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20 text-primary text-xs">
             <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
             {phase === "backing-up" ? "Guardando copia de seguridad en la nube…" : "Limpiando datos locales…"}
+          </div>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            {error}
           </div>
         )}
 
@@ -161,9 +168,14 @@ export default function App() {
   const [showLogoutDialog, setShowLogoutDialog]   = useState(false);
   const [logoutPhase, setLogoutPhase]             = useState<LogoutPhase>("idle");
 
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+
   const handleLogoutClick = () => {
-    // Solo el owner de la instalación tiene datos locales que limpiar
-    if (!isLocal || !user?.isOwner) { logout(); return; }
+    // Solo el todopoderoso de ESTA instalación tiene datos locales que limpiar.
+    // OJO: user.isOwner es el dueño del SERVICIO (cuenta OWNER_USERNAME de la central),
+    // no el dueño de esta PC — con isOwner acá casi ningún cliente real disparaba el wipe.
+    if (!isLocal || user?.role !== "todopoderoso") { logout(); return; }
+    setLogoutError(null);
     setShowLogoutDialog(true);
   };
 
@@ -174,12 +186,20 @@ export default function App() {
     }
     setLogoutPhase("wiping");
     try {
-      await fetch(`${API_BASE}/api/local/wipe`, {
+      const res = await fetch(`${API_BASE}/api/local/wipe`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
-    } catch {}
-    try { await fetch(`${API_BASE}/api/local/owner/reset`, { method: "POST" }); } catch {}
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.message || `No se pudo limpiar (HTTP ${res.status}).`);
+      }
+      await fetch(`${API_BASE}/api/local/owner/reset`, { method: "POST" });
+    } catch (err: any) {
+      setLogoutPhase("idle");
+      setLogoutError(err?.message || "No se pudo limpiar los datos locales. La sesión no se cerró para que puedas reintentar.");
+      return;
+    }
     logout();
     window.location.reload();
   };
@@ -589,6 +609,7 @@ export default function App() {
           <LogoutDialog
             isPremium={isPremium}
             phase={logoutPhase}
+            error={logoutError}
             onConfirm={doLogout}
             onCancel={() => { if (logoutPhase === "idle") setShowLogoutDialog(false); }}
           />
