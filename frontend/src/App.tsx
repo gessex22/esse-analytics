@@ -171,10 +171,10 @@ export default function App() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
 
   const handleLogoutClick = () => {
-    // Solo el todopoderoso de ESTA instalación tiene datos locales que limpiar.
-    // OJO: user.isOwner es el dueño del SERVICIO (cuenta OWNER_USERNAME de la central),
-    // no el dueño de esta PC — con isOwner acá casi ningún cliente real disparaba el wipe.
-    if (!isLocal || user?.role !== "todopoderoso") { logout(); return; }
+    // Cualquier sesión local tiene datos locales que limpiar al salir — no depende
+    // de isOwner (dueño del SERVICIO, no de esta PC) ni de role (distintas cuentas
+    // pueden tener roles distintos): ambos causaban que el wipe nunca se disparara.
+    if (!isLocal) { logout(); return; }
     setLogoutError(null);
     setShowLogoutDialog(true);
   };

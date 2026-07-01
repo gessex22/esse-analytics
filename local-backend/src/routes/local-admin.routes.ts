@@ -19,12 +19,11 @@ export function getOrCreateInstallId(): string {
   return id;
 }
 
-// POST /api/local/wipe — limpia todas las tablas locales
+// POST /api/local/wipe — limpia todas las tablas locales.
+// Cualquier usuario autenticado de ESTA instalación puede limpiarla (p.ej. al cerrar
+// sesión): no depende de role, porque distintas cuentas pueden tener roles distintos
+// y esa restricción hacía que el wipe nunca se disparara para muchos usuarios reales.
 router.post('/api/local/wipe', verifyToken, (req: AuthRequest, res: Response) => {
-  if (req.user?.role !== 'todopoderoso') {
-    res.status(403).json({ message: 'Solo el administrador puede hacer esto.' });
-    return;
-  }
   try {
     const results = configRepo.wipeAll();
     res.json({ ok: true, cleared: results });
