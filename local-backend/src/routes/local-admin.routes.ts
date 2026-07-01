@@ -26,6 +26,11 @@ export function getOrCreateInstallId(): string {
 router.post('/api/local/wipe', verifyToken, (req: AuthRequest, res: Response) => {
   try {
     const results = configRepo.wipeAll();
+    const failed = Object.entries(results).filter(([, changes]) => changes === -1).map(([t]) => t);
+    if (failed.length > 0) {
+      res.status(500).json({ message: `No se pudieron limpiar: ${failed.join(', ')}.`, cleared: results });
+      return;
+    }
     res.json({ ok: true, cleared: results });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al limpiar.', detail: err.message });

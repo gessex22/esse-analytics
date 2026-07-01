@@ -102,12 +102,18 @@ export const configRepo = {
   // ── wipe all tables ────────────────────────────────────────────────────────
   wipeAll(): Record<string, number> {
     const results: Record<string, number> = {};
-    const tables = ['publishing_status', 'platform_videos', 'files', 'platform_config', 'app_config', 'local_config'];
+    // "transcripts" tiene file_id REFERENCES files(id) y foreign_keys está ON:
+    // debe borrarse ANTES que "files", si no el DELETE de files falla por la FK
+    // (en silencio, por el catch de abajo) y el catálogo queda sin limpiar.
+    const tables = ['publishing_status', 'platform_videos', 'transcripts', 'files', 'platform_config', 'app_config', 'local_config'];
     for (const t of tables) {
       // Por tabla: un fallo (tabla ausente, lock, etc.) NO debe abortar el resto
       // ni impedir el clearOwner posterior (si no, no se puede cambiar de cuenta).
       try { results[t] = db.prepare(`DELETE FROM ${t}`).run().changes; }
-      catch { results[t] = -1; }
+      catch (err: any) {
+        results[t] = -1;
+        console.error(`[wipeAll] no se pudo limpiar "${t}":`, err.message);
+      }
     }
     return results;
   },
