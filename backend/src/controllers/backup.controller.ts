@@ -19,8 +19,14 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
   }
 }
 
+const hasData = (arr: any): boolean => Array.isArray(arr) && arr.length > 0;
+
 // POST /api/backup/files/bulk
-// Upserts many records. Last-write-wins by local_updated_at.
+// Upserts many records. Last-write-wins by local_updated_at — PERO un archivo que
+// llega sin platforms/platforms_discarded (p.ej. un re-escaneo de disco tras un wipe,
+// que no puede saber dónde se publicó cada video) NUNCA pisa un registro que en la
+// nube sí tiene esa info, aunque su timestamp sea más nuevo. Así el backup real
+// sobrevive a un catálogo reconstruido desde cero.
 export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
@@ -33,37 +39,58 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     const fileNames = incoming.map(f => f.file_name);
     const existing = await BackupFileModel.find(
       { userId, file_name: { $in: fileNames } },
-      { file_name: 1, local_updated_at: 1 },
+      { file_name: 1, local_updated_at: 1, platforms: 1, platforms_discarded: 1 },
     ).lean();
-    const tsMap = new Map(existing.map(e => [e.file_name, e.local_updated_at.getTime()]));
+    const existingMap = new Map(existing.map(e => [e.file_name, e]));
+
+    // Para cada archivo entrante, decide si el valor de platforms que se aplica es
+    // el que llegó (incoming) o el que ya había en la nube (protegido).
+    function resolvePlatforms(f: any, ex: typeof existing[number] | undefined) {
+      const incomingEmpty = !hasData(f.platforms) && !hasData(f.platforms_discarded);
+      const existingHasData = !!ex && (hasData(ex.platforms) || hasData(ex.platforms_discarded));
+      if (incomingEmpty && existingHasData) {
+        return { platforms: ex!.platforms, platforms_discarded: ex!.platforms_discarded, protected: true };
+      }
+      return { platforms: f.platforms ?? [], platforms_discarded: f.platforms_discarded ?? [], protected: false };
+    }
 
     const toUpdate = incoming.filter(f => {
-      const existingTs = tsMap.get(f.file_name);
-      return !existingTs || existingTs < new Date(f.local_updated_at).getTime();
+      const ex = existingMap.get(f.file_name);
+      const existingTs = ex?.local_updated_at?.getTime();
+      const isNewer = !existingTs || existingTs < new Date(f.local_updated_at).getTime();
+      // Si no es más nuevo, no hay nada que actualizar (comportamiento previo).
+      // Si SÍ es más nuevo pero vendría vacío sobre un registro con datos, igual lo
+      // dejamos pasar (para no perder otros campos legítimos), resolvePlatforms se
+      // encarga de proteger específicamente platforms/platforms_discarded.
+      return isNewer;
     });
 
     if (toUpdate.length > 0) {
       await BackupFileModel.bulkWrite(
-        toUpdate.map(f => ({
-          updateOne: {
-            filter: { userId, file_name: f.file_name },
-            update: {
-              $set: {
-                userId,
-                platforms:           f.platforms           ?? [],
-                platforms_discarded: f.platforms_discarded ?? [],
-                content_status:      f.content_status      ?? 'borrador',
-                scheduled_date:      f.scheduled_date      ?? null,
-                duracion_segundos:   f.duracion_segundos   ?? null,
-                resolucion:          f.resolucion          ?? null,
-                formato:             f.formato             ?? null,
-                fecha_creacion:      f.fecha_creacion      ?? null,
-                local_updated_at:    new Date(f.local_updated_at),
+        toUpdate.map(f => {
+          const ex = existingMap.get(f.file_name);
+          const { platforms, platforms_discarded } = resolvePlatforms(f, ex);
+          return {
+            updateOne: {
+              filter: { userId, file_name: f.file_name },
+              update: {
+                $set: {
+                  userId,
+                  platforms,
+                  platforms_discarded,
+                  content_status:      f.content_status      ?? 'borrador',
+                  scheduled_date:      f.scheduled_date      ?? null,
+                  duracion_segundos:   f.duracion_segundos   ?? null,
+                  resolucion:          f.resolucion          ?? null,
+                  formato:             f.formato             ?? null,
+                  fecha_creacion:      f.fecha_creacion      ?? null,
+                  local_updated_at:    new Date(f.local_updated_at),
+                },
               },
+              upsert: true,
             },
-            upsert: true,
-          },
-        })),
+          };
+        }),
       );
     }
 
@@ -71,28 +98,39 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     // Es la que leen TODOS los endpoints remotos (catálogo, slim, calendario).
     // Sin esto el remoto queda congelado en el scan viejo. Upsert por
     // {userId, file_name}: conserva el _id (y los enlaces a transcripts/platformvideos).
+    // Misma protección: platforms vacío nunca pisa uno ya poblado en FileModel.
+    const fileModelExisting = await FileModel.find(
+      { userId, file_name: { $in: fileNames } },
+      { file_name: 1, platforms: 1, platforms_discarded: 1 },
+    ).lean();
+    const fileModelExistingMap = new Map(fileModelExisting.map(e => [e.file_name, e]));
+
     await FileModel.bulkWrite(
-      incoming.map(f => ({
-        updateOne: {
-          filter: { userId, file_name: f.file_name },
-          update: {
-            $set: {
-              platforms:           f.platforms           ?? [],
-              platforms_discarded: f.platforms_discarded ?? [],
-              content_status:      f.content_status      ?? 'borrador',
-              scheduled_date:      f.scheduled_date      ?? null,
-              duracion_segundos:   f.duracion_segundos   ?? null,
-              resolucion:          f.resolucion          ?? null,
-              formato:             f.formato             ?? null,
-              fecha_creacion:      f.fecha_creacion      ?? null,
+      incoming.map(f => {
+        const ex = fileModelExistingMap.get(f.file_name);
+        const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
+        return {
+          updateOne: {
+            filter: { userId, file_name: f.file_name },
+            update: {
+              $set: {
+                platforms,
+                platforms_discarded,
+                content_status:      f.content_status      ?? 'borrador',
+                scheduled_date:      f.scheduled_date      ?? null,
+                duracion_segundos:   f.duracion_segundos   ?? null,
+                resolucion:          f.resolucion          ?? null,
+                formato:             f.formato             ?? null,
+                fecha_creacion:      f.fecha_creacion      ?? null,
+              },
+              // Solo al crear: campos requeridos que la app no envía (el remoto no
+              // hace stream, así que file_path es un placeholder).
+              $setOnInsert: { userId, file_name: f.file_name, file_path: f.file_name, status: 'PENDIENTE' },
             },
-            // Solo al crear: campos requeridos que la app no envía (el remoto no
-            // hace stream, así que file_path es un placeholder).
-            $setOnInsert: { userId, file_name: f.file_name, file_path: f.file_name, status: 'PENDIENTE' },
+            upsert: true,
           },
-          upsert: true,
-        },
-      })),
+        };
+      }),
     );
 
     // Revivir: un archivo que vuelve en el push pero estaba archivado se reactiva.

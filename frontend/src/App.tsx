@@ -230,7 +230,13 @@ export default function App() {
               body: JSON.stringify({ folder: video_folder }),
             });
             const data = await res.json();
-            if (data.detected) return; // PC original detectada, carpeta auto-configurada
+            if (data.detected) {
+              // El catálogo se acaba de reconstruir desde disco (platforms vacío).
+              // Traemos YA el estado real desde la nube, antes de que el auto-backup
+              // (useAutoBackup) tenga chance de pushear el catálogo vacío primero.
+              await backupService.pull().catch(() => {});
+              return;
+            }
           } catch {}
         }
 
