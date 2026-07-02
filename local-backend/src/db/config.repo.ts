@@ -102,10 +102,11 @@ export const configRepo = {
   // ── wipe all tables ────────────────────────────────────────────────────────
   wipeAll(): Record<string, number> {
     const results: Record<string, number> = {};
-    // "transcripts" tiene file_id REFERENCES files(id) y foreign_keys está ON:
-    // debe borrarse ANTES que "files", si no el DELETE de files falla por la FK
-    // (en silencio, por el catch de abajo) y el catálogo queda sin limpiar.
-    const tables = ['publishing_status', 'platform_videos', 'transcripts', 'files', 'platform_config', 'app_config', 'local_config'];
+    // Varias tablas tienen file_id/video_principal_id REFERENCES files(id) y
+    // foreign_keys está ON: deben borrarse ANTES que "files", si no el DELETE de
+    // files falla por la FK (en silencio, por el catch de abajo) y el catálogo
+    // queda sin limpiar. idea_videos antes que ideas_centrales por su propia FK.
+    const tables = ['publishing_status', 'platform_videos', 'transcripts', 'idea_videos', 'ideas_centrales', 'files', 'platform_config', 'app_config', 'local_config'];
     for (const t of tables) {
       // Por tabla: un fallo (tabla ausente, lock, etc.) NO debe abortar el resto
       // ni impedir el clearOwner posterior (si no, no se puede cambiar de cuenta).
