@@ -29,6 +29,11 @@ import os
 import requests
 import time
 
+# La consola de Windows por defecto usa cp1252 y no puede imprimir los
+# símbolos ✓/✗ de este script — forzamos UTF-8 para evitar un crash.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # ── Detección de hardware ─────────────────────────────────────────────────────
 
 def detect_device() -> dict:

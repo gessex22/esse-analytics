@@ -134,9 +134,9 @@ export const fileRepo = {
     return { rows, total };
   },
 
-  findSlim(limit: number): { id: number; file_name: string; duracion_segundos: number | null }[] {
+  findSlim(limit: number): { id: number; file_name: string; file_path: string; duracion_segundos: number | null }[] {
     return db.prepare(
-      `SELECT id, file_name, duracion_segundos FROM files
+      `SELECT id, file_name, file_path, duracion_segundos FROM files
        WHERE status != 'ELIMINADO_DISCO'
        ORDER BY COALESCE(fecha_creacion, created_at) DESC LIMIT ?`
     ).all(limit) as any[];
