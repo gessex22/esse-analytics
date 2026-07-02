@@ -161,12 +161,17 @@ def fetch_pending_transcript(api: str) -> list[dict]:
     return resp.json()
 
 
-def post_transcript(api: str, file_id: str, text: str, language: str, tipo_contenido: str) -> bool:
+def post_transcript(api: str, file_id: str, text: str, language: str, tipo_contenido: str, duration_seconds: float) -> bool:
     """Envía la transcripción a la API local. Retorna True si fue exitoso."""
     try:
         resp = requests.post(
             f"{api}/api/videos/{file_id}/transcript",
-            json={"text": text, "language": language, "tipo_contenido": tipo_contenido},
+            json={
+                "text": text,
+                "language": language,
+                "tipo_contenido": tipo_contenido,
+                "duration_seconds": duration_seconds,
+            },
             timeout=10,
         )
         return resp.status_code in (200, 201)
@@ -307,7 +312,7 @@ def main():
             print(f"  Idioma  : {lang_detected} | Palabras: {words} | Tiempo: {elapsed:.1f}s")
             print(f"  Tipo    : {tipo_contenido} ({ppm} ppm)")
 
-            if post_transcript(args.api, file_id, text, lang_detected, tipo_contenido):
+            if post_transcript(args.api, file_id, text, lang_detected, tipo_contenido, duration):
                 print(f"  ✓ Guardado")
                 ok += 1
             else:
