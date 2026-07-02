@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { videoService, IdeaCollection, IdeaStatus } from "../services/api";
 import { useTranscripStatus, TranscripRequired } from "./TranscripGate";
+import { Chip } from "./ui/chip";
 
 // ── Configuración visual por estado ──────────────────────────────────────────
 const STATUS_CONFIG: Record<IdeaStatus, { label: string; chipClass: string }> = {
@@ -22,30 +23,6 @@ const STATUS_CONFIG: Record<IdeaStatus, { label: string; chipClass: string }> = 
 };
 
 type VersionFilter = "all" | "only-originals" | "with-versions";
-
-// ── Chip reutilizable ─────────────────────────────────────────────────────────
-function FilterChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1 rounded-full text-xs border transition-colors ${
-        active
-          ? "bg-primary/20 text-primary border-primary/50 font-semibold"
-          : "bg-secondary/40 text-muted-foreground border-border hover:text-foreground hover:bg-secondary/70"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export function Taller({ role = "todopoderoso", isLocal = false }: { role?: string; isLocal?: boolean }) {
@@ -357,7 +334,7 @@ export function Taller({ role = "todopoderoso", isLocal = false }: { role?: stri
                 {label}
               </span>
               <div className="flex gap-2 flex-wrap">
-                {chips.map((c) => <FilterChip key={c.label} {...c} />)}
+                {chips.map((c) => <Chip key={c.label} active={c.active} onClick={c.onClick}>{c.label}</Chip>)}
               </div>
             </div>
           ))}

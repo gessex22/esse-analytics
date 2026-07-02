@@ -19,6 +19,7 @@ import {
 import { videoService, backupService, DashboardVideo, PaginationInfo } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
+import { Chip } from "./ui/chip";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type TipoFilter = "" | "GUION_ESTRUCTURADO" | "CLIP_RANDOM" | "CLIP_SIN_VOZ";
@@ -90,23 +91,6 @@ function PlatformBadge({
     </button>
   );
 }
-
-// ── Chip de filtro ────────────────────────────────────────────────────────────
-function FilterChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1 rounded-full text-xs border transition-colors ${
-        active
-          ? "bg-primary/20 text-primary border-primary/50 font-semibold"
-          : "bg-secondary/40 text-muted-foreground border-border hover:text-foreground hover:bg-secondary/70"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
 
 // ── Skeleton de lista (imita el layout real para evitar el salto de carga) ────
 function VideoListSkeleton({ rows = 10 }: { rows?: number }) {
@@ -536,7 +520,7 @@ export function VideosView({
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Plataforma</span>
             <div className="flex gap-2 flex-wrap">
               {["youtube", "instagram", "tiktok"].map((p) => (
-                <FilterChip key={p} label={p.charAt(0).toUpperCase() + p.slice(1)} active={selectedPlatforms.includes(p)} onClick={() => togglePlatform(p)} />
+                <Chip key={p} active={selectedPlatforms.includes(p)} onClick={() => togglePlatform(p)}>{p.charAt(0).toUpperCase() + p.slice(1)}</Chip>
               ))}
             </div>
           </div>
@@ -546,7 +530,7 @@ export function VideosView({
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Estado</span>
             <div className="flex gap-2 flex-wrap">
               {(["sin_publicar", "parcial", "completo"] as PubFilter[]).map((s) => (
-                <FilterChip key={s} label={PUB_FILTER_LABELS[s]} active={selectedStatus === s} onClick={() => applyFilters(selectedTipo, selectedStatus === s ? "" : s)} />
+                <Chip key={s} active={selectedStatus === s} onClick={() => applyFilters(selectedTipo, selectedStatus === s ? "" : s)}>{PUB_FILTER_LABELS[s]}</Chip>
               ))}
             </div>
           </div>
@@ -556,7 +540,7 @@ export function VideosView({
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Tipo</span>
             <div className="flex gap-2 flex-wrap">
               {([["GUION_ESTRUCTURADO", "Guión"] as [TipoFilter, string], ["CLIP_RANDOM", "Random"] as [TipoFilter, string], ["CLIP_SIN_VOZ", "Sin Voz"] as [TipoFilter, string]]).map(([val, label]) => (
-                <FilterChip key={val} label={label} active={selectedTipo === val} onClick={() => applyFilters(selectedTipo === val ? "" : val, selectedStatus)} />
+                <Chip key={val} active={selectedTipo === val} onClick={() => applyFilters(selectedTipo === val ? "" : val, selectedStatus)}>{label}</Chip>
               ))}
             </div>
           </div>

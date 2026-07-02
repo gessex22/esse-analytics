@@ -1,9 +1,7 @@
 import { useState, useEffect } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  Bell, Settings, BarChart2, Film, Users,
-  Upload, Clock, TrendingUp, Wrench, Palette, ShieldCheck, Tv2, ChevronDown, LogOut,
-  CalendarDays, FolderOpen, Gem, Database, AlertTriangle, Loader2, MonitorOff, X,
+  Bell, Upload, Clock, Tv2, LogOut, AlertTriangle, Loader2, MonitorOff, X,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -20,6 +18,7 @@ import { canPublishOnMobile } from "./lib/mobileMode";
 import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
+import { Sidebar, MobileNav, navItems, SETTINGS_SECTIONS } from "./components/Sidebar";
 import logoImg from "./assets/esseAnalytics.png";
 import { backupService } from "./services/api";
 import { API_BASE } from "./config";
@@ -27,35 +26,6 @@ import { API_BASE } from "./config";
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
 // En remoto se ocultan: Videos, Subir, Taller, Gemas.
 const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8]);
-
-// Sub-secciones de Ajustes
-export const SETTINGS_SECTIONS = [
-  { id: "colores",    label: "Colores",         icon: Palette,       roles: ["todopoderoso", "editor"], localOnly: false },
-  { id: "biblioteca", label: "Biblioteca",       icon: FolderOpen,    roles: ["todopoderoso"],           localOnly: false },
-  { id: "seguridad",  label: "Seguridad",        icon: ShieldCheck,   roles: ["todopoderoso"],           localOnly: false },
-  { id: "sync",       label: "Sincronización",   icon: Tv2,           roles: ["todopoderoso"],           localOnly: false },
-  { id: "datos",      label: "Datos locales",    icon: Database,      roles: ["todopoderoso"],           localOnly: true  },
-];
-
-const navItems = [
-  { icon: BarChart2,    label: "Dashboard"   },
-  { icon: Film,         label: "Videos"      },
-  { icon: Upload,       label: "Subir"       },
-  { icon: Users,        label: "Usuarios"    },
-  { icon: TrendingUp,   label: "Analíticas"  },
-  { icon: Wrench,       label: "Taller"      },
-  { icon: Settings,     label: "Ajustes"     },
-  { icon: CalendarDays, label: "Calendario"  },
-  { icon: Gem,          label: "Gemas"       },
-];
-
-const ACTIVE_VIEWS = new Set([1, 2, 3, 5, 6, 7, 8]);
-const MOBILE_NAV   = [1, 2, 7, 5, 6];
-
-// Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
-// la navegación sigue siendo por índice, así que esto NO cambia la lógica, solo el
-// orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
-const NAV_ORDER = [0, 1, 2, 7, 5, 4, 8, 3, 6];
 
 function ProximamenteView({ label }: { label: string }) {
   return (
@@ -163,6 +133,7 @@ export default function App() {
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
   const [notifUnread, setNotifUnread]       = useState(true);
+  const [userMenuOpen, setUserMenuOpen]     = useState(false);
 
   // ── Logout con limpieza ─────────────────────────────────────────────────────
   const [showLogoutDialog, setShowLogoutDialog]   = useState(false);
@@ -325,119 +296,25 @@ export default function App() {
     setActiveNav(6);
   };
 
-  const headerLabel = activeNav === 6
-    ? `Ajustes › ${SETTINGS_SECTIONS.find(s => s.id === activeSection)?.label ?? ""}`
-    : navItems[activeNav]?.label ?? "";
-
   return (
     <RemoteGate>
     <div className="flex bg-background text-foreground overflow-hidden" style={{ fontFamily: "'Inter', sans-serif", height: "100dvh" }}>
 
-      {/* ── Sidebar (sm+) ─────────────────────────────────────────────────── */}
-      <aside className="hidden sm:flex w-52 flex-shrink-0 border-r border-border flex-col bg-card">
-        {/* Logo */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
-          <img src={logoImg} alt="EsseAnalytics" className="w-9 h-9 flex-shrink-0 rounded-lg" />
-          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "-0.02em", fontSize: "0.95rem" }}>
-            <span className="text-foreground">Esse</span><span className="text-primary">Analytics</span>
-          </span>
-        </div>
-
-        {/* Nav */}
-        <nav className="flex-1 px-3 py-4 overflow-y-auto">
-          {NAV_ORDER.map((i) => {
-            const { icon: Icon, label } = navItems[i];
-            if (!isNavVisible(i)) return null;
-            const isSettings = i === 6;
-            const isActive   = effectiveNav === i;
-
-            return (
-              <div key={label}>
-                <button
-                  onClick={() => handleNavClick(i)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg mb-0.5 text-sm transition-colors ${
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-                  }`}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span className="flex-1 text-left">{label}</span>
-                  {!ACTIVE_VIEWS.has(i) && (
-                    <span className="text-[9px] border border-border rounded px-1 text-muted-foreground/50 leading-tight">
-                      PRONTO
-                    </span>
-                  )}
-                  {isSettings && (
-                    <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${settingsOpen ? "rotate-180" : ""}`} />
-                  )}
-                </button>
-
-                {/* Sub-items de Ajustes */}
-                <AnimatePresence initial={false}>
-                  {isSettings && settingsOpen && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
-                      style={{ overflow: "hidden" }}
-                    >
-                      <div className="ml-3 mb-1 border-l border-border pl-3 space-y-0.5 pt-0.5">
-                        {visibleSettingsSections.map(({ id, label: subLabel, icon: SubIcon }, subIdx) => {
-                          const isSubActive = activeNav === 6 && activeSection === id;
-                          return (
-                            <motion.button
-                              key={id}
-                              initial={{ opacity: 0, x: -6 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: subIdx * 0.05, duration: 0.18 }}
-                              onClick={() => handleSectionClick(id)}
-                              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs transition-colors ${
-                                isSubActive
-                                  ? "bg-primary/10 text-primary font-medium"
-                                  : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-                              }`}
-                            >
-                              <SubIcon className="w-3.5 h-3.5 flex-shrink-0" />
-                              {subLabel}
-                            </motion.button>
-                          );
-                        })}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            );
-          })}
-        </nav>
-
-        {/* Usuario */}
-        <div className="px-4 py-4 border-t border-border flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-xs font-semibold flex-shrink-0">
-            {user.username[0].toUpperCase()}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm truncate font-medium">{user.username}</p>
-            <p className="text-xs text-muted-foreground capitalize">{user.role}</p>
-            <p className="text-[10px] text-muted-foreground/50 font-mono">v{__APP_VERSION__}</p>
-          </div>
-          <button
-            onClick={handleLogoutClick}
-            title="Cerrar sesión"
-            className="text-muted-foreground hover:text-foreground transition-colors p-1 flex-shrink-0"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
-        </div>
-      </aside>
+      <Sidebar
+        effectiveNav={effectiveNav}
+        settingsOpen={settingsOpen}
+        activeSection={activeSection}
+        isNavVisible={isNavVisible}
+        visibleSettingsSections={visibleSettingsSections}
+        onNavClick={handleNavClick}
+        onSectionClick={handleSectionClick}
+      />
 
       {/* ── Área principal ─────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
 
         {/* Header */}
-        <header className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border bg-card flex-shrink-0">
+        <header className="flex items-center justify-between sm:justify-end px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0 bg-background">
 
           {/* Mobile: solo logo */}
           <div className="flex items-center gap-2 sm:hidden">
@@ -447,55 +324,83 @@ export default function App() {
             </span>
           </div>
 
-          {/* Desktop: solo el título de sección */}
-          <div className="hidden sm:block">
-            <h1 className="text-foreground text-xl font-bold leading-tight">{headerLabel}</h1>
-            <p className="text-muted-foreground text-sm">Gestiona y supervisa tu contenido</p>
-          </div>
-
           <div className="flex items-center gap-2 sm:gap-3">
             {role === "todopoderoso" && (
-              <>
-                <div className="relative">
-                  <button
-                    onClick={() => { setNotifOpen(v => !v); setNotifUnread(false); }}
-                    className="relative text-muted-foreground hover:text-foreground p-1 transition-colors"
-                  >
-                    <Bell className="w-5 h-5" />
-                    {notifUnread && (
-                      <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-primary rounded-full" />
-                    )}
-                  </button>
-                  <AnimatePresence>
-                    {notifOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
-                        <motion.div
-                          initial={{ opacity: 0, y: -6, scale: 0.97 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -6, scale: 0.97 }}
-                          transition={{ duration: 0.15 }}
-                          className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
-                        >
-                          <div className="px-4 py-3 border-b border-border">
-                            <p className="text-xs font-semibold text-foreground uppercase tracking-wider">Notificaciones</p>
-                          </div>
-                          <div className="px-4 py-6 text-center space-y-1">
-                            <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto" />
-                            <p className="text-sm text-muted-foreground">Sin notificaciones por ahora.</p>
-                            <p className="text-xs text-muted-foreground/60">Próximamente: alertas del día de publicación.</p>
-                          </div>
-                        </motion.div>
-                      </>
-                    )}
-                  </AnimatePresence>
-                </div>
-                <button className="hidden sm:flex items-center gap-1.5 bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm hover:bg-primary/90 transition-colors">
-                  <Upload className="w-4 h-4" />
-                  Subir
+              <div className="relative">
+                <button
+                  onClick={() => { setNotifOpen(v => !v); setNotifUnread(false); }}
+                  className="relative flex items-center justify-center w-9 h-9 rounded-full bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors"
+                >
+                  <Bell className="w-4 h-4" />
+                  {notifUnread && (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
+                  )}
                 </button>
-              </>
+                <AnimatePresence>
+                  {notifOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
+                      >
+                        <div className="px-4 py-3 border-b border-border">
+                          <p className="text-xs font-semibold text-foreground uppercase tracking-wider">Notificaciones</p>
+                        </div>
+                        <div className="px-4 py-6 text-center space-y-1">
+                          <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto" />
+                          <p className="text-sm text-muted-foreground">Sin notificaciones por ahora.</p>
+                          <p className="text-xs text-muted-foreground/60">Próximamente: alertas del día de publicación.</p>
+                        </div>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
             )}
+
+            {/* Cuenta de usuario, como chip con menú */}
+            <div className="hidden sm:block relative">
+              <button
+                onClick={() => setUserMenuOpen(v => !v)}
+                className="flex items-center gap-2 rounded-full bg-secondary/40 hover:bg-secondary/70 transition-colors pl-1.5 pr-3 py-1.5"
+              >
+                <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground text-[10px] font-semibold flex-shrink-0">
+                  {user.username[0].toUpperCase()}
+                </div>
+                <span className="text-sm font-medium text-foreground truncate max-w-[100px]">{user.username}</span>
+              </button>
+              <AnimatePresence>
+                {userMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setUserMenuOpen(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute right-0 top-full mt-2 z-50 w-48 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
+                    >
+                      <div className="px-4 py-3 border-b border-border">
+                        <p className="text-sm font-medium text-foreground truncate">{user.username}</p>
+                        <p className="text-xs text-muted-foreground capitalize">{user.role} · v{__APP_VERSION__}</p>
+                      </div>
+                      <button
+                        onClick={() => { setUserMenuOpen(false); handleLogoutClick(); }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        Cerrar sesión
+                      </button>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
+
             {/* Logout móvil */}
             <button
               onClick={handleLogoutClick}
@@ -547,36 +452,7 @@ export default function App() {
           }
         </div>
 
-        {/* ── Bottom nav móvil ────────────────────────────────────────────── */}
-        <nav
-          className="sm:hidden fixed bottom-0 left-0 right-0 z-40 flex items-center border-t border-border bg-card"
-          style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0px)" }}
-        >
-          {MOBILE_NAV.filter(i => isNavVisible(i)).map((i) => {
-            const { icon: Icon, label } = navItems[i];
-            const isActive = effectiveNav === i;
-            return (
-              <button
-                key={i}
-                onClick={() => handleNavClick(i)}
-                className="relative flex-1 flex flex-col items-center justify-center py-2.5 gap-1 transition-colors"
-              >
-                {/* Indicador superior activo */}
-                {isActive && (
-                  <motion.span
-                    layoutId="mobile-nav-indicator"
-                    className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full bg-primary"
-                    transition={{ type: "spring", stiffness: 400, damping: 35 }}
-                  />
-                )}
-                <Icon className={`w-5 h-5 transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`} />
-                <span className={`text-[10px] leading-none font-medium transition-colors ${isActive ? "text-primary" : "text-muted-foreground"}`}>
-                  {label}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
+        <MobileNav effectiveNav={effectiveNav} isNavVisible={isNavVisible} onNavClick={handleNavClick} />
       </div>
     </div>
 
