@@ -22,6 +22,7 @@ Dependencias:
 """
 
 import argparse
+import json
 import platform
 import subprocess
 import sys
@@ -33,6 +34,16 @@ import time
 # símbolos ✓/✗ de este script — forzamos UTF-8 para evitar un crash.
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
+
+
+def report_progress(phase: str, current: int = None, total: int = None, title: str = None) -> None:
+    """Línea de progreso máquina-legible que local-backend intercepta del stdout
+    del proceso (plugins.ts) para mostrar avance en vivo en la UI."""
+    payload = {"phase": phase}
+    if current is not None: payload["current"] = current
+    if total is not None: payload["total"] = total
+    if title is not None: payload["title"] = title
+    print(f"##PROGRESS## {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 # ── Detección de hardware ─────────────────────────────────────────────────────
 
@@ -240,6 +251,7 @@ def main():
     print("=" * 60)
     print("  esse-Transcrip")
     print("=" * 60)
+    report_progress("scanning")
 
     # Detectar hardware
     dev = detect_device()
@@ -304,6 +316,7 @@ def main():
         title     = v["title"]
         file_path = v["filePath"]
 
+        report_progress("transcribing", i, len(pendientes), title)
         print(f"[{i}/{len(pendientes)}] {title}")
         print(f"  Archivo : {file_path}")
         t0 = time.time()

@@ -20,6 +20,7 @@ Dependencias:
 """
 
 import argparse
+import json
 import sys
 
 import numpy as np
@@ -29,6 +30,16 @@ import requests
 # emojis/flechas de este script — forzamos UTF-8 para evitar un crash.
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
+
+
+def report_progress(phase: str, current: int = None, total: int = None, title: str = None) -> None:
+    """Línea de progreso máquina-legible que local-backend intercepta del stdout
+    del proceso (plugins.ts) para mostrar avance en vivo en la UI."""
+    payload = {"phase": phase}
+    if current is not None: payload["current"] = current
+    if total is not None: payload["total"] = total
+    if title is not None: payload["title"] = title
+    print(f"##PROGRESS## {json.dumps(payload, ensure_ascii=False)}", flush=True)
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -111,6 +122,7 @@ def main():
     print(f"API       : {args.api}")
     print(f"Umbral    : {args.threshold}%")
     print()
+    report_progress("scanning")
 
     try:
         idea_cores = fetch_idea_cores(args.api)
@@ -128,6 +140,7 @@ def main():
         return
 
     print("\n[IA] Cargando modelo de similitud semántica...")
+    report_progress("loading_model")
     from sentence_transformers import SentenceTransformer
     modelo = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -146,6 +159,7 @@ def main():
     for i, cand in enumerate(candidatos):
         if n_cores == 0:
             break
+        report_progress("matching", i + 1, len(candidatos), cand["file_name"])
         sims = [cosine_similarity(cand_embeddings[i], core_embeddings[j]) for j in range(n_cores)]
         best_j = max(range(n_cores), key=lambda j: sims[j])
         best_pct = sims[best_j] * 100
@@ -168,6 +182,7 @@ def main():
         if i in asignados:
             continue
         base = candidatos[i]
+        report_progress("grouping", pos + 1, len(restantes), base["file_name"])
 
         pool = [{
             "file_id":         base["file_id"],

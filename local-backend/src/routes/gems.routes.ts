@@ -1,13 +1,13 @@
 import express from 'express';
 import os from 'os';
 import { configRepo } from '../db/config.repo';
-import { PLUGIN_GEMS, findPlugin, pluginStatus, startPlugin, stopPlugin } from '../plugins';
+import { PLUGIN_GEMS, findPlugin, pluginStatus, startPlugin, stopPlugin, getProgress } from '../plugins';
 
 const router = express.Router();
 
 // ── GET /api/gems ─────────────────────────────────────────────────────────────
 router.get('/api/gems', (_req, res) => {
-  const pluginStatuses = PLUGIN_GEMS.map(g => ({ id: g.id, status: pluginStatus(g.id) }));
+  const pluginStatuses = PLUGIN_GEMS.map(g => ({ id: g.id, status: pluginStatus(g.id), progress: getProgress(g.id) }));
 
   // Gemas built-in: estado guardado en config.
   // Acceso Local está activo por defecto (solo se desactiva si el usuario lo apagó explícitamente).

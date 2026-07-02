@@ -26,10 +26,43 @@ export const PLUGIN_GEMS = [
 
 export type PluginStatus = 'not_installed' | 'installed' | 'running';
 
+export interface PluginProgress {
+  phase: string;
+  current?: number;
+  total?: number;
+  title?: string;
+  updatedAt: string;
+}
+
 const running: Record<string, ChildProcess> = {};
+const progress: Record<string, PluginProgress> = {};
 
 export function findPlugin(id: string) {
   return PLUGIN_GEMS.find(g => g.id === id);
+}
+
+export function getProgress(id: string): PluginProgress | undefined {
+  return progress[id];
+}
+
+/** Lee el stdout del plugin línea por línea buscando `##PROGRESS## {json}`. */
+function trackProgress(id: string, proc: ChildProcess): void {
+  let buffer = '';
+  proc.stdout?.setEncoding('utf-8');
+  proc.stdout?.on('data', (chunk: string) => {
+    buffer += chunk;
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const marker = '##PROGRESS##';
+      const idx = line.indexOf(marker);
+      if (idx === -1) continue;
+      try {
+        const parsed = JSON.parse(line.slice(idx + marker.length).trim());
+        progress[id] = { ...parsed, updatedAt: new Date().toISOString() };
+      } catch { /* línea de progreso mal formada, se ignora */ }
+    }
+  });
 }
 
 export function pluginStatus(id: string): PluginStatus {
@@ -65,10 +98,12 @@ export function startPlugin(id: string, extraArgs: string[] = []): { ok: boolean
   }
 
   running[gem.id] = proc;
-  proc.on('exit', () => { delete running[gem.id]; });
+  trackProgress(gem.id, proc);
+  proc.on('exit', () => { delete running[gem.id]; delete progress[gem.id]; });
   proc.on('error', (err) => {
     console.error(`[plugins] No se pudo iniciar ${id}:`, err.message);
     delete running[gem.id];
+    delete progress[gem.id];
   });
 
   return { ok: true, status: 'running' };
@@ -77,5 +112,6 @@ export function startPlugin(id: string, extraArgs: string[] = []): { ok: boolean
 export function stopPlugin(id: string): { status: PluginStatus } {
   running[id]?.kill();
   delete running[id];
+  delete progress[id];
   return { status: pluginStatus(id) };
 }

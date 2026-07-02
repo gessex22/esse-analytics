@@ -19,6 +19,7 @@ import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import { Sidebar, MobileNav, navItems, SETTINGS_SECTIONS } from "./components/Sidebar";
+import { usePluginActivity, phaseLabel } from "./hooks/usePluginActivity";
 import logoImg from "./assets/esseAnalytics.png";
 import { backupService } from "./services/api";
 import { API_BASE } from "./config";
@@ -115,6 +116,7 @@ function LogoutDialog({
 export default function App() {
   const { user, token, logout, loading } = useAuth();
   const { isLocal } = useBackendType();
+  const pluginActivity = usePluginActivity(isLocal);
   const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
 
@@ -325,6 +327,16 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {pluginActivity && (
+              <div className="hidden sm:flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/40 pl-2.5 pr-3 py-1.5 rounded-full max-w-[240px]">
+                <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
+                <span className="truncate">
+                  {phaseLabel(pluginActivity.phase)}
+                  {pluginActivity.title ? `: ${pluginActivity.title}` : ""}
+                  {pluginActivity.current && pluginActivity.total ? ` (${pluginActivity.current}/${pluginActivity.total})` : ""}
+                </span>
+              </div>
+            )}
             {role === "todopoderoso" && (
               <div className="relative">
                 <button

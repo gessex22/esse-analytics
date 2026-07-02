@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, Globe, CloudUpload, CloudDownload, Cloud } from "lucide-react";
+import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, Globe, CloudUpload, CloudDownload, Cloud, Loader2 } from "lucide-react";
 import { API_BASE } from "../config";
 import { backupService } from "../services/api";
 import type { UserTier } from "../hooks/useAuth";
+import { phaseLabel, type PluginProgress } from "../hooks/usePluginActivity";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -362,9 +363,39 @@ function LockedBadge() {
 
 // ── Tarjeta de gema ───────────────────────────────────────────────────────────
 
+// ── Progreso en vivo (mientras la gema está corriendo) ────────────────────────
+function LiveProgress({ progress }: { progress: PluginProgress }) {
+  const pct = progress.current && progress.total ? Math.round((progress.current / progress.total) * 100) : null;
+  return (
+    <div className="rounded-lg bg-secondary/40 border border-border/60 p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-primary flex-shrink-0" />
+        {phaseLabel(progress.phase)}
+        {progress.current && progress.total && (
+          <span className="text-muted-foreground font-mono ml-auto">{progress.current}/{progress.total}</span>
+        )}
+      </div>
+      {progress.title && (
+        <p className="text-xs text-muted-foreground truncate">{progress.title}</p>
+      )}
+      {pct !== null && (
+        <div className="h-1.5 rounded-full bg-border/60 overflow-hidden">
+          <motion.div
+            className="h-full bg-primary rounded-full"
+            initial={false}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.3 }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GemCard({
   gem,
   status,
+  progress,
   userTier,
   isLocal,
   onToggle,
@@ -372,6 +403,7 @@ function GemCard({
 }: {
   gem:       GemDef;
   status:    GemStatus | "loading";
+  progress?: PluginProgress;
   userTier:  UserTier;
   isLocal:   boolean;
   onToggle:  () => void;
@@ -431,6 +463,7 @@ function GemCard({
       <AnimatePresence>
         {gem.id === "esse_local_access" && on && <LocalNetworkInfo />}
         {gem.id === "esse_backup"       && on && <BackupPanel />}
+        {on && progress && <LiveProgress progress={progress} />}
       </AnimatePresence>
 
       {/* Footer */}
@@ -497,6 +530,7 @@ export function GemsPanel({ isLocal, userTier }: { isLocal: boolean; userTier: U
   const [statuses, setStatuses] = useState<StatusMap>(() =>
     Object.fromEntries(GEMS.map(g => [g.id, g.soon ? "not_installed" : "loading"]))
   );
+  const [progressMap, setProgressMap] = useState<Record<string, PluginProgress | undefined>>({});
   const [error, setError] = useState(false);
 
   const loadStatuses = useCallback(async () => {
@@ -505,10 +539,15 @@ export function GemsPanel({ isLocal, userTier }: { isLocal: boolean; userTier: U
     try {
       const res  = await fetch(`${API_BASE}/api/gems`);
       if (!res.ok) throw new Error();
-      const data: { id: string; status: GemStatus }[] = await res.json();
+      const data: { id: string; status: GemStatus; progress?: PluginProgress }[] = await res.json();
       setStatuses(prev => {
         const next = { ...prev };
         data.forEach(({ id, status }) => { next[id] = status; });
+        return next;
+      });
+      setProgressMap(prev => {
+        const next = { ...prev };
+        data.forEach(({ id, progress }) => { next[id] = progress; });
         return next;
       });
     } catch {
@@ -522,6 +561,14 @@ export function GemsPanel({ isLocal, userTier }: { isLocal: boolean; userTier: U
   }, [isLocal]);
 
   useEffect(() => { loadStatuses(); }, [loadStatuses]);
+
+  // Mientras alguna gema esté corriendo, pollear seguido para que el progreso se vea en vivo.
+  const anyRunning = Object.values(statuses).includes("running");
+  useEffect(() => {
+    if (!isLocal || !anyRunning) return;
+    const id = setInterval(loadStatuses, 1500);
+    return () => clearInterval(id);
+  }, [isLocal, anyRunning, loadStatuses]);
 
   const toggle = async (gem: GemDef) => {
     const current = statuses[gem.id];
@@ -596,6 +643,7 @@ export function GemsPanel({ isLocal, userTier }: { isLocal: boolean; userTier: U
             key={gem.id}
             gem={gem}
             status={isLocal ? (statuses[gem.id] ?? "loading") : "not_installed"}
+            progress={progressMap[gem.id]}
             userTier={userTier}
             isLocal={isLocal}
             onToggle={() => toggle(gem)}
