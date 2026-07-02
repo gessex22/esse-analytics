@@ -153,20 +153,12 @@ def choose_model(device_info: dict) -> str:
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 
-def fetch_slim(api: str) -> list[dict]:
-    """Retorna todos los videos escaneados: [{fileId, title, filePath, duration}]"""
-    resp = requests.get(f"{api}/api/videos/slim", timeout=10)
+def fetch_pending_transcript(api: str) -> list[dict]:
+    """Videos que todavía no tienen transcripción (filtrado en el servidor con un solo
+    query — antes se pedían TODOS los videos y se preguntaba uno por uno, muy lento)."""
+    resp = requests.get(f"{api}/api/videos/slim/pending-transcript", timeout=15)
     resp.raise_for_status()
     return resp.json()
-
-
-def has_transcript(api: str, file_id: str) -> bool:
-    """Devuelve True si el video ya tiene transcripción en la API."""
-    try:
-        resp = requests.get(f"{api}/api/videos/{file_id}/transcript", timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return False
 
 
 def post_transcript(api: str, file_id: str, text: str, language: str, tipo_contenido: str) -> bool:
@@ -266,30 +258,16 @@ def main():
     print(f"API         : {args.api}")
     print()
 
-    # Obtener lista de videos
+    # Obtener videos pendientes de transcribir (ya filtrados por el servidor)
     try:
-        videos = fetch_slim(args.api)
+        candidatos = fetch_pending_transcript(args.api)
     except Exception as e:
         print(f"[ERROR] No se pudo conectar a la API en {args.api}: {e}")
         print("  ¿Está corriendo EsseAnalytics?")
         sys.exit(1)
 
-    if not videos:
-        print("No hay videos escaneados.")
-        return
-
-    print(f"Videos escaneados: {len(videos)}")
-
-    # Filtrar los que ya tienen transcripción
-    pendientes = []
-    print("Verificando transcripciones existentes...")
-    for v in videos:
-        if not v.get("filePath"):
-            continue
-        if not os.path.isfile(v["filePath"]):
-            continue  # el archivo ya no existe en disco
-        if not has_transcript(args.api, v["fileId"]):
-            pendientes.append(v)
+    # Solo queda descartar los que ya no existen en disco (chequeo local, no de red)
+    pendientes = [v for v in candidatos if v.get("filePath") and os.path.isfile(v["filePath"])]
 
     print(f"Pendientes de transcribir: {len(pendientes)}")
 

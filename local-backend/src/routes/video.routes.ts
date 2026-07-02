@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  getVideos, getVideoSlimList, getVideoPlayerData,
+  getVideos, getVideoSlimList, getVideoSlimPendingTranscript, getVideoPlayerData,
   updateVideoContentStatus, updateVideoPlatforms,
   renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate,
 } from '../controllers/video.controller';
@@ -9,9 +9,10 @@ import { verifyToken } from '../middleware/auth.middleware';
 const router = Router();
 
 router.get('/api/videos',                              verifyToken, getVideos);
-// Sin verifyToken: la consume esse_transcrip.py (proceso local, sin sesión de usuario),
+// Sin verifyToken: las consume esse_transcrip.py (proceso local, sin sesión de usuario),
 // igual que /api/videos/:id/transcript y el resto de rutas plugin-facing.
 router.get('/api/videos/slim',                         getVideoSlimList);
+router.get('/api/videos/slim/pending-transcript',      getVideoSlimPendingTranscript);
 router.get('/api/metrics',                             verifyToken, getMetrics);
 router.get('/api/videos/:fileId/player-data',          verifyToken, getVideoPlayerData);
 router.patch('/api/videos/:fileId/rename',             verifyToken, renameVideo);

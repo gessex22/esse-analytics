@@ -142,6 +142,18 @@ export const fileRepo = {
     ).all(limit) as any[];
   },
 
+  /** Igual que findSlim pero solo los que todavía no tienen transcripción — evita que
+   * el plugin de transcripción tenga que preguntar archivo por archivo (era N+1). */
+  findSlimPendingTranscript(limit: number): { id: number; file_name: string; file_path: string; duracion_segundos: number | null }[] {
+    return db.prepare(
+      `SELECT f.id, f.file_name, f.file_path, f.duracion_segundos
+       FROM files f
+       LEFT JOIN transcripts t ON t.file_id = f.id
+       WHERE f.status != 'ELIMINADO_DISCO' AND t.file_id IS NULL
+       ORDER BY COALESCE(f.fecha_creacion, f.created_at) DESC LIMIT ?`
+    ).all(limit) as any[];
+  },
+
   create(data: {
     file_name: string;
     file_path: string;

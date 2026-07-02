@@ -68,6 +68,20 @@ export const getVideoSlimList = (req: Request, res: Response) => {
   })));
 };
 
+// ── GET /api/videos/slim/pending-transcript — usado por esse_transcrip.py ──────
+// Filtra en un solo query los que ya tienen transcripción (antes el plugin
+// preguntaba archivo por archivo: 1 request HTTP por video, muy lento con miles).
+export const getVideoSlimPendingTranscript = (req: Request, res: Response) => {
+  const limit = Math.min(parseInt(req.query.limit as string) || 2000, 5000);
+  const files = fileRepo.findSlimPendingTranscript(limit);
+  res.json(files.map(f => ({
+    fileId:    String(f.id),
+    title:     f.file_name,
+    filePath:  f.file_path,
+    duration:  f.duracion_segundos ? formatDuration(f.duracion_segundos) : '',
+  })));
+};
+
 // ── PATCH /api/videos/:fileId/status ─────────────────────────────────────────
 export const updateVideoContentStatus = (req: Request, res: Response): void => {
   const { fileId } = req.params;
