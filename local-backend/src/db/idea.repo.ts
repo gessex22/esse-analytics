@@ -199,7 +199,6 @@ export const ideaRepo = {
       FROM files f
       JOIN transcripts t ON t.file_id = f.id
       WHERE f.tipo_contenido = 'GUION_ESTRUCTURADO'
-        AND f.status = 'TRANSCRITO'
         AND f.id NOT IN (SELECT file_id FROM idea_videos)
       ORDER BY COALESCE(f.fecha_creacion, f.created_at) ASC
     `).all() as any[];

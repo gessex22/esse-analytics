@@ -20,7 +20,9 @@ router.post('/api/videos/:id/transcript', (req: Request, res: Response) => {
   if (!file) { res.status(404).json({ message: 'Archivo no encontrado.' }); return; }
 
   const doc = transcriptRepo.upsert(file.id, text.trim(), language ?? 'es');
-  if (tipo_contenido) fileRepo.update(file.id, { tipo_contenido });
+  // TRANSCRITO es lo que usan idea.repo.ts y el resto de la app para saber que
+  // este archivo ya tiene transcripción real — antes nunca se seteaba.
+  fileRepo.update(file.id, { status: 'TRANSCRITO', ...(tipo_contenido ? { tipo_contenido } : {}) });
   res.json(doc);
 });
 
