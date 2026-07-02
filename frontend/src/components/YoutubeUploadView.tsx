@@ -16,6 +16,13 @@ import { VideoModal } from "./player/VideoModal";
 import { API_BASE as API } from "../config";
 import { Skeleton } from "./ui/skeleton";
 
+// El token va por query string porque <video src> no puede mandar headers custom
+// (necesario contra la central en modo remoto, que sí valida dueño del archivo).
+function streamUrl(fileId: string): string {
+  const token = localStorage.getItem("esse_auth_token");
+  return `${API}/api/videos/stream/${fileId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+}
+
 // Placeholder de la tarjeta de cuenta mientras se verifica el estado OAuth
 // (evita que el perfil "aparezca de golpe" al terminar la consulta).
 function AccountCardSkeleton() {
@@ -632,7 +639,7 @@ function VideoStill({ fileId, offsetSeconds, className }: { fileId: string; offs
     return () => el.removeEventListener("loadedmetadata", handler);
   }, [fileId, offsetSeconds]);
   return (
-    <video ref={ref} src={`${API}/api/videos/stream/${fileId}`}
+    <video ref={ref} src={streamUrl(fileId)}
       muted preload="metadata" className={className} />
   );
 }
@@ -651,7 +658,7 @@ function ThumbOffsetPicker({ fileId, onSelect }: {
   return (
     <div className="space-y-3">
       <div className="rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ maxHeight: 200 }}>
-        <video ref={videoRef} src={`${API}/api/videos/stream/${fileId}`}
+        <video ref={videoRef} src={streamUrl(fileId)}
           muted playsInline preload="metadata"
           className="max-h-[200px] max-w-full object-contain"
           onLoadedMetadata={() => { setDur(videoRef.current?.duration ?? 0); setReady(true); }}
@@ -1072,7 +1079,7 @@ function ThumbnailScrubber({ fileId, onCapture }: {
       <div className="rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ maxHeight: 200 }}>
         <video
           ref={videoRef}
-          src={`${API}/api/videos/stream/${fileId}`}
+          src={streamUrl(fileId)}
           muted
           playsInline
           preload="metadata"

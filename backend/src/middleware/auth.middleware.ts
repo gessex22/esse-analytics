@@ -33,6 +33,25 @@ export function verifyToken(req: AuthRequest, res: Response, next: NextFunction)
   }
 }
 
+// Igual que verifyToken, pero también acepta el token por ?token= en la query string.
+// Necesario para <video src="...">/<a download> — el navegador no manda headers
+// custom en esos requests, solo la URL.
+export function verifyTokenFromHeaderOrQuery(req: AuthRequest, res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  const token = header?.startsWith('Bearer ') ? header.slice(7) : (req.query.token as string | undefined);
+  if (!token) {
+    res.status(401).json({ message: 'Token requerido.' });
+    return;
+  }
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
+    req.user = payload;
+    next();
+  } catch {
+    res.status(401).json({ message: 'Token inválido o expirado.' });
+  }
+}
+
 export function requireRole(...roles: UserRole[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {

@@ -5,9 +5,9 @@ import { syncYouTubeChannel, getYouTubeVideos } from '../services/youtube.servic
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
 
-export const triggerYouTubeSync = async (_req: AuthRequest, res: Response): Promise<void> => {
+export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const result = await syncYouTubeChannel();
+    const result = await syncYouTubeChannel(req.user!.id);
     res.json({ ok: true, ...result });
   } catch (err: any) {
     res.status(500).json({ ok: false, message: err.message });
@@ -18,21 +18,22 @@ export const getYouTubeList = async (req: AuthRequest, res: Response): Promise<v
   try {
     const page  = parseInt(req.query.page  as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
-    const data  = await getYouTubeVideos(page, limit);
+    const data  = await getYouTubeVideos(req.user!.id, page, limit);
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
 };
 
-export const getSyncStats = async (_req: AuthRequest, res: Response): Promise<void> => {
+export const getSyncStats = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const youtube   = await PlatformVideoModel.countDocuments({ platform: 'youtube' });
-    const instagram = await PlatformVideoModel.countDocuments({ platform: 'instagram' });
-    const tiktok    = await PlatformVideoModel.countDocuments({ platform: 'tiktok' });
-    const linked    = await PlatformVideoModel.countDocuments({ linkedFileId: { $ne: null } });
-    const revisar   = await PlatformVideoModel.countDocuments({ matchStatus: 'revisar_manual' });
-    const sinMatch  = await PlatformVideoModel.countDocuments({ matchStatus: 'sin_match' });
+    const userId = req.user!.id;
+    const youtube   = await PlatformVideoModel.countDocuments({ userId, platform: 'youtube' });
+    const instagram = await PlatformVideoModel.countDocuments({ userId, platform: 'instagram' });
+    const tiktok    = await PlatformVideoModel.countDocuments({ userId, platform: 'tiktok' });
+    const linked    = await PlatformVideoModel.countDocuments({ userId, linkedFileId: { $ne: null } });
+    const revisar   = await PlatformVideoModel.countDocuments({ userId, matchStatus: 'revisar_manual' });
+    const sinMatch  = await PlatformVideoModel.countDocuments({ userId, matchStatus: 'sin_match' });
     res.json({ youtube, instagram, tiktok, linked, revisar, sinMatch });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
@@ -42,12 +43,13 @@ export const getSyncStats = async (_req: AuthRequest, res: Response): Promise<vo
 // GET /api/sync/review — lista de videos YT pendientes de revisión manual con sus candidatos
 export const getReviewList = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.user!.id;
     const page  = parseInt(req.query.page  as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const skip  = (page - 1) * limit;
 
-    const total = await PlatformVideoModel.countDocuments({ matchStatus: 'revisar_manual' });
-    const items = await PlatformVideoModel.find({ matchStatus: 'revisar_manual' })
+    const total = await PlatformVideoModel.countDocuments({ userId, matchStatus: 'revisar_manual' });
+    const items = await PlatformVideoModel.find({ userId, matchStatus: 'revisar_manual' })
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -60,7 +62,7 @@ export const getReviewList = async (req: AuthRequest, res: Response): Promise<vo
       }).filter(Boolean);
 
       const candidates = candidateIds.length
-        ? await FileModel.find({ _id: { $in: candidateIds } })
+        ? await FileModel.find({ _id: { $in: candidateIds }, userId })
             .select('file_name duracion_segundos fecha_creacion formato')
             .lean()
         : [];
@@ -79,13 +81,15 @@ export const confirmLink = async (req: AuthRequest, res: Response): Promise<void
   try {
     const { pvId } = req.params;
     const { fileId } = req.body;
+    const userId = req.user!.id;
     if (!fileId) { res.status(400).json({ message: 'fileId requerido' }); return; }
 
-    await PlatformVideoModel.findByIdAndUpdate(pvId, {
+    const updated = await PlatformVideoModel.findOneAndUpdate({ _id: pvId, userId }, {
       linkedFileId: new Types.ObjectId(fileId),
       matchStatus: 'manual',
       $unset: { matchCandidates: '' },
     });
+    if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
@@ -96,10 +100,12 @@ export const confirmLink = async (req: AuthRequest, res: Response): Promise<void
 export const markOrphan = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { pvId } = req.params;
-    await PlatformVideoModel.findByIdAndUpdate(pvId, {
+    const userId = req.user!.id;
+    const updated = await PlatformVideoModel.findOneAndUpdate({ _id: pvId, userId }, {
       matchStatus: 'sin_match',
       $unset: { matchCandidates: '' },
     });
+    if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: err.message });

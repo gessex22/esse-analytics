@@ -48,8 +48,12 @@ export function VideoModal({ fileId, title, onClose }: VideoModalProps) {
     playerRef.current?.seekTo(time);
   }, []);
 
-  const streamUrl   = `${API_BASE_URL}/api/videos/stream/${fileId}`;
-  const downloadUrl = `${API_BASE_URL}/api/videos/download/${fileId}`;
+  // El token va por query string porque <video src> no puede mandar headers custom
+  // (necesario contra la central en modo remoto, que sí valida dueño del archivo).
+  const authToken   = localStorage.getItem("esse_auth_token");
+  const tokenParam  = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
+  const streamUrl   = `${API_BASE_URL}/api/videos/stream/${fileId}${tokenParam}`;
+  const downloadUrl = `${API_BASE_URL}/api/videos/download/${fileId}${tokenParam}`;
   const duration  = data?.file?.duration_seconds ?? 0;
   const wpm       = data?.transcript?.palabras_por_minuto ?? 150;
 

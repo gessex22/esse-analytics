@@ -1,11 +1,14 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
+import { AuthRequest } from '../middleware/auth.middleware';
 import { PublishingStatusModel } from '../models/publishing-status.model';
 import { FileModel } from '../models/file.model';
 
-export async function getAllPublishingStatus(req: Request, res: Response): Promise<void> {
+export async function getAllPublishingStatus(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const userId = req.user!.id;
     // Sort by fecha_creacion (real file creation date) from the files collection
     const docs = await PublishingStatusModel.aggregate([
+      { $match: { userId } },
       {
         $lookup: {
           from:         'files',
@@ -29,9 +32,10 @@ export async function getAllPublishingStatus(req: Request, res: Response): Promi
   }
 }
 
-export async function updatePublishingStatus(req: Request, res: Response): Promise<void> {
+export async function updatePublishingStatus(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { fileId } = req.params;
+    const userId = req.user!.id;
     const { tiktok_published, instagram_published, youtube_published } = req.body;
 
     const update: Record<string, boolean> = {};
@@ -44,19 +48,20 @@ export async function updatePublishingStatus(req: Request, res: Response): Promi
       return;
     }
 
-    // Si no existe registro para este archivo, lo creamos (upsert).
-    // Necesitamos el título del archivo para el caso de creación.
-    const file = await FileModel.findById(fileId, { file_name: 1 }).lean();
+    // Si no existe registro para este archivo, lo creamos (upsert). Verificamos que
+    // el archivo sea del usuario — antes cualquier "todopoderoso" podía marcar como
+    // publicado el video de otra cuenta con solo saber su fileId.
+    const file = await FileModel.findOne({ _id: fileId, userId }, { file_name: 1 }).lean();
     if (!file) {
       res.status(404).json({ error: 'File not found for this fileId' });
       return;
     }
 
     const doc = await PublishingStatusModel.findOneAndUpdate(
-      { fileId },
+      { fileId, userId },
       {
         $set: update,
-        $setOnInsert: { title: file.file_name, createdAt: new Date() },
+        $setOnInsert: { title: file.file_name, createdAt: new Date(), userId },
       },
       { returnDocument: 'after', upsert: true },
     );

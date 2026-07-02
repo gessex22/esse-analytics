@@ -307,10 +307,16 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
 // ── GET /api/metrics ──────────────────────────────────────────────────────────
 export const getMetrics = async (req: Request, res: Response) => {
   try {
-    const totalVideos            = await FileModel.countDocuments({ userId: ownerId(req) });
-    const guionesEstructurados   = await TranscriptModel.countDocuments({ tipo_contenido: 'GUION_ESTRUCTURADO' });
-    const clipsRandom            = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_RANDOM' });
-    const clipsSinVoz            = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_SIN_VOZ' });
+    const userId = ownerId(req);
+    const totalVideos = await FileModel.countDocuments({ userId });
+
+    // TranscriptModel no tiene userId propio (colección legado, nunca se le escribe
+    // desde este backend) — se scopea vía los file_id que sí pertenecen al usuario,
+    // si no estas métricas contaban transcripciones de TODOS los usuarios del servicio.
+    const ownFileIds = await FileModel.find({ userId }).distinct('_id');
+    const guionesEstructurados = await TranscriptModel.countDocuments({ tipo_contenido: 'GUION_ESTRUCTURADO', file_id: { $in: ownFileIds } });
+    const clipsRandom          = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_RANDOM',          file_id: { $in: ownFileIds } });
+    const clipsSinVoz          = await TranscriptModel.countDocuments({ tipo_contenido: 'CLIP_SIN_VOZ',         file_id: { $in: ownFileIds } });
 
     res.json({ totalVideos, guionesEstructurados, clipsRandom, clipsSinVoz });
   } catch (error) {

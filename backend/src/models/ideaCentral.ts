@@ -15,6 +15,7 @@ interface IVideoVinculado {
 export type IdeaStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
 
 export interface IIdeaCentral extends Document {
+  userId: string;
   idea_nucleo: string;
   resumen_visual: string;
   video_principal_id: string | null;
@@ -37,6 +38,7 @@ const VideoVinculadoSchema = new Schema<IVideoVinculado>({
 });
 
 const IdeaCentralSchema = new Schema<IIdeaCentral>({
+  userId: { type: String, required: true, index: true },
   idea_nucleo: { type: String, required: true },
   resumen_visual: { type: String },
   video_principal_id: { type: String, default: null },

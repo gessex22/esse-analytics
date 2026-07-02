@@ -10,8 +10,10 @@ import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
 
-// Lectura — libre
-router.get('/', getTallerIdeas);
+// Lectura — antes era pública sin token, cualquiera podía leer las ideas de
+// cualquier usuario. Ahora requiere sesión (el scoping por dueño lo hace el
+// controller con req.user.id).
+router.get('/', verifyToken, getTallerIdeas);
 
 // Protegidas — solo todopoderoso
 router.put('/:ideaId/set-main',              verifyToken, requireRole('todopoderoso'), setMainVersion);

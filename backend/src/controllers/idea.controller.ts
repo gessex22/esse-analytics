@@ -1,15 +1,18 @@
-import { Request, Response } from 'express';
+import { Response } from 'express';
 import { IdeaCentral, IdeaStatus } from '../models/ideacentral';
+import { AuthRequest } from '../middleware/auth.middleware';
 import mongoose from 'mongoose';
 import * as fs from 'fs';
 
 import path from 'path'
 
 // ➔ GET: Obtener las ideas procesadas para mapear el diseño del Figma
-export const getTallerIdeas = async (req: Request, res: Response): Promise<void> => {
+export const getTallerIdeas = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.user!.id;
     // 1. Traemos los documentos directo de la BD (excluye descartados por defecto)
     const ideas = await IdeaCentral.find({
+      userId,
       $or: [{ status: { $exists: false } }, { status: { $ne: 'descartado' } }]
     }).sort({ ultima_actualizacion: -1 }).lean();
 
@@ -70,10 +73,11 @@ export const getTallerIdeas = async (req: Request, res: Response): Promise<void>
 };
 
 // ➔ PATCH: Cuando cambies el video principal en el Taller (Intercambiar Roles)
-export const setMainVersion = async (req: Request, res: Response): Promise<void> => {
+export const setMainVersion = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { ideaId } = req.params;     // URL: /api/ideas-centrales/:ideaId/set-main
     const { versionId } = req.body;    // JSON: { "versionId": "id_del_video" }
+    const userId = req.user!.id;
 
     if (!ideaId || !versionId) {
       res.status(400).json({ message: "Faltan parámetros requeridos (ideaId o versionId)." });
@@ -81,13 +85,14 @@ export const setMainVersion = async (req: Request, res: Response): Promise<void>
     }
 
     // ➔ ACTUALIZACIÓN DIRECTA: Guardamos el ID de la versión como el nuevo principal de la idea
-    const updatedIdea = await IdeaCentral.findByIdAndUpdate(
-      ideaId,
-      { 
-        $set: { 
+    // (solo si es dueño — sin esto cualquier "todopoderoso" podía tocar ideas ajenas)
+    const updatedIdea = await IdeaCentral.findOneAndUpdate(
+      { _id: ideaId, userId },
+      {
+        $set: {
           video_principal_id: versionId,
           ultima_actualizacion: new Date() // Actualizamos la estampa de tiempo
-        } 
+        }
       },
       { returnDocument: 'after' } // Nos devuelve el documento ya modificado
     );
@@ -106,12 +111,13 @@ export const setMainVersion = async (req: Request, res: Response): Promise<void>
 
 
 // ➔ DELETE: Eliminar video individual, su .mp4 en disco y su transcripción .txt asociada
-export const deleteVideoIndividual = async (req: Request, res: Response): Promise<void> => {
+export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Promise<void> => {
   const { ideaId, videoId } = req.params;
+  const userId = req.user!.id;
 
   try {
-    // 1. Buscar la idea raíz por su ID
-    const idea = await IdeaCentral.findById(ideaId);
+    // 1. Buscar la idea raíz por su ID (y verificar que sea del usuario)
+    const idea = await IdeaCentral.findOne({ _id: ideaId, userId });
     if (!idea) {
       res.status(404).json({ message: "Idea central no encontrada." });
       return;
@@ -222,9 +228,10 @@ export const deleteVideoIndividual = async (req: Request, res: Response): Promis
 };
 
 // ➔ PATCH: Actualizar el estado de una idea central (publicado, borrador, procesando, descartado)
-export const updateIdeaStatus = async (req: Request, res: Response): Promise<void> => {
+export const updateIdeaStatus = async (req: AuthRequest, res: Response): Promise<void> => {
   const { ideaId } = req.params;
   const { status } = req.body as { status: IdeaStatus };
+  const userId = req.user!.id;
 
   const validStatuses: IdeaStatus[] = ['publicado', 'borrador', 'procesando', 'descartado'];
   if (!validStatuses.includes(status)) {
@@ -233,8 +240,8 @@ export const updateIdeaStatus = async (req: Request, res: Response): Promise<voi
   }
 
   try {
-    const updated = await IdeaCentral.findByIdAndUpdate(
-      ideaId,
+    const updated = await IdeaCentral.findOneAndUpdate(
+      { _id: ideaId, userId },
       { status, ultima_actualizacion: new Date() },
       { returnDocument: 'after' }
     );
@@ -251,12 +258,13 @@ export const updateIdeaStatus = async (req: Request, res: Response): Promise<voi
 };
 
 // ➔ DELETE: Eliminar el registro raíz de la Idea Central una vez vaciada por el frontend
-export const deleteIdeaCentral = async (req: Request, res: Response): Promise<void> => {
+export const deleteIdeaCentral = async (req: AuthRequest, res: Response): Promise<void> => {
   const { ideaId } = req.params;
+  const userId = req.user!.id;
 
   try {
-    // 1. Buscar la idea con todos sus videos antes de eliminarla
-    const idea = await IdeaCentral.findById(ideaId);
+    // 1. Buscar la idea con todos sus videos antes de eliminarla (y verificar dueño)
+    const idea = await IdeaCentral.findOne({ _id: ideaId, userId });
     if (!idea) {
       res.status(404).json({ message: "La idea central no existe o ya fue eliminada." });
       return;

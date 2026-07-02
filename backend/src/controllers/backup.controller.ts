@@ -165,16 +165,20 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
 }
 
 // GET /api/backup/transcripts
-export async function getBackupTranscripts(_req: AuthRequest, res: Response): Promise<void> {
+export async function getBackupTranscripts(req: AuthRequest, res: Response): Promise<void> {
   try {
+    const userId = req.user!.id;
+    // TranscriptModel no tiene userId propio (colección legado) — se scopea vía los
+    // file_id que pertenecen al usuario. Sin esto, cualquier cuenta premium podía
+    // migrar/leer las transcripciones de TODOS los usuarios del servicio.
+    const ownFiles = await FileModel.find({ userId }, { _id: 1, file_name: 1 }).lean();
+    const ownFileIds = ownFiles.map(f => f._id);
+    const nameMap = new Map(ownFiles.map(f => [String(f._id), f.file_name]));
+
     const transcripts = await TranscriptModel.find(
-      { transcript_text: { $exists: true, $ne: '' } },
+      { transcript_text: { $exists: true, $ne: '' }, file_id: { $in: ownFileIds } },
       { file_id: 1, transcript_text: 1, language: 1, tipo_contenido: 1 },
     ).lean();
-
-    const fileIds = transcripts.map(t => t.file_id);
-    const files   = await FileModel.find({ _id: { $in: fileIds } }, { _id: 1, file_name: 1 }).lean();
-    const nameMap = new Map(files.map(f => [String(f._id), f.file_name]));
 
     const result = transcripts
       .map(t => ({
@@ -194,15 +198,16 @@ export async function getBackupTranscripts(_req: AuthRequest, res: Response): Pr
 // GET /api/backup/ideas-centrales
 // Trae las ideas agrupadas (Mongo, legado) resolviendo file_id → file_name para que
 // el local-backend pueda matchear contra su propia tabla `files` por nombre.
-export async function getBackupIdeas(_req: AuthRequest, res: Response): Promise<void> {
+export async function getBackupIdeas(req: AuthRequest, res: Response): Promise<void> {
   try {
-    const ideas = await IdeaCentral.find({}).lean();
+    const userId = req.user!.id;
+    const ideas = await IdeaCentral.find({ userId }).lean();
 
     const allFileIds = new Set<string>();
     for (const idea of ideas) {
       for (const v of idea.videos_vinculados ?? []) allFileIds.add(String(v.file_id));
     }
-    const files   = await FileModel.find({ _id: { $in: Array.from(allFileIds) } }, { _id: 1, file_name: 1 }).lean();
+    const files   = await FileModel.find({ _id: { $in: Array.from(allFileIds) }, userId }, { _id: 1, file_name: 1 }).lean();
     const nameMap = new Map(files.map(f => [String(f._id), f.file_name]));
 
     const result = ideas

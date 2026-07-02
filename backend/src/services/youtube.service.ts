@@ -65,8 +65,11 @@ function isShort(_item: any): boolean {
   return true;
 }
 
-// Sincronización principal: trae todos los videos del canal y upserta en BD
-export async function syncYouTubeChannel(): Promise<{ total: number; shorts: number; upserted: number }> {
+// Sincronización principal: trae todos los videos del canal y upserta en BD.
+// NOTA: el canal en sí sigue siendo global (YOUTUBE_CHANNEL_ID por env, no por OAuth
+// del usuario) — eso es una limitación mayor aparte. Lo que sí se resuelve acá es que
+// los registros resultantes queden scoped a quien disparó la sync, no compartidos.
+export async function syncYouTubeChannel(userId: string): Promise<{ total: number; shorts: number; upserted: number }> {
   const playlistId = await getUploadsPlaylistId();
   const allIds     = await getAllVideoIds(playlistId);
   const details    = await getVideoDetails(allIds);
@@ -86,8 +89,9 @@ export async function syncYouTubeChannel(): Promise<{ total: number; shorts: num
                  : 'public';
 
     await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'youtube', platformId: item.id },
+      { userId, platform: 'youtube', platformId: item.id },
       {
+        userId,
         platform:        'youtube',
         platformId:      item.id,
         platformUrl:     `https://www.youtube.com/shorts/${item.id}`,
@@ -114,10 +118,10 @@ export async function syncYouTubeChannel(): Promise<{ total: number; shorts: num
 }
 
 // Obtener los videos de YouTube ya guardados en BD
-export async function getYouTubeVideos(page = 1, limit = 50) {
+export async function getYouTubeVideos(userId: string, page = 1, limit = 50) {
   const skip  = (page - 1) * limit;
-  const total = await PlatformVideoModel.countDocuments({ platform: 'youtube' });
-  const items = await PlatformVideoModel.find({ platform: 'youtube' })
+  const total = await PlatformVideoModel.countDocuments({ userId, platform: 'youtube' });
+  const items = await PlatformVideoModel.find({ userId, platform: 'youtube' })
     .sort({ publishedAt: -1 })
     .skip(skip)
     .limit(limit)

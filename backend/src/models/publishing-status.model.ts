@@ -1,6 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
 export interface IPublishingStatus extends Document {
+  userId: string;
   fileId: Types.ObjectId;
   title: string;
   tiktok_published: boolean;
@@ -10,6 +11,7 @@ export interface IPublishingStatus extends Document {
 }
 
 const PublishingStatusSchema = new Schema<IPublishingStatus>({
+  userId: { type: String, required: true, index: true },
   fileId: { type: Schema.Types.ObjectId, ref: 'File', required: true, unique: true },
   title: { type: String, required: true },
   tiktok_published: { type: Boolean, default: false },

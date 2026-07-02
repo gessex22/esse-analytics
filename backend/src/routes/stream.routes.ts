@@ -1,13 +1,16 @@
 import { Router } from 'express';
 import { FileModel } from '../models/file.model';
+import { AuthRequest, verifyTokenFromHeaderOrQuery } from '../middleware/auth.middleware';
 import path from 'path';
 import fs from 'fs';
 
 const router = Router();
 
-router.get('/api/videos/download/:id', async (req, res) => {
+// Antes servían cualquier video con solo saber el _id, sin token ni chequeo de
+// dueño — cualquiera podía descargar/streamear el video de otro usuario.
+router.get('/api/videos/download/:id', verifyTokenFromHeaderOrQuery, async (req: AuthRequest, res) => {
   try {
-    const fileDoc = await FileModel.findById(req.params.id);
+    const fileDoc = await FileModel.findOne({ _id: req.params.id, userId: req.user!.id });
     if (!fileDoc || fileDoc.status === 'ELIMINADO_DISCO') {
       return res.status(404).json({ error: 'Video no disponible' });
     }
@@ -31,9 +34,9 @@ router.get('/api/videos/download/:id', async (req, res) => {
   }
 });
 
-router.get('/api/videos/stream/:id', async (req, res) => {
+router.get('/api/videos/stream/:id', verifyTokenFromHeaderOrQuery, async (req: AuthRequest, res) => {
   try {
-    const fileDoc = await FileModel.findById(req.params.id);
+    const fileDoc = await FileModel.findOne({ _id: req.params.id, userId: req.user!.id });
     if (!fileDoc || fileDoc.status === 'ELIMINADO_DISCO') {
       return res.status(404).json({ error: 'Video no disponible' });
     }

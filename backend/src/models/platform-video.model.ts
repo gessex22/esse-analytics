@@ -4,6 +4,7 @@ export type SyncPlatform = 'youtube' | 'instagram' | 'tiktok';
 export type PlatformVideoStatus = 'public' | 'private' | 'unlisted' | 'deleted';
 
 export interface IPlatformVideo extends Document {
+  userId: string;
   platform: SyncPlatform;
   platformId: string;           // ID nativo de la plataforma (ej: YouTube video ID)
   platformUrl: string;
@@ -24,6 +25,7 @@ export interface IPlatformVideo extends Document {
 }
 
 const platformVideoSchema = new Schema<IPlatformVideo>({
+  userId:         { type: String, required: true, index: true },
   platform:       { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok'] },
   platformId:     { type: String, required: true },
   platformUrl:    { type: String, required: true },
@@ -43,7 +45,7 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   lastSyncedAt:     { type: Date, default: Date.now },
 });
 
-// Índice único por plataforma + ID nativo (evita duplicados en re-sync)
-platformVideoSchema.index({ platform: 1, platformId: 1 }, { unique: true });
+// Índice único por usuario + plataforma + ID nativo (evita duplicados en re-sync)
+platformVideoSchema.index({ userId: 1, platform: 1, platformId: 1 }, { unique: true });
 
 export const PlatformVideoModel = model<IPlatformVideo>('PlatformVideo', platformVideoSchema);
