@@ -2,16 +2,16 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Trash2,
   Check,
   ListFilter,
   AlertCircle,
   X,
-  CloudOff,
 } from "lucide-react";
 import { videoService, IdeaCollection, IdeaStatus } from "../services/api";
-import { useTranscripStatus, TranscripRequired } from "./TranscripGate";
+import { useMaidenStatus, MaidenRequired } from "./MaidenGate";
 import { Chip } from "./ui/chip";
 
 // ── Configuración visual por estado ──────────────────────────────────────────
@@ -25,7 +25,7 @@ const STATUS_CONFIG: Record<IdeaStatus, { label: string; chipClass: string }> = 
 type VersionFilter = "all" | "only-originals" | "with-versions";
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export function Taller({ role = "todopoderoso", isLocal = false }: { role?: string; isLocal?: boolean }) {
+export function Taller({ role = "todopoderoso" }: { role?: string }) {
   const [ideas, setIdeas] = useState<IdeaCollection[]>([]);
   const [expandedItems, setExpandedItems] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -33,8 +33,8 @@ export function Taller({ role = "todopoderoso", isLocal = false }: { role?: stri
   const [currentPage, setCurrentPage] = useState(1);
   const ITEMS_PER_PAGE = 8;
 
-  // Detección del componente de transcripción (el Taller depende de él)
-  const { status: transcrip, loading: transcripLoading } = useTranscripStatus();
+  // Detección de Maiden (el Taller depende de que haya agrupado ideas)
+  const { status: maiden, loading: maidenLoading } = useMaidenStatus();
 
   // Filtros
   const [showFilterPanel, setShowFilterPanel] = useState(false);
@@ -189,21 +189,6 @@ export function Taller({ role = "todopoderoso", isLocal = false }: { role?: stri
     versionFilter !== "all";
 
   // ── Renders de estado ────────────────────────────────────────────────────────
-  if (isLocal)
-    return (
-      <div className="flex flex-col items-center justify-center h-full min-h-[300px] gap-4 px-6">
-        <div className="w-14 h-14 rounded-2xl bg-secondary flex items-center justify-center">
-          <CloudOff className="w-7 h-7 text-muted-foreground" />
-        </div>
-        <div className="text-center space-y-1.5 max-w-xs">
-          <h3 className="text-sm font-semibold text-foreground">No disponible en modo local</h3>
-          <p className="text-xs text-muted-foreground">
-            El Taller requiere el plugin <span className="text-foreground font-medium">esse-Transcrip</span> que solo corre en el servidor central.
-          </p>
-        </div>
-      </div>
-    );
-
   if (loading)
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[300px] gap-4">
@@ -226,12 +211,12 @@ export function Taller({ role = "todopoderoso", isLocal = false }: { role?: stri
       </div>
     );
 
-  // El Taller (ideas centrales) se genera con la IA de esse-Transcrip.
-  // Si no está activo y no hay ideas, mostramos el aviso para habilitarlo.
-  if (!transcripLoading && transcrip && !transcrip.active && ideas.length === 0)
+  // El Taller (ideas centrales) se arma con Maiden agrupando transcripciones.
+  // Si no está instalado y no hay ideas, mostramos el aviso para habilitarlo.
+  if (!maidenLoading && maiden && !maiden.active && ideas.length === 0)
     return (
       <div className="px-3 sm:px-6 py-8">
-        <TranscripRequired feature="El Taller" />
+        <MaidenRequired feature="El Taller" />
       </div>
     );
 
@@ -614,35 +599,60 @@ export function Taller({ role = "todopoderoso", isLocal = false }: { role?: stri
       </div>
 
       {/* ── Paginación ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between pt-4 text-xs text-muted-foreground border-t border-border/40 gap-2">
-        <div className="hidden sm:block">
-          Mostrando {totalItems === 0 ? 0 : indexOfFirstItem + 1}–
-          {Math.min(indexOfLastItem, totalItems)} de {totalItems} videos
-          {hasActiveFilters && ` (filtrado de ${ideas.length})`}
-        </div>
-        <div className="sm:hidden font-mono">
-          {totalItems === 0 ? 0 : indexOfFirstItem + 1}–{Math.min(indexOfLastItem, totalItems)} / {totalItems}
-        </div>
-        <div className="flex items-center gap-1">
+      <div className="text-xs text-muted-foreground text-center sm:text-left">
+        Mostrando {totalItems === 0 ? 0 : indexOfFirstItem + 1}–
+        {Math.min(indexOfLastItem, totalItems)} de {totalItems} ideas
+        {hasActiveFilters && ` (filtrado de ${ideas.length})`}
+      </div>
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-2 pt-2">
           <button
             onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-            disabled={currentPage === 1}
-            className="px-2 py-1 rounded bg-secondary/50 border border-border hover:bg-secondary disabled:opacity-30 transition-colors"
+            disabled={currentPage <= 1}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            ⟨
+            <ChevronLeft className="w-4 h-4" />
+            Anterior
           </button>
-          <span className="px-3 py-1 rounded bg-primary/20 text-primary border border-primary/30 font-mono font-semibold">
-            {currentPage} / {totalPages}
-          </span>
+
+          <div className="flex items-center gap-1">
+            {Array.from({ length: totalPages }, (_, i) => i + 1)
+              .filter((p) => Math.abs(p - currentPage) <= 2 || p === 1 || p === totalPages)
+              .reduce<(number | "...")[]>((acc, p, i, arr) => {
+                if (i > 0 && (p - (arr[i - 1] as number)) > 1) acc.push("...");
+                acc.push(p);
+                return acc;
+              }, [])
+              .map((item, i) =>
+                item === "..." ? (
+                  <span key={`e-${i}`} className="px-2 text-muted-foreground text-sm">…</span>
+                ) : (
+                  <button
+                    key={item}
+                    onClick={() => setCurrentPage(item as number)}
+                    className={`w-8 h-8 rounded-lg text-sm transition-colors ${
+                      item === currentPage
+                        ? "bg-primary text-primary-foreground"
+                        : "border border-border hover:bg-secondary text-muted-foreground"
+                    }`}
+                  >
+                    {item}
+                  </button>
+                )
+              )}
+          </div>
+
           <button
             onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-            disabled={currentPage === totalPages}
-            className="px-2 py-1 rounded bg-secondary/50 border border-border hover:bg-secondary disabled:opacity-30 transition-colors"
+            disabled={currentPage >= totalPages}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
-            ⟩
+            Siguiente
+            <ChevronRight className="w-4 h-4" />
           </button>
         </div>
-      </div>
+      )}
     </div>
   );
 }

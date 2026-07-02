@@ -153,12 +153,12 @@ def has_transcript(api: str, file_id: str) -> bool:
         return False
 
 
-def post_transcript(api: str, file_id: str, text: str, language: str) -> bool:
+def post_transcript(api: str, file_id: str, text: str, language: str, tipo_contenido: str) -> bool:
     """Envía la transcripción a la API local. Retorna True si fue exitoso."""
     try:
         resp = requests.post(
             f"{api}/api/videos/{file_id}/transcript",
-            json={"text": text, "language": language},
+            json={"text": text, "language": language, "tipo_contenido": tipo_contenido},
             timeout=10,
         )
         return resp.status_code in (200, 201)
@@ -167,12 +167,32 @@ def post_transcript(api: str, file_id: str, text: str, language: str) -> bool:
         return False
 
 
+# ── Clasificación de contenido ────────────────────────────────────────────────
+
+def classify_content(text: str, duration_seconds: float) -> tuple[str, float]:
+    """
+    Clasifica el video según la densidad de palabras (palabras por minuto).
+    Sin voz → CLIP_SIN_VOZ. Guion cargado (>=65 ppm) → GUION_ESTRUCTURADO.
+    Resto → CLIP_RANDOM. Es la misma regla que usa Maiden para agrupar ideas.
+    """
+    palabras = text.split()
+    if not palabras:
+        return "CLIP_SIN_VOZ", 0.0
+
+    duracion_minutos = duration_seconds / 60
+    ppm = len(palabras) / duracion_minutos if duracion_minutos > 0 else 0
+
+    if ppm >= 65:
+        return "GUION_ESTRUCTURADO", round(ppm, 1)
+    return "CLIP_RANDOM", round(ppm, 1)
+
+
 # ── Transcripción ─────────────────────────────────────────────────────────────
 
-def transcribe(file_path: str, model_name: str, device_info: dict, lang: str | None) -> tuple[str, str]:
+def transcribe(file_path: str, model_name: str, device_info: dict, lang: str | None) -> tuple[str, str, float]:
     """
     Transcribe el audio/video en file_path con faster-whisper.
-    Retorna (text, detected_language).
+    Retorna (text, detected_language, duration_seconds).
     """
     try:
         from faster_whisper import WhisperModel
@@ -198,7 +218,7 @@ def transcribe(file_path: str, model_name: str, device_info: dict, lang: str | N
     )
 
     text = " ".join(seg.text.strip() for seg in segments)
-    return text.strip(), info.language
+    return text.strip(), info.language, info.duration
 
 
 # ── Punto de entrada ──────────────────────────────────────────────────────────
@@ -284,12 +304,14 @@ def main():
         t0 = time.time()
 
         try:
-            text, lang_detected = transcribe(file_path, model_name, dev, args.lang)
+            text, lang_detected, duration = transcribe(file_path, model_name, dev, args.lang)
             elapsed = time.time() - t0
             words   = len(text.split())
+            tipo_contenido, ppm = classify_content(text, duration)
             print(f"  Idioma  : {lang_detected} | Palabras: {words} | Tiempo: {elapsed:.1f}s")
+            print(f"  Tipo    : {tipo_contenido} ({ppm} ppm)")
 
-            if post_transcript(args.api, file_id, text, lang_detected):
+            if post_transcript(args.api, file_id, text, lang_detected, tipo_contenido):
                 print(f"  ✓ Guardado")
                 ok += 1
             else:

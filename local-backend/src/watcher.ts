@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileRepo } from './db/file.repo';
 import { configRepo } from './db/config.repo';
+import { pluginStatus, startPlugin } from './plugins';
 
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm']);
 
@@ -60,6 +61,7 @@ function runScanInBackground(folder: string): void {
       if (added || restored || missing) {
         console.log(`[watcher] Scan inicial: +${added} nuevos, ${restored} restaurados, ${missing} eliminados`);
       }
+      if (added || restored) scheduleTranscription();
     } catch (err: any) {
       console.warn('[watcher] Error en scan inicial:', err.message);
     }
@@ -71,6 +73,21 @@ let watchedDir: string | null = null;
 
 function isVideo(filePath: string): boolean {
   return VIDEO_EXTS.has(path.extname(filePath).toLowerCase());
+}
+
+// Varios videos suelen llegar juntos (copia en lote): esperamos una pausa sin
+// archivos nuevos antes de disparar la transcripción, para procesarlos de una.
+const TRANSCRIP_DEBOUNCE_MS = 10_000;
+let transcripTimer: NodeJS.Timeout | null = null;
+
+function scheduleTranscription(): void {
+  if (pluginStatus('esse_transcrip') !== 'installed') return; // no instalado o ya corriendo
+  if (transcripTimer) clearTimeout(transcripTimer);
+  transcripTimer = setTimeout(() => {
+    transcripTimer = null;
+    console.log('[watcher] Disparando esse_transcrip por video(s) nuevo(s)...');
+    startPlugin('esse_transcrip');
+  }, TRANSCRIP_DEBOUNCE_MS);
 }
 
 function onAdd(filePath: string): void {
@@ -90,9 +107,11 @@ function onAdd(filePath: string): void {
       fecha_creacion: fechaCreacion,
     });
     console.log(`[watcher] Nuevo video detectado: ${path.basename(absPath)}`);
+    scheduleTranscription();
   } else if (existing.status === 'ELIMINADO_DISCO') {
     fileRepo.update(existing.id, { status: 'PENDIENTE' });
     console.log(`[watcher] Video restaurado: ${path.basename(absPath)}`);
+    scheduleTranscription();
   }
 }
 

@@ -24,4 +24,8 @@ export const transcriptRepo = {
     `).run(Number(fileId), text, language);
     return this.findByFileId(fileId)!;
   },
+
+  deleteByFileId(fileId: number | string): void {
+    db.prepare('DELETE FROM transcripts WHERE file_id = ?').run(Number(fileId));
+  },
 };

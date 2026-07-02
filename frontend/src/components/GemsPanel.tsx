@@ -67,6 +67,16 @@ const GEMS: GemDef[] = [
     tier:        "premium",
   },
   {
+    id:          "esse_maiden",
+    name:        "Maiden",
+    tagline:     "Agrupa tus ideas con IA",
+    description: "Analiza tus transcripciones y agrupa automáticamente los videos que repiten la misma idea, armando el Taller sin trabajo manual.",
+    color:       "teal",
+    version:     "1.0.0",
+    type:        "plugin",
+    tier:        "free",
+  },
+  {
     id:          "esse_thumb",
     name:        "esse-Thumb",
     tagline:     "Miniaturas con IA",

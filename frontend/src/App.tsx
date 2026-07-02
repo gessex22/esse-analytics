@@ -433,7 +433,7 @@ export default function App() {
         {/* Contenido */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0 sm:min-h-screen">
           {effectiveNav === 5
-            ? <Taller role={role} isLocal={isLocal} />
+            ? <Taller role={role} />
             : (
               <main
                 className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"

@@ -4,6 +4,7 @@ import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptModel } from '../models/transcript.model';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
+import { IdeaCentral } from '../models/ideacentral';
 
 // GET /api/backup/files
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
@@ -168,7 +169,7 @@ export async function getBackupTranscripts(_req: AuthRequest, res: Response): Pr
   try {
     const transcripts = await TranscriptModel.find(
       { transcript_text: { $exists: true, $ne: '' } },
-      { file_id: 1, transcript_text: 1, language: 1 },
+      { file_id: 1, transcript_text: 1, language: 1, tipo_contenido: 1 },
     ).lean();
 
     const fileIds = transcripts.map(t => t.file_id);
@@ -180,10 +181,47 @@ export async function getBackupTranscripts(_req: AuthRequest, res: Response): Pr
         file_name:       nameMap.get(String(t.file_id)),
         transcript_text: t.transcript_text,
         language:        (t as any).language ?? 'es',
+        tipo_contenido:  (t as any).tipo_contenido ?? null,
       }))
       .filter(t => t.file_name);
 
     res.json({ transcripts: result, total: result.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/backup/ideas-centrales
+// Trae las ideas agrupadas (Mongo, legado) resolviendo file_id → file_name para que
+// el local-backend pueda matchear contra su propia tabla `files` por nombre.
+export async function getBackupIdeas(_req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const ideas = await IdeaCentral.find({}).lean();
+
+    const allFileIds = new Set<string>();
+    for (const idea of ideas) {
+      for (const v of idea.videos_vinculados ?? []) allFileIds.add(String(v.file_id));
+    }
+    const files   = await FileModel.find({ _id: { $in: Array.from(allFileIds) } }, { _id: 1, file_name: 1 }).lean();
+    const nameMap = new Map(files.map(f => [String(f._id), f.file_name]));
+
+    const result = ideas
+      .map(idea => ({
+        idea_nucleo:          idea.idea_nucleo,
+        resumen_visual:       idea.resumen_visual,
+        status:               (idea as any).status ?? 'borrador',
+        video_principal_name: nameMap.get(String(idea.video_principal_id)) ?? null,
+        videos: (idea.videos_vinculados ?? [])
+          .map(v => ({
+            file_name:       nameMap.get(String(v.file_id)),
+            similitud_guion: v.similitud_guion ?? 0,
+            rol:             v.rol ?? 'RELACIONADO',
+          }))
+          .filter(v => v.file_name),
+      }))
+      .filter(idea => idea.videos.length > 0);
+
+    res.json({ ideas: result, total: result.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

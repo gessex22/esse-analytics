@@ -133,4 +133,24 @@ db.exec(`
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS ideas_centrales (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_nucleo        TEXT    NOT NULL,
+    resumen_visual     TEXT    NOT NULL,
+    status             TEXT    NOT NULL DEFAULT 'borrador',
+    video_principal_id INTEGER REFERENCES files(id),
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS idea_videos (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_id         INTEGER NOT NULL REFERENCES ideas_centrales(id) ON DELETE CASCADE,
+    file_id         INTEGER NOT NULL REFERENCES files(id),
+    similitud_guion REAL    NOT NULL DEFAULT 100.0,
+    rol             TEXT    NOT NULL DEFAULT 'RELACIONADO',
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(idea_id, file_id)
+  );
 `);
