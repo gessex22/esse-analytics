@@ -133,10 +133,12 @@ async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVid
 
 // Vistas de un Reel via insights. Requiere el scope instagram_business_manage_insights;
 // si el token no lo tiene, la API responde "permission" y devolvemos undefined (sin romper).
+// Va contra graph.facebook.com: desde la migración a Facebook Login for Business el
+// token es un Page Access Token, no un Instagram User Token (graph.instagram.com ya no sirve).
 async function fetchInstagramViews(mediaId: string, accessToken: string): Promise<number | undefined> {
   try {
     const r = await fetch(
-      `https://graph.instagram.com/v22.0/${mediaId}/insights?metric=views&access_token=${accessToken}`
+      `https://graph.facebook.com/v22.0/${mediaId}/insights?metric=views&access_token=${accessToken}`
     );
     const d = await r.json() as any;
     if (!r.ok || d.error) return undefined;
@@ -149,9 +151,12 @@ async function fetchInstagramViews(mediaId: string, accessToken: string): Promis
 
 async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | null> {
   try {
+    // "me" no existe en graph.facebook.com para este flujo — hay que pedir el
+    // media directamente a la cuenta de IG Business (instagram_user_id).
+    if (!token.instagram_user_id) return null;
     const fields = 'id,caption,media_type,media_product_type,permalink,thumbnail_url,like_count,comments_count,timestamp';
     const res = await fetch(
-      `https://graph.instagram.com/v22.0/me/media?fields=${fields}&limit=1&access_token=${token.access_token}`
+      `https://graph.facebook.com/v22.0/${token.instagram_user_id}/media?fields=${fields}&limit=1&access_token=${token.access_token}`
     );
     if (!res.ok) return null;
     const data = await res.json() as any;
