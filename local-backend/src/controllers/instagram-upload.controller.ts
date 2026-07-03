@@ -7,6 +7,9 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 
+// Instagram Business Login (api.instagram.com) emite un Instagram User Access
+// Token que solo es válido contra graph.instagram.com — graph.facebook.com
+// rechaza este token (audiencia distinta, requiere Facebook Login for Business).
 const IG_GRAPH = 'https://graph.instagram.com/v22.0';
 const CENTRAL  = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -108,16 +111,22 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
     if (!containerData.id) {
-      // El .message solo no alcanza para diagnosticar — Meta manda subcode/type/
-      // fbtrace_id con la causa real (permisos, tipo de cuenta, etc.).
+      // Devolvemos el objeto de error completo (code/subcode/fbtrace_id) al frontend
+      // para diagnosticar sin depender de logs de consola (la app empaquetada no
+      // muestra stdout al usuario).
       console.error('[Instagram] Error al crear contenedor:', JSON.stringify(containerData.error ?? containerData));
-      throw new Error(containerData.error?.error_user_msg || containerData.error?.message || 'Error al crear contenedor de media');
+      const metaError = containerData.error ?? containerData;
+      const err: any = new Error(
+        (metaError.error_user_msg || metaError.message || 'Error al crear contenedor de media') +
+        ` [raw: ${JSON.stringify(metaError)}]`
+      );
+      throw err;
     }
 
     const containerId = containerData.id as string;
     const uploadUri   = containerData.uri as string;
 
-    if (!uploadUri) throw new Error('No se obtuvo upload URI de Instagram');
+    if (!uploadUri) throw new Error('No se obtuvo upload URI de Meta');
 
     // 2. Subir archivo directo a Meta desde esta máquina
     await streamFileToMeta(uploadUri, access_token, fileDoc.file_path, fileSize);
