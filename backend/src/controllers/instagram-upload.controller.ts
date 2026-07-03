@@ -176,6 +176,13 @@ export const handleCallback = async (req: Request, res: Response) => {
     if (longJson.error) throw new Error(longJson.error.message ?? JSON.stringify(longJson.error));
     const longUserToken: string = longJson.access_token;
 
+    // Diagnóstico: qué permisos quedaron realmente otorgados en el token.
+    const permsRes  = await fetch(`${FB_GRAPH}/me/permissions?access_token=${longUserToken}`);
+    const permsJson = await permsRes.json() as any;
+    const granted = (permsJson.data ?? []).filter((p: any) => p.status === 'granted').map((p: any) => p.permission);
+    const declined = (permsJson.data ?? []).filter((p: any) => p.status === 'declined').map((p: any) => p.permission);
+    console.log(`[Instagram] Permisos otorgados: [${granted.join(', ')}] — rechazados: [${declined.join(', ')}]`);
+
     // 3. Páginas de Facebook que administra — cada una trae su propio Page
     // Access Token (ya de vida larga al derivar de un User Token largo).
     // limit=200 evita perder páginas si administra más de las 25 por default.
