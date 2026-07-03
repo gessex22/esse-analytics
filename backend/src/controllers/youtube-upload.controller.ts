@@ -230,8 +230,8 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     const videoUrl = `https://www.youtube.com/shorts/${videoId}`;
 
     await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'youtube', platformId: videoId },
-      { platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
+      { userId: req.user!.id, platform: 'youtube', platformId: videoId },
+      { userId: req.user!.id, platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
       { upsert: true },
     );
 
@@ -320,8 +320,8 @@ export const remoteUploadToYoutube = async (req: AuthRequest, res: Response) => 
     const videoUrl = `https://www.youtube.com/shorts/${videoId}`;
 
     await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'youtube', platformId: videoId },
-      { platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), matchStatus: 'remote' },
+      { userId: req.user!.id, platform: 'youtube', platformId: videoId },
+      { userId: req.user!.id, platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), matchStatus: 'remote' },
       { upsert: true },
     );
 

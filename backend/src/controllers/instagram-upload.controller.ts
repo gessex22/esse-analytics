@@ -253,17 +253,16 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
     ? '\n\n' + (tags as string[]).map(t => `#${t}`).join(' ')
     : '';
   const fullCaption = String(caption) + hashtagLine;
-
-  const apiUrl = (process.env.API_URL || '').replace(/\/$/, '');
-  if (!apiUrl.startsWith('https://')) {
-    return res.status(500).json({ error: 'API_URL debe ser una URL pública https para que Meta descargue el video' });
-  }
-  const videoUrl = `${apiUrl}/api/videos/download/${fileId}`;
+  const fileSize = fs.statSync(filePath).size;
 
   try {
+    // upload_type resumable: se sube el archivo directo a Meta (streamFileToMeta), igual
+    // que el local-backend. El flujo viejo con video_url dependía de que Meta descargara
+    // /api/videos/download/:id públicamente — esa ruta ahora exige token (fix de
+    // ownership), así que Meta recibía 401 y la subida fallaba.
     const containerPayload: Record<string, any> = {
       media_type:    'REELS',
-      video_url:     videoUrl,
+      upload_type:   'resumable',
       caption:       fullCaption,
       share_to_feed: true,
       access_token,
@@ -275,6 +274,10 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
     if (!containerData.id) throw new Error(containerData.error?.message ?? 'Error al crear contenedor de media');
 
     const containerId = containerData.id as string;
+    const uploadUri   = containerData.uri as string;
+    if (!uploadUri) throw new Error('No se obtuvo upload URI de Instagram');
+
+    await streamFileToMeta(uploadUri, access_token, filePath, fileSize);
 
     let statusCode = 'IN_PROGRESS';
     for (let i = 0; i < 72 && statusCode === 'IN_PROGRESS'; i++) {
@@ -299,8 +302,8 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
     const postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
 
     await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'instagram', platformId: publishData.id },
-      { platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
+      { userId: req.user!.id, platform: 'instagram', platformId: publishData.id },
+      { userId: req.user!.id, platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
       { upsert: true },
     );
 

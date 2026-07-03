@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
+import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
@@ -237,8 +238,16 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
   if (!apiUrl.startsWith('https://')) {
     return res.status(500).json({ error: 'API_URL debe ser una URL pública https para que TikTok descargue el video' });
   }
-  const videoUrl = `${apiUrl}/api/videos/download/${fileId}`;
-  console.log(`[TikTok] PULL_FROM_URL: ${videoUrl}`);
+  // /api/videos/download ahora exige token (fix de ownership) y TikTok descarga esta
+  // URL sin headers — se firma un JWT corto del mismo usuario y va en la query string
+  // (verifyTokenFromHeaderOrQuery lo acepta). El chequeo de dueño sigue aplicando.
+  const downloadToken = jwt.sign(
+    { id: req.user!.id, username: req.user!.username, role: req.user!.role, tier: req.user!.tier },
+    process.env.JWT_SECRET || 'esse_secret_key_2024',
+    { expiresIn: '2h' },
+  );
+  const videoUrl = `${apiUrl}/api/videos/download/${fileId}?token=${downloadToken}`;
+  console.log(`[TikTok] PULL_FROM_URL: ${apiUrl}/api/videos/download/${fileId}?token=<jwt>`);
 
   try {
     const initRes = await fetch(`${TK_BASE}/post/publish/video/init/`, {
@@ -296,8 +305,8 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
 
     const platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${publish_id}`;
     await PlatformVideoModel.findOneAndUpdate(
-      { platform: 'tiktok', platformId: publish_id },
-      { platform: 'tiktok', platformId: publish_id, platformUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
+      { userId: req.user!.id, platform: 'tiktok', platformId: publish_id },
+      { userId: req.user!.id, platform: 'tiktok', platformId: publish_id, platformUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
       { upsert: true },
     );
 
