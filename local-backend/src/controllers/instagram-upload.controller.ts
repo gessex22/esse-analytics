@@ -42,11 +42,15 @@ async function igPost(path: string, body: Record<string, any>): Promise<any> {
   return res.json();
 }
 
-// Sube el archivo directamente a Meta (sin URL pública — upload resumable desde local)
-function streamFileToMeta(uri: string, token: string, filePath: string, fileSize: number): Promise<void> {
+// Sube el archivo directamente a Meta (sin URL pública — upload resumable desde local).
+// OJO: hay que mandar el archivo COMPLETO como buffer (req.end(buffer)). Si se manda
+// como stream (pipe), Meta lo rechaza con ProcessingFailedError "Request processing
+// failed" — confirmado probando ambas formas contra rupload.facebook.com.
+function streamFileToMeta(uri: string, token: string, filePath: string, _fileSize: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const url = new URL(uri);
     const mod = url.protocol === 'https:' ? https : http;
+    const buffer = fs.readFileSync(filePath);
     const req = mod.request({
       hostname: url.hostname,
       path:     url.pathname + url.search,
@@ -54,9 +58,9 @@ function streamFileToMeta(uri: string, token: string, filePath: string, fileSize
       headers: {
         Authorization:    `OAuth ${token}`,
         offset:           '0',
-        file_size:        String(fileSize),
-        'Content-Type':   'video/mp4',
-        'Content-Length': String(fileSize),
+        file_size:        String(buffer.length),
+        'Content-Type':   'application/octet-stream',
+        'Content-Length': String(buffer.length),
       },
     }, (incoming) => {
       let raw = '';
@@ -70,7 +74,7 @@ function streamFileToMeta(uri: string, token: string, filePath: string, fileSize
       });
     });
     req.on('error', reject);
-    fs.createReadStream(filePath).pipe(req);
+    req.end(buffer);
   });
 }
 
