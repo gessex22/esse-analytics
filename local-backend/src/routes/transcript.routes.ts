@@ -16,12 +16,16 @@ router.post('/api/videos/:id/transcript', (req: Request, res: Response) => {
   const { text, language, tipo_contenido, duration_seconds } = req.body as {
     text?: string; language?: string; tipo_contenido?: string; duration_seconds?: number;
   };
-  if (!text?.trim()) { res.status(400).json({ message: 'text es requerido.' }); return; }
+  // CLIP_SIN_VOZ: el video no tiene voz, texto vacío ES el resultado correcto. Sin
+  // este caso, un video sin audio se rechazaba acá, nunca quedaba marcado como
+  // procesado, y esse_transcrip.py lo volvía a transcribir en cada corrida para siempre.
+  const isSinVoz = tipo_contenido === 'CLIP_SIN_VOZ';
+  if (!text?.trim() && !isSinVoz) { res.status(400).json({ message: 'text es requerido.' }); return; }
 
   const file = fileRepo.findById(req.params.id);
   if (!file) { res.status(404).json({ message: 'Archivo no encontrado.' }); return; }
 
-  const doc = transcriptRepo.upsert(file.id, text.trim(), language ?? 'es');
+  const doc = transcriptRepo.upsert(file.id, text?.trim() ?? '', language ?? 'es');
   // TRANSCRITO es lo que usan idea.repo.ts y el resto de la app para saber que este
   // archivo ya tiene transcripción real — antes nunca se seteaba. duration_seconds:
   // el watcher nunca la mide (no corre ffprobe), pero faster-whisper sí la calcula
