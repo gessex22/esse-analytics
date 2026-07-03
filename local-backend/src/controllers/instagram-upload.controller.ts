@@ -107,7 +107,12 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
-    if (!containerData.id) throw new Error(containerData.error?.message ?? 'Error al crear contenedor de media');
+    if (!containerData.id) {
+      // El .message solo no alcanza para diagnosticar — Meta manda subcode/type/
+      // fbtrace_id con la causa real (permisos, tipo de cuenta, etc.).
+      console.error('[Instagram] Error al crear contenedor:', JSON.stringify(containerData.error ?? containerData));
+      throw new Error(containerData.error?.error_user_msg || containerData.error?.message || 'Error al crear contenedor de media');
+    }
 
     const containerId = containerData.id as string;
     const uploadUri   = containerData.uri as string;
