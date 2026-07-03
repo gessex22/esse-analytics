@@ -9,7 +9,7 @@ import { MongoClient } from 'mongodb';
 import { platformVideoRepo } from '../db/platform-video.repo';
 
 const MONGO_URI        = process.env.MONGO_URI!;
-const IG_GRAPH         = 'https://graph.instagram.com/v22.0';
+const IG_GRAPH         = 'https://graph.facebook.com/v22.0';
 const YT_API           = 'https://www.googleapis.com/youtube/v3';
 const YT_CLIENT_ID     = process.env.YOUTUBE_CLIENT_ID!;
 const YT_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET!;

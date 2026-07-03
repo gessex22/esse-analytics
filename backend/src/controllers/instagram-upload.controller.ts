@@ -8,11 +8,13 @@ import { PlatformVideoModel } from '../models/platform-video.model';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 
-// Instagram Business Login usa graph.instagram.com, no graph.facebook.com
-const IG_GRAPH  = 'https://graph.instagram.com/v22.0';
-const IG_OAUTH  = 'https://api.instagram.com/oauth/access_token';
-const IG_AUTH   = 'https://www.instagram.com/oauth/authorize';
-const IG_LTOKEN = 'https://graph.instagram.com/access_token';
+// Facebook Login for Business: el Page Access Token (de una Página de Facebook
+// con una Cuenta de Instagram Business vinculada) sí soporta upload_type:
+// resumable para Reels — Instagram Login (graph.instagram.com) solo soporta
+// video_url, que exige exponer el video en una URL pública.
+const FB_GRAPH        = 'https://graph.facebook.com/v22.0';
+const FB_OAUTH_DIALOG = 'https://www.facebook.com/v22.0/dialog/oauth';
+const FB_TOKEN        = 'https://graph.facebook.com/v22.0/oauth/access_token';
 
 // ── Token storage per user ────────────────────────────────────────────────────
 async function saveTokens(userId: string, data: object) {
@@ -33,7 +35,7 @@ async function loadTokens(userId: string): Promise<Record<string, any> | null> {
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 async function igGet(path: string, token: string): Promise<any> {
   const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${IG_GRAPH}${path}${sep}access_token=${token}`);
+  const res = await fetch(`${FB_GRAPH}${path}${sep}access_token=${token}`);
   return res.json();
 }
 
@@ -43,7 +45,7 @@ async function igPost(path: string, body: Record<string, any>): Promise<any> {
   for (const [k, v] of Object.entries(body)) {
     form.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
   }
-  const res = await fetch(`${IG_GRAPH}${path}`, {
+  const res = await fetch(`${FB_GRAPH}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form,
@@ -85,9 +87,10 @@ function streamFileToMeta(uri: string, token: string, filePath: string, fileSize
   });
 }
 
-// Instagram Business Login usa el Instagram App ID/Secret (distintos a los de Facebook)
-const igAppId     = () => process.env.INSTAGRAM_APP_ID     || process.env.META_APP_ID!;
-const igAppSecret = () => process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET!;
+// Facebook Login for Business es un permiso de la Meta App principal, no una
+// app separada — usa las mismas credenciales que el resto de la integración.
+const fbAppId     = () => process.env.META_APP_ID!;
+const fbAppSecret = () => process.env.META_APP_SECRET!;
 
 // Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup)
 function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173') {
@@ -107,13 +110,21 @@ function popupResult(res: Response, status: string, origin = process.env.FRONTEN
 </body></html>`);
 }
 
+// Un doc de oauth_tokens sin authType es de antes de la migración a Facebook
+// Login for Business (Instagram User Token, no Page Access Token) — no sirve
+// contra graph.facebook.com. Se trata como "no conectado" para que el usuario
+// reconecte por el flujo normal en vez de fallar con un error críptico de Meta.
+function isUsableInstagramConnection(tokens: Record<string, any> | null): boolean {
+  return !!(tokens?.access_token && tokens?.instagram_user_id && tokens?.authType === 'facebook_login_business');
+}
+
 // ── GET /api/instagram/token — devuelve token válido al local-backend ─────────
 export const getToken = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  if (!tokens?.access_token || !tokens?.instagram_user_id) {
+  if (!isUsableInstagramConnection(tokens)) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
-  res.json({ access_token: tokens.access_token, instagram_user_id: tokens.instagram_user_id });
+  res.json({ access_token: tokens!.access_token, instagram_user_id: tokens!.instagram_user_id });
 };
 
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
@@ -121,14 +132,13 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
   const state = encodeState(req.user!.id, origin);
   const params = new URLSearchParams({
-    client_id:     igAppId(),
+    client_id:     fbAppId(),
     redirect_uri:  process.env.META_REDIRECT_URI!,
-    // manage_insights habilita /{media}/insights (views, reach). Requiere reconectar IG.
-    scope:         'instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights',
+    scope:         'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management',
     response_type: 'code',
     state,
   });
-  res.json({ url: `${IG_AUTH}?${params}` });
+  res.json({ url: `${FB_OAUTH_DIALOG}?${params}` });
 };
 
 // ── GET /api/instagram/auth/callback ─────────────────────────────────────────
@@ -141,41 +151,54 @@ export const handleCallback = async (req: Request, res: Response) => {
   if (!userId) return popupResult(res, 'error', origin);
 
   try {
-    // 1. Exchange code → short-lived token (POST, form-encoded)
-    const tokenRes = await fetch(IG_OAUTH, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id:     igAppId(),
-        client_secret: igAppSecret(),
-        grant_type:    'authorization_code',
-        redirect_uri:  process.env.META_REDIRECT_URI!,
-        code,
-      }),
-    });
-    const tokenJson = await tokenRes.json() as any;
-    if (tokenJson.error_type || tokenJson.error) {
-      throw new Error(tokenJson.error_message || tokenJson.error);
-    }
-    const shortToken: string = tokenJson.access_token;
-    const igUserId: string   = String(tokenJson.user_id);
+    // 1. Exchange code → short-lived User Access Token
+    const shortRes = await fetch(
+      `${FB_TOKEN}?client_id=${fbAppId()}&client_secret=${fbAppSecret()}&redirect_uri=${encodeURIComponent(process.env.META_REDIRECT_URI!)}&code=${code}`
+    );
+    const shortJson = await shortRes.json() as any;
+    if (shortJson.error) throw new Error(shortJson.error.message ?? JSON.stringify(shortJson.error));
+    const shortToken: string = shortJson.access_token;
 
-    // 2. Exchange for long-lived token (~60 days)
+    // 2. Exchange for long-lived User Access Token (~60 días)
     const longRes = await fetch(
-      `${IG_LTOKEN}?grant_type=ig_exchange_token&client_secret=${igAppSecret()}&access_token=${shortToken}`
+      `${FB_TOKEN}?grant_type=fb_exchange_token&client_id=${fbAppId()}&client_secret=${fbAppSecret()}&fb_exchange_token=${shortToken}`
     );
     const longJson = await longRes.json() as any;
     if (longJson.error) throw new Error(longJson.error.message ?? JSON.stringify(longJson.error));
-    const longToken: string = longJson.access_token;
+    const longUserToken: string = longJson.access_token;
 
-    // El user_id del intercambio de token NO sirve para la Graph API.
-    const meRes  = await fetch(`${IG_GRAPH}/me?fields=user_id&access_token=${longToken}`);
-    const meJson = await meRes.json() as any;
-    const realUserId: string = String(meJson.user_id ?? igUserId);
+    // 3. Páginas de Facebook que administra — cada una trae su propio Page
+    // Access Token (ya de vida larga al derivar de un User Token largo).
+    // limit=200 evita perder páginas si administra más de las 25 por default.
+    const pagesRes  = await fetch(`${FB_GRAPH}/me/accounts?limit=200&access_token=${longUserToken}`);
+    const pagesJson = await pagesRes.json() as any;
+    if (pagesJson.error) throw new Error(pagesJson.error.message ?? JSON.stringify(pagesJson.error));
+    const pages: Array<{ id: string; name: string; access_token: string }> = pagesJson.data ?? [];
+    if (!pages.length) return popupResult(res, 'no_ig_account', origin);
 
-    if (!realUserId) return popupResult(res, 'no_ig_account', origin);
+    // 4. Primera Página con una Cuenta de Instagram Business vinculada.
+    let pageId = '';
+    let pageAccessToken = '';
+    let igBusinessAccountId = '';
+    for (const page of pages) {
+      const linkRes  = await fetch(`${FB_GRAPH}/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`);
+      const linkJson = await linkRes.json() as any;
+      if (linkJson.instagram_business_account?.id) {
+        pageId = page.id;
+        pageAccessToken = page.access_token;
+        igBusinessAccountId = linkJson.instagram_business_account.id;
+        console.log(`[Instagram] Página vinculada: ${page.name} (${page.id}) → IG ${igBusinessAccountId}`);
+        break;
+      }
+    }
+    if (!igBusinessAccountId) return popupResult(res, 'no_ig_account', origin);
 
-    await saveTokens(userId, { access_token: longToken, instagram_user_id: realUserId });
+    await saveTokens(userId, {
+      access_token:      pageAccessToken,
+      instagram_user_id: igBusinessAccountId,
+      page_id:           pageId,
+      authType:          'facebook_login_business',
+    });
     popupResult(res, 'success', origin);
   } catch (err: any) {
     console.error('Instagram OAuth error:', err.message);
@@ -186,7 +209,7 @@ export const handleCallback = async (req: Request, res: Response) => {
 // ── GET /api/instagram/auth/status ───────────────────────────────────────────
 export const getAuthStatus = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  res.json({ connected: !!(tokens?.access_token && tokens?.instagram_user_id) });
+  res.json({ connected: isUsableInstagramConnection(tokens) });
 };
 
 // ── DELETE /api/instagram/auth ────────────────────────────────────────────────
@@ -199,11 +222,13 @@ export const revokeAuth = async (req: AuthRequest, res: Response) => {
 // ── GET /api/instagram/account-info ───────────────────────────────────────────
 export const getAccountInfo = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  if (!tokens?.access_token) {
+  if (!isUsableInstagramConnection(tokens)) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
   try {
-    const data = await igGet('/me?fields=user_id,username,name,profile_picture_url', tokens.access_token);
+    // Un Page Access Token no tiene un /me útil para esto — se consulta
+    // directo el nodo de la Cuenta de Instagram Business.
+    const data = await igGet(`/${tokens!.instagram_user_id}?fields=username,name,profile_picture_url`, tokens!.access_token);
     if (data.error) throw new Error(data.error.message ?? 'Error al obtener la cuenta');
     res.json({
       name:      data.name ?? data.username ?? '',
@@ -235,19 +260,11 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
   if (!fs.existsSync(filePath)) return res.status(400).json({ error: 'Archivo físico no encontrado en disco' });
 
   const tokenData = await loadTokens(req.user!.id);
-  if (!tokenData?.access_token || !tokenData?.instagram_user_id) {
+  if (!isUsableInstagramConnection(tokenData)) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
 
-  const { access_token } = tokenData;
-
-  // El ID de /me es el único válido para la Graph API.
-  const meRes  = await fetch(`${IG_GRAPH}/me?fields=user_id&access_token=${access_token}`);
-  const meJson = await meRes.json() as any;
-  const instagram_user_id: string = String(meJson.user_id ?? tokenData.instagram_user_id);
-  if (meJson.user_id && String(meJson.user_id) !== String(tokenData.instagram_user_id)) {
-    await saveTokens(req.user!.id, { access_token, instagram_user_id });
-  }
+  const { access_token, instagram_user_id } = tokenData!;
 
   const hashtagLine = (tags as string[]).length
     ? '\n\n' + (tags as string[]).map(t => `#${t}`).join(' ')

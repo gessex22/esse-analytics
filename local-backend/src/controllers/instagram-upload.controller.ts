@@ -7,10 +7,10 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 
-// Instagram Business Login (api.instagram.com) emite un Instagram User Access
-// Token que solo es válido contra graph.instagram.com — graph.facebook.com
-// rechaza este token (audiencia distinta, requiere Facebook Login for Business).
-const IG_GRAPH = 'https://graph.instagram.com/v22.0';
+// Facebook Login for Business: central entrega un Page Access Token (de una
+// Página con una Cuenta de Instagram Business vinculada), válido contra
+// graph.facebook.com y compatible con upload_type: resumable para Reels.
+const FB_GRAPH = 'https://graph.facebook.com/v22.0';
 const CENTRAL  = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
 async function fetchToken(authHeader: string): Promise<{ access_token: string; instagram_user_id: string }> {
@@ -25,7 +25,7 @@ async function fetchToken(authHeader: string): Promise<{ access_token: string; i
 
 async function igGet(path: string, token: string): Promise<any> {
   const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${IG_GRAPH}${path}${sep}access_token=${token}`);
+  const res = await fetch(`${FB_GRAPH}${path}${sep}access_token=${token}`);
   return res.json();
 }
 
@@ -34,7 +34,7 @@ async function igPost(path: string, body: Record<string, any>): Promise<any> {
   for (const [k, v] of Object.entries(body)) {
     form.append(k, typeof v === 'object' ? JSON.stringify(v) : String(v));
   }
-  const res = await fetch(`${IG_GRAPH}${path}`, {
+  const res = await fetch(`${FB_GRAPH}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: form,

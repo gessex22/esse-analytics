@@ -11,7 +11,7 @@ import jwt from 'jsonwebtoken';
 const MONGO_URI        = process.env.MONGO_URI!;
 const JWT_SECRET       = 'esse_secret_key_2024';
 const LOCAL_BACKEND    = 'http://localhost:4000';
-const IG_GRAPH         = 'https://graph.instagram.com/v22.0';
+const IG_GRAPH         = 'https://graph.facebook.com/v22.0';
 const YT_API           = 'https://www.googleapis.com/youtube/v3';
 const YT_CLIENT_ID     = process.env.YOUTUBE_CLIENT_ID!;
 const YT_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET!;
