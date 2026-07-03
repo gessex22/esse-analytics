@@ -131,13 +131,21 @@ export const getToken = async (req: AuthRequest, res: Response) => {
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
   const state = encodeState(req.user!.id, origin);
+  const configId = process.env.META_LOGIN_CONFIG_ID;
   const params = new URLSearchParams({
     client_id:     fbAppId(),
     redirect_uri:  process.env.META_REDIRECT_URI!,
-    scope:         'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management',
     response_type: 'code',
     state,
   });
+  if (configId) {
+    // Facebook Login for Business: los permisos vienen de la Login
+    // Configuration (config_id), no se listan por scope en la URL.
+    params.set('config_id', configId);
+  } else {
+    // Fallback si todavía no se creó la Login Configuration en el dashboard.
+    params.set('scope', 'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management');
+  }
   res.json({ url: `${FB_OAUTH_DIALOG}?${params}` });
 };
 
@@ -145,6 +153,7 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
 export const handleCallback = async (req: Request, res: Response) => {
   const code  = req.query.code  as string;
   const state = req.query.state as string;
+  console.log('[Instagram] Callback recibido, code:', !!code, 'state:', !!state);
   if (!code || !state) return popupResult(res, 'error');
 
   const { userId, origin } = decodeState(state);
@@ -174,6 +183,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     const pagesJson = await pagesRes.json() as any;
     if (pagesJson.error) throw new Error(pagesJson.error.message ?? JSON.stringify(pagesJson.error));
     const pages: Array<{ id: string; name: string; access_token: string }> = pagesJson.data ?? [];
+    console.log(`[Instagram] Páginas de Facebook encontradas: ${pages.length}${pages.length ? ' (' + pages.map(p => p.name).join(', ') + ')' : ''}`);
     if (!pages.length) return popupResult(res, 'no_ig_account', origin);
 
     // 4. Primera Página con una Cuenta de Instagram Business vinculada.
@@ -183,12 +193,15 @@ export const handleCallback = async (req: Request, res: Response) => {
     for (const page of pages) {
       const linkRes  = await fetch(`${FB_GRAPH}/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`);
       const linkJson = await linkRes.json() as any;
+      if (linkJson.error) console.error(`[Instagram] Error consultando instagram_business_account de "${page.name}":`, JSON.stringify(linkJson.error));
       if (linkJson.instagram_business_account?.id) {
         pageId = page.id;
         pageAccessToken = page.access_token;
         igBusinessAccountId = linkJson.instagram_business_account.id;
         console.log(`[Instagram] Página vinculada: ${page.name} (${page.id}) → IG ${igBusinessAccountId}`);
         break;
+      } else {
+        console.log(`[Instagram] Página "${page.name}" (${page.id}) sin Cuenta de Instagram Business vinculada`);
       }
     }
     if (!igBusinessAccountId) return popupResult(res, 'no_ig_account', origin);
