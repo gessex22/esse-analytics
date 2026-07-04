@@ -51,7 +51,31 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
 
   const result = await upstream.json();
   configRepo.set('backup_last_push', new Date().toISOString());
+
+  // Respaldo real de las transcripciones — antes no existía ningún push, así que
+  // el wipe de datos locales (p.ej. al cerrar sesión) las borraba sin posibilidad
+  // de recuperarlas. Se espera (no fire-and-forget): el logout hace wipe apenas
+  // este push termina, así que si no lo esperamos podría borrar antes de subir.
+  // No fatal para el push de archivos si esto falla.
+  try {
+    await pushTranscriptsToCloud(authHeader);
+  } catch (err: any) {
+    console.warn('[backup] push de transcripciones falló:', err.message);
+  }
+
   return { localCount: files.length, ...result };
+}
+
+async function pushTranscriptsToCloud(authHeader: string): Promise<void> {
+  const transcripts = transcriptRepo.findAllWithFileName()
+    .map(t => ({ file_name: t.file_name, transcript_text: t.text, language: t.language }));
+  if (transcripts.length === 0) return;
+
+  await fetch(`${CENTRAL}/api/backup/transcripts/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: JSON.stringify({ transcripts }),
+  });
 }
 
 // Dispara un push en segundo plano sin bloquear la respuesta del caller.

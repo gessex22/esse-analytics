@@ -28,4 +28,13 @@ export const transcriptRepo = {
   deleteByFileId(fileId: number | string): void {
     db.prepare('DELETE FROM transcripts WHERE file_id = ?').run(Number(fileId));
   },
+
+  // Para el push a la nube: la central no conoce los ids locales, matchea por
+  // file_name (igual que el resto del backup de metadata).
+  findAllWithFileName(): { file_name: string; text: string; language: string }[] {
+    return db.prepare(`
+      SELECT f.file_name AS file_name, t.text AS text, t.language AS language
+      FROM transcripts t JOIN files f ON f.id = t.file_id
+    `).all() as { file_name: string; text: string; language: string }[];
+  },
 };

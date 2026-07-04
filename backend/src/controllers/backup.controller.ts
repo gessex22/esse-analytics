@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
-import { TranscriptModel } from '../models/transcript.model';
+import { TranscriptBackupModel } from '../models/transcript-backup.model';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideacentral';
@@ -168,28 +168,48 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
 export async function getBackupTranscripts(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    // TranscriptModel no tiene userId propio (colección legado) — se scopea vía los
-    // file_id que pertenecen al usuario. Sin esto, cualquier cuenta premium podía
-    // migrar/leer las transcripciones de TODOS los usuarios del servicio.
-    const ownFiles = await FileModel.find({ userId }, { _id: 1, file_name: 1 }).lean();
-    const ownFileIds = ownFiles.map(f => f._id);
-    const nameMap = new Map(ownFiles.map(f => [String(f._id), f.file_name]));
-
-    const transcripts = await TranscriptModel.find(
-      { transcript_text: { $exists: true, $ne: '' }, file_id: { $in: ownFileIds } },
-      { file_id: 1, transcript_text: 1, language: 1, tipo_contenido: 1 },
+    const transcripts = await TranscriptBackupModel.find(
+      { userId },
+      { file_name: 1, transcript_text: 1, language: 1 },
     ).lean();
 
-    const result = transcripts
-      .map(t => ({
-        file_name:       nameMap.get(String(t.file_id)),
-        transcript_text: t.transcript_text,
-        language:        (t as any).language ?? 'es',
-        tipo_contenido:  (t as any).tipo_contenido ?? null,
-      }))
-      .filter(t => t.file_name);
+    const result = transcripts.map(t => ({
+      file_name:       t.file_name,
+      transcript_text: t.transcript_text,
+      language:        t.language ?? 'es',
+    }));
 
     res.json({ transcripts: result, total: result.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// POST /api/backup/transcripts/bulk
+// Espejo real de las transcripciones locales — sin esto, el wipe de datos locales
+// al cerrar sesión las borraba sin ninguna copia posible (ver getBackupTranscripts).
+export async function bulkUpsertBackupTranscripts(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const incoming: any[] = req.body.transcripts;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      res.json({ ok: true, updated: 0 });
+      return;
+    }
+
+    await TranscriptBackupModel.bulkWrite(
+      incoming
+        .filter(t => t && t.file_name && t.transcript_text)
+        .map(t => ({
+          updateOne: {
+            filter: { userId, file_name: t.file_name },
+            update: { $set: { userId, file_name: t.file_name, transcript_text: t.transcript_text, language: t.language ?? 'es' } },
+            upsert: true,
+          },
+        })),
+    );
+
+    res.json({ ok: true, updated: incoming.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
