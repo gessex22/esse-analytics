@@ -1219,7 +1219,13 @@ export function YoutubeUploadView() {
   const fetchChannel = () => {
     const token = localStorage.getItem("esse_auth_token");
     fetch(`${API}/api/youtube/channel-info`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then(r => r.ok ? r.json() : null).then(d => d && setChannel(d)).catch(() => {});
+      .then(r => {
+        // Token guardado pero inválido (invalid_grant, revocado): no dejar la UI
+        // en un estado a medias "conectado" sin ícono — mostrar el botón de conectar.
+        if (r.status === 401) { setConnected(false); return null; }
+        return r.ok ? r.json() : null;
+      })
+      .then(d => d && setChannel(d)).catch(() => {});
   };
 
   // Al cambiar de plataforma, pre-selecciona su nextVideo

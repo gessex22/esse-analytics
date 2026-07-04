@@ -152,6 +152,13 @@ export const getChannelInfo = async (req: AuthRequest, res: Response) => {
     res.json({ name, avatarUrl, customUrl });
   } catch (err: any) {
     console.error('Error YouTube channel-info:', err?.message);
+    // invalid_grant: el refresh_token guardado ya no sirve (revocado desde la cuenta
+    // de Google, contraseña cambiada, o vencido por inactividad). No es un error
+    // transitorio — hay que tratarlo igual que "no conectado" para que el usuario
+    // reconecte, en vez de quedar en un estado a medias (conectado pero sin ícono).
+    if (String(err?.message).includes('invalid_grant')) {
+      return res.status(401).json({ error: 'NO_AUTH', message: 'Reconectá tu cuenta de YouTube' });
+    }
     res.status(500).json({ error: 'Error al obtener info del canal', detail: err?.message });
   }
 };
