@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import {
   Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench, Palette,
-  ShieldCheck, Tv2, ChevronDown, CalendarDays, FolderOpen, Gem, Database,
+  ShieldCheck, Tv2, ChevronDown, CalendarDays, FolderOpen, Gem, Database, Cloud,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
 
@@ -11,6 +11,7 @@ export const SETTINGS_SECTIONS = [
   { id: "biblioteca", label: "Biblioteca",       icon: FolderOpen,    roles: ["todopoderoso"],           localOnly: false },
   { id: "seguridad",  label: "Seguridad",        icon: ShieldCheck,   roles: ["todopoderoso"],           localOnly: false },
   { id: "sync",       label: "Sincronización",   icon: Tv2,           roles: ["todopoderoso"],           localOnly: false },
+  { id: "frieden",    label: "Remoto y Backup",  icon: Cloud,         roles: ["todopoderoso"],           localOnly: true  },
   { id: "datos",      label: "Datos locales",    icon: Database,      roles: ["todopoderoso"],           localOnly: true  },
 ];
 

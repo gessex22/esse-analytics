@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2 } from "lucide-react";
+import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
 import { SyncPanel } from "./SyncPanel";
 import { LibraryPanel } from "./LibraryPanel";
+import { FriedenPanel } from "./FriedenPanel";
 import { useAuth } from "../hooks/useAuth";
 import { API_BASE } from "../config";
 
@@ -12,6 +13,7 @@ const ALL_SECTIONS = [
   { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false },
   { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false },
   { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false },
+  { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true  },
   { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true  },
 ];
 
@@ -203,6 +205,7 @@ export function SettingsView({ activeSection, role, isLocal, onSectionChange }: 
       {activeSection === "biblioteca" && <LibraryPanel />}
       {activeSection === "seguridad"  && <SecurityPanel />}
       {activeSection === "sync"       && <SyncPanel />}
+      {activeSection === "frieden"    && <FriedenPanel />}
       {activeSection === "datos"      && <DatosPanel />}
     </div>
   );

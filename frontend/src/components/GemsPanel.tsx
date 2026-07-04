@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type CSSProperties } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, Globe, CloudUpload, CloudDownload, Cloud, Loader2 } from "lucide-react";
+import { Download, RefreshCw, AlertCircle, Copy, Check, Lock, Wifi, CloudUpload, CloudDownload, Loader2 } from "lucide-react";
 import { API_BASE } from "../config";
 import { backupService } from "../services/api";
 import type { UserTier } from "../hooks/useAuth";
@@ -8,7 +8,7 @@ import { phaseLabel, type PluginProgress } from "../hooks/usePluginActivity";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
-type GemColor  = "blue" | "purple" | "amber" | "teal" | "coral" | "pink" | "green";
+type GemColor  = "blue" | "purple" | "amber" | "teal" | "coral" | "pink" | "green" | "white";
 type GemStatus = "not_installed" | "installed" | "running";
 type GemType   = "builtin" | "plugin";
 
@@ -42,29 +42,19 @@ const GEMS: GemDef[] = [
     name:        "esse-Transcrip",
     tagline:     "Transcripción con IA",
     description: "Transcribe tus videos automáticamente usando Whisper. Detecta tu GPU y elige el modelo óptimo: CPU, NVIDIA o Apple Silicon.",
-    color:       "blue",
+    color:       "white",
     version:     "1.0.0",
     type:        "plugin",
     tier:        "free",
   },
   {
-    id:          "esse_backup",
-    name:        "Backup en línea",
-    tagline:     "Metadata sincronizada en la nube",
-    description: "Guarda en la nube el estado de publicación de tus videos. Sincroniza entre PCs o recupera tu historial después de reinstalar.",
-    color:       "amber",
+    id:          "esse_frieden",
+    name:        "Frieden",
+    tagline:     "Acceso Remoto",
+    description: "Accedé a tu app desde cualquier lugar y mantené el estado de publicación respaldado en la nube — acceso remoto y backup en línea, unidos.",
+    color:       "blue",
     version:     "builtin",
     type:        "builtin",
-    tier:        "premium",
-  },
-  {
-    id:          "esse_remote_access",
-    name:        "Acceso Remoto",
-    tagline:     "App desde cualquier lugar",
-    description: "Accede a tu app desde fuera de tu red, desde el móvil o cualquier dispositivo, de forma segura con túnel encriptado.",
-    color:       "purple",
-    version:     "1.0.0",
-    type:        "plugin",
     tier:        "premium",
   },
   {
@@ -90,6 +80,31 @@ const GEMS: GemDef[] = [
   },
 ];
 
+// Textos/color de referencia para Acceso Remoto y Backup — ya no tienen tarjeta
+// propia acá (se fusionaron en "Frieden"), pero el panel de Ajustes los reusa.
+export const FRIEDEN_MEMBERS: Record<"esse_remote_access" | "esse_backup", GemDef> = {
+  esse_remote_access: {
+    id:          "esse_remote_access",
+    name:        "Acceso Remoto",
+    tagline:     "App desde cualquier lugar",
+    description: "Accede a tu app desde fuera de tu red, desde el móvil o cualquier dispositivo, de forma segura con túnel encriptado.",
+    color:       "purple",
+    version:     "1.0.0",
+    type:        "plugin",
+    tier:        "premium",
+  },
+  esse_backup: {
+    id:          "esse_backup",
+    name:        "Backup en línea",
+    tagline:     "Metadata sincronizada en la nube",
+    description: "Guarda en la nube el estado de publicación de tus videos. Sincroniza entre PCs o recupera tu historial después de reinstalar.",
+    color:       "amber",
+    version:     "builtin",
+    type:        "builtin",
+    tier:        "premium",
+  },
+};
+
 // ── Paleta ────────────────────────────────────────────────────────────────────
 
 const COLOR: Record<GemColor, { bg: string; border: string; text: string; badge: string; pill: string }> = {
@@ -99,6 +114,7 @@ const COLOR: Record<GemColor, { bg: string; border: string; text: string; badge:
   teal:   { bg: "bg-teal-500/10",   border: "border-teal-500/25",   text: "text-teal-400",   badge: "bg-teal-500/15 text-teal-400",   pill: "bg-teal-500/15 text-teal-400"   },
   coral:  { bg: "bg-orange-500/10", border: "border-orange-500/25", text: "text-orange-400", badge: "bg-orange-500/15 text-orange-400", pill: "bg-orange-500/15 text-orange-400" },
   pink:   { bg: "bg-pink-500/10",   border: "border-pink-500/25",   text: "text-pink-400",   badge: "bg-pink-500/15 text-pink-400",   pill: "bg-pink-500/15 text-pink-400"   },
+  white:  { bg: "bg-white/10",      border: "border-white/25",      text: "text-white",      badge: "bg-white/15 text-white",         pill: "bg-white/15 text-white"         },
   green:  { bg: "bg-green-500/10",  border: "border-green-500/25",  text: "text-green-400",  badge: "bg-green-500/15 text-green-400",  pill: "bg-green-500/15 text-green-400"  },
 };
 
@@ -112,7 +128,15 @@ const GEM_COLORS: Record<GemColor, { fill: string; stroke: string }> = {
   coral:  { fill: "#f97316", stroke: "#fdba74" },
   pink:   { fill: "#ec4899", stroke: "#f9a8d4" },
   green:  { fill: "#22c55e", stroke: "#86efac" },
+  white:  { fill: "#e5e7eb", stroke: "#ffffff" },
 };
+
+// Convierte un hex "#rrggbb" a "r, g, b" para armar rgba() dinámico (glow por color de gema).
+function hexToRgb(hex: string): string {
+  const h = hex.replace("#", "");
+  const n = parseInt(h, 16);
+  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+}
 
 function GemIcon({ color, size = 36 }: { color: GemColor; size?: number }) {
   const { fill, stroke } = GEM_COLORS[color];
@@ -150,38 +174,6 @@ function Toggle({ on, onChange, disabled }: { on: boolean; onChange: () => void;
         className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm ${on ? "ml-[22px]" : "ml-1"}`}
       />
     </button>
-  );
-}
-
-// ── Badge de estado ───────────────────────────────────────────────────────────
-
-function StatusBadge({ status }: { status: GemStatus | "loading" }) {
-  if (status === "loading") return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-      <RefreshCw className="w-3 h-3 animate-spin" />
-    </span>
-  );
-  if (status === "not_installed") return (
-    <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground">
-      <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-      No instalada
-    </span>
-  );
-  if (status === "installed") return (
-    <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-green-500/10 text-green-500">
-      <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-      Instalada
-    </span>
-  );
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">
-      <motion.span
-        className="w-1.5 h-1.5 rounded-full bg-primary"
-        animate={{ opacity: [1, 0.3, 1] }}
-        transition={{ repeat: Infinity, duration: 1.4 }}
-      />
-      Activa
-    </span>
   );
 }
 
@@ -233,7 +225,7 @@ function LocalNetworkInfo() {
 
 type SyncOp = "push" | "pull" | null;
 
-function BackupPanel() {
+export function BackupPanel() {
   const [localCount, setLocalCount]   = useState<number | null>(null);
   const [cloudCount, setCloudCount]   = useState<number | null>(null);
   const [lastSync,   setLastSync]     = useState<string | null>(null);
@@ -415,26 +407,30 @@ function GemCard({
   // Toggle activo solo si: es local, no es premium-locked, no está "pronto", y está instalada/activa
   const canToggle = isLocal && !locked && !gem.soon && (status === "installed" || status === "running");
   const isBuiltin = gem.type === "builtin";
+  // Acceso Local no tiene switch: viene activo por defecto, así que su estado
+  // visual no depende del status real — siempre se ve a color y brillante.
+  const alwaysOn  = gem.id === "esse_local_access";
+  // Tres estados visuales (como las gemas del infinito): opaca (no instalada),
+  // a color (instalada) o brillante con glow pulsante (en uso/conectada).
+  const dim      = !gem.soon && !alwaysOn && status === "not_installed";
+  const glowing  = !gem.soon && (alwaysOn || status === "running");
+  const glowRgb  = hexToRgb(GEM_COLORS[gem.color].fill);
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={`rounded-xl border p-5 flex flex-col gap-4 transition-colors ${
-        gem.soon
-          ? "border-border/40 bg-card/50 opacity-60"
-          : `${c.border} bg-card`
-      }`}
-    >
+    <motion.div layout initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+      <div
+        className={`rounded-xl border p-5 flex flex-col gap-4 transition-colors ${glowing ? "gem-glow" : ""} ${
+          gem.soon || dim
+            ? "border-border/40 bg-card/50 opacity-60"
+            : `${c.border} bg-card`
+        }`}
+        style={glowing ? ({ "--gem-glow-rgb": glowRgb } as CSSProperties) : undefined}
+      >
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className={`p-2 rounded-xl ${c.bg}`}>
-            {gem.id === "esse_local_access"  ? <Wifi  className={`w-6 h-6 ${c.text}`} /> :
-             gem.id === "esse_remote_access" ? <Globe className={`w-6 h-6 ${c.text}`} /> :
-             gem.id === "esse_backup"        ? <Cloud className={`w-6 h-6 ${c.text}`} /> :
-             <GemIcon color={gem.color} size={32} />}
+            {gem.id === "esse_local_access" ? <Wifi className={`w-6 h-6 ${c.text}`} /> : <GemIcon color={gem.color} size={32} />}
           </div>
           <div>
             <div className="flex items-center gap-2">
@@ -449,27 +445,29 @@ function GemCard({
           </div>
         </div>
 
-        {/* Toggle + lock icon */}
+        {/* Toggle + lock icon — Acceso Local no tiene switch: viene activo por defecto */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {locked && <Lock className="w-3.5 h-3.5 text-amber-400/70" />}
-          <Toggle on={on} onChange={onToggle} disabled={!canToggle} />
+          {gem.id !== "esse_local_access" && <Toggle on={on} onChange={onToggle} disabled={!canToggle} />}
         </div>
       </div>
 
       {/* Descripción */}
       <p className="text-sm text-muted-foreground leading-relaxed">{gem.description}</p>
+      {gem.id === "esse_local_access" && (
+        <p className="text-xs text-muted-foreground -mt-2">Por defecto siempre activo.</p>
+      )}
 
       {/* Paneles expandibles cuando la gem está activa */}
       <AnimatePresence>
         {gem.id === "esse_local_access" && on && <LocalNetworkInfo />}
-        {gem.id === "esse_backup"       && on && <BackupPanel />}
         {on && progress && <LiveProgress progress={progress} />}
       </AnimatePresence>
 
       {/* Footer */}
       <div className="flex items-center justify-between mt-auto pt-1">
 
-        {/* Badge de estado */}
+        {/* Estado (solo si es premium-lock o remoto; el resto ya se ve por color/glow) */}
         {locked
           ? <LockedBadge />
           : !isLocal
@@ -477,7 +475,7 @@ function GemCard({
               <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
               Solo app de escritorio
             </span>
-          : <StatusBadge status={status} />
+          : <div />
         }
 
         <div className="flex items-center gap-2">
@@ -517,6 +515,61 @@ function GemCard({
             </span>
           )}
         </div>
+      </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Tarjeta agrupada "Frieden" (Acceso Remoto + Backup en línea) ─────────────
+// Ambas funcionan por defecto (sin switch: Backup siempre respalda solo, y Acceso
+// Remoto arranca solo si está instalado — ver local-backend/src/server.ts). Por
+// eso la tarjeta es solo informativa; la gestión real vive en Ajustes → Remoto y Backup.
+
+function FriedenCard({ gem, userTier, isLocal }: { gem: GemDef; userTier: UserTier; isLocal: boolean }) {
+  const c       = COLOR[gem.color];
+  const locked  = gem.tier === "premium" && userTier === "free";
+  const glowing = !locked; // activa por defecto, siempre "en uso"
+  const glowRgb = hexToRgb(GEM_COLORS[gem.color].fill);
+
+  return (
+    <motion.div layout initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+      <div
+        className={`rounded-xl border p-5 flex flex-col gap-4 transition-colors ${glowing ? "gem-glow" : ""} ${locked ? "border-border/40 bg-card/50 opacity-60" : `${c.border} bg-card`}`}
+        style={glowing ? ({ "--gem-glow-rgb": glowRgb } as CSSProperties) : undefined}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-xl ${c.bg}`}>
+              <GemIcon color={gem.color} size={32} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-semibold text-foreground leading-tight">{gem.name}</p>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-medium leading-none">
+                  PREMIUM
+                </span>
+              </div>
+              <p className={`text-xs font-medium ${c.text}`}>{gem.tagline}</p>
+            </div>
+          </div>
+          {locked && <Lock className="w-3.5 h-3.5 text-amber-400/70 flex-shrink-0" />}
+        </div>
+
+        <p className="text-sm text-muted-foreground leading-relaxed">{gem.description}</p>
+
+        {locked
+          ? <LockedBadge />
+          : !isLocal
+          ? <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground w-fit">
+              <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
+              Solo app de escritorio
+            </span>
+          : <p className="text-xs text-muted-foreground">
+              Activo por defecto (para configurar ve a Ajustes).
+            </p>
+        }
       </div>
     </motion.div>
   );
@@ -639,16 +692,20 @@ export function GemsPanel({ isLocal, userTier }: { isLocal: boolean; userTier: U
       {/* Grid de tarjetas — siempre visible */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {GEMS.map(gem => (
-          <GemCard
-            key={gem.id}
-            gem={gem}
-            status={isLocal ? (statuses[gem.id] ?? "loading") : "not_installed"}
-            progress={progressMap[gem.id]}
-            userTier={userTier}
-            isLocal={isLocal}
-            onToggle={() => toggle(gem)}
-            onRefresh={loadStatuses}
-          />
+          gem.id === "esse_frieden" ? (
+            <FriedenCard key={gem.id} gem={gem} userTier={userTier} isLocal={isLocal} />
+          ) : (
+            <GemCard
+              key={gem.id}
+              gem={gem}
+              status={isLocal ? (statuses[gem.id] ?? "loading") : "not_installed"}
+              progress={progressMap[gem.id]}
+              userTier={userTier}
+              isLocal={isLocal}
+              onToggle={() => toggle(gem)}
+              onRefresh={loadStatuses}
+            />
+          )
         ))}
       </div>
 
