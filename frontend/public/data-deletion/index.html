@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Data Deletion Instructions — EsseAnalytics</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0d0d0f;
+      color: #f0f0f2;
+      line-height: 1.7;
+      padding: 2rem 1rem;
+    }
+    .container { max-width: 720px; margin: 0 auto; }
+    header { margin-bottom: 3rem; padding-bottom: 1.5rem; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .brand { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.75rem; }
+    .brand span { color: #e63946; }
+    h1 { font-size: 1.75rem; font-weight: 700; color: #f0f0f2; margin-bottom: 0.25rem; }
+    .meta { font-size: 0.85rem; color: #6b6b7a; }
+    h2 { font-size: 0.9rem; font-weight: 600; color: #f0f0f2; margin: 2rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.06em; }
+    p { color: #c8c8d0; font-size: 0.9rem; margin-bottom: 0.75rem; }
+    ol, ul { color: #c8c8d0; font-size: 0.9rem; padding-left: 1.25rem; margin-bottom: 0.75rem; }
+    li { margin-bottom: 0.35rem; }
+    a { color: #e63946; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { background: #1e1e24; color: #c8c8d0; padding: 0.1em 0.4em; border-radius: 4px; font-size: 0.85em; }
+    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid rgba(255,255,255,0.08); font-size: 0.8rem; color: #6b6b7a; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; }
+    .back { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; color: #6b6b7a; text-decoration: none; margin-bottom: 1.5rem; transition: color 0.15s; }
+    .back:hover { color: #f0f0f2; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back">← Back</a>
+    <header>
+      <div class="brand">Esse<span>Analytics</span></div>
+      <h1>Data Deletion Instructions</h1>
+      <p class="meta">Effective date: January 1, 2026</p>
+    </header>
+
+    <h2>Removing EsseAnalytics from your connected accounts</h2>
+    <p>You can revoke EsseAnalytics' access to your TikTok, YouTube, or Meta (Facebook/Instagram) account at any time, directly from that platform:</p>
+    <ul>
+      <li><strong>TikTok:</strong> TikTok app → Profile → Settings and privacy → Security → Manage app permissions → EsseAnalytics → Remove</li>
+      <li><strong>YouTube / Google:</strong> <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> → EsseAnalytics → Remove Access</li>
+      <li><strong>Meta (Facebook/Instagram):</strong> Facebook → Settings → Apps and Websites → EsseAnalytics → Remove</li>
+    </ul>
+    <p>Revoking access immediately invalidates the OAuth tokens we hold for that platform; we delete them from our database as soon as we detect the revocation (or immediately, if you disconnect from within the EsseAnalytics app itself).</p>
+
+    <h2>Requesting full account deletion</h2>
+    <p>To request deletion of your EsseAnalytics account and all associated data (profile, connected-platform tokens, content metadata, and analytics we've stored), email us at <a href="mailto:gesse.socialmedia@gmail.com?subject=Data%20deletion%20request">gesse.socialmedia@gmail.com</a> from the address associated with your account, with the subject "Data deletion request".</p>
+    <p>We will confirm and complete the deletion within 30 days. We do not retain a copy of your data after processing the request, except where we are legally required to keep minimal records (e.g., billing records, if applicable).</p>
+
+    <h2>What gets deleted</h2>
+    <ul>
+      <li>Your account credentials</li>
+      <li>OAuth tokens for TikTok, YouTube, and Meta/Instagram</li>
+      <li>Content metadata (titles, descriptions, publishing status) stored on our servers</li>
+    </ul>
+    <p>Note: this does not delete videos already published to your TikTok, YouTube, or Instagram account — those are managed directly through each platform.</p>
+
+    <footer>
+      <span>&copy; 2026 EsseAnalytics</span>
+      <a href="/privacy/">Privacy Policy</a>
+    </footer>
+  </div>
+</body>
+</html>
