@@ -644,6 +644,7 @@ export interface BackupLocalStatus {
   lastPull: string | null;
   lastSync: string | null;
   videosDir: string | null;
+  isSecondary: boolean;
 }
 
 export interface BackupCloudStatus {
@@ -680,6 +681,11 @@ export const backupService = {
   // máquina que no es la original (sin los .mp4). El local-backend lo proxea a la central.
   getCatalog: (): Promise<{ files: any[]; video_folder?: string | null }> =>
     requestJson('/api/backup/files'),
+
+  // Marca esta instalación como "no principal": a partir de acá sus pushes nunca
+  // reconcilian (fullSync) para no archivar en la nube videos que solo viven en otra PC.
+  markSecondary: (): Promise<{ ok: boolean }> =>
+    requestJson('/api/local/setup/mark-secondary', { method: 'POST' }),
 
   // Limpia todos los datos locales y desvincula la instalación.
   // Soft-fail: si algún step falla, continúa igual para no dejar al usuario bloqueado.

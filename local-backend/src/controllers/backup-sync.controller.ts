@@ -8,9 +8,16 @@ const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 // Lee todo el SQLite y lo sube al espejo central. Reutilizable desde el endpoint
 // y desde los controllers de subida (push inmediato tras publicar).
 export async function pushFilesToCloud(authHeader: string): Promise<{ localCount: number; [k: string]: any }> {
+  const video_folder = configRepo.get('videos_dir') ?? null;
+
+  // Sin carpeta configurada todavía (instalación recién logueada, esperando que el
+  // usuario elija su carpeta de videos): no hay nada real que respaldar. Si
+  // pusheáramos igual con fullSync, el central interpretaría "0 archivos" como
+  // "borralos todos" y archivaría el catálogo entero de otra instalación.
+  if (!video_folder) return { localCount: 0, updated: 0, skipped: 0 };
+
   // Solo archivos activos: los borrados del disco no deben verse en el remoto.
   const { rows } = fileRepo.findAll({ excludeStatus: 'ELIMINADO_DISCO', limit: 50000, offset: 0 });
-  const video_folder = configRepo.get('videos_dir') ?? null;
 
   const files = rows.map(f => ({
     file_name:           f.file_name,
@@ -27,11 +34,14 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
   }));
 
   // fullSync: este push contiene TODOS los archivos activos → el central puede
-  // reconciliar (quitar del remoto lo que ya no existe localmente).
+  // reconciliar (quitar del remoto lo que ya no existe localmente). Una instalación
+  // secundaria (PC distinta con solo un subconjunto de videos) NUNCA debe reconciliar
+  // así, o archivaría en la nube los videos que solo existen en la PC principal.
+  const isSecondary = configRepo.get('secondary_install') === '1';
   const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-    body: JSON.stringify({ files, video_folder, fullSync: true }),
+    body: JSON.stringify({ files, video_folder, fullSync: !isSecondary }),
   });
 
   if (!upstream.ok) {
@@ -190,8 +200,18 @@ export function getLocalBackupStatus(_req: Request, res: Response): void {
   const lastPush   = configRepo.get('backup_last_push');
   const lastPull   = configRepo.get('backup_last_pull');
   const videosDir  = configRepo.get('videos_dir') ?? null;
+  const isSecondary = configRepo.get('secondary_install') === '1';
   const lastSync   = lastPush && lastPull
     ? new Date(Math.max(new Date(lastPush).getTime(), new Date(lastPull).getTime())).toISOString()
     : lastPush ?? lastPull ?? null;
-  res.json({ localCount, lastPush, lastPull, lastSync, videosDir });
+  res.json({ localCount, lastPush, lastPull, lastSync, videosDir, isSecondary });
+}
+
+// POST /api/local/setup/mark-secondary
+// El frontend la llama cuando detecta que esta PC no es la principal (auto-detect
+// de la carpeta falló pero la nube ya tiene catálogo): a partir de acá, todo push
+// desde esta instalación va sin fullSync para no archivar videos de otra PC.
+export function markSecondaryInstall(_req: Request, res: Response): void {
+  configRepo.set('secondary_install', '1');
+  res.json({ ok: true });
 }

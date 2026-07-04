@@ -218,9 +218,12 @@ export default function App() {
           } catch {}
         }
 
-        // No se pudo auto-detectar → PC nueva (o sin backup previo)
+        // No se pudo auto-detectar → PC nueva (o sin backup previo). Se marca como
+        // instalación secundaria para que sus pushes nunca archiven en la nube los
+        // videos que solo existen en la PC principal (ver backupService.markSecondary).
         if (!cancelled && (files?.length ?? 0) > 0) {
           setNewMachineAlert({ video_folder: video_folder ?? null });
+          backupService.markSecondary().catch(() => {});
         }
       }).catch(() => {});
     }).catch(() => {});
