@@ -3,7 +3,9 @@ import { motion } from "motion/react";
 import {
   Play, Camera, Music2, AlertTriangle, Clock, Pencil,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
+  Eye, Heart, MessageCircle,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { videoService, syncService } from "../services/api";
 
 type SlimVideo = { fileId: string; title: string; duration: string };
@@ -155,27 +157,25 @@ function IntervalChip({ days, onChange }: { days: number; onChange: (n: number) 
 
 // ── Stats chips (mobile history) ─────────────────────────────────────────────
 
-function getStatChips(stats?: Record<string, any>, platform?: Platform) {
-  if (!stats || !platform) return [];
+// Vistas/likes/comentarios con ícono en vez de etiqueta de texto (ahorra espacio);
+// "--" cuando la plataforma no expone ese dato, en vez de ocultar el chip.
+type StatChip = { Icon: LucideIcon; v: string };
+
+function getStatChips(stats: Record<string, any> | undefined, platform: Platform | undefined): StatChip[] {
   const n = (v: any) => Number.isFinite(+v) ? (+v).toLocaleString() : "—";
-  // Mostrar el chip cuando el dato existe, incluso si es 0 (video recién subido).
   const has = (v: any) => v != null && v !== "";
+  const val = (v: any) => has(v) ? n(v) : "--";
+  const s = stats ?? {};
   if (platform === "youtube")   return [
-    has(stats.viewCount)    ? { l: "vistas",   v: n(stats.viewCount) }    : null,
-    has(stats.likeCount)    ? { l: "likes",    v: n(stats.likeCount) }    : null,
-    has(stats.commentCount) ? { l: "coment.",  v: n(stats.commentCount) } : null,
-  ].filter(Boolean) as { l: string; v: string }[];
+    { Icon: Eye, v: val(s.viewCount) }, { Icon: Heart, v: val(s.likeCount) }, { Icon: MessageCircle, v: val(s.commentCount) },
+  ];
   if (platform === "instagram") return [
-    has(stats.views)          ? { l: "vistas",  v: n(stats.views) }          : null,
-    has(stats.like_count)     ? { l: "likes",   v: n(stats.like_count) }     : null,
-    has(stats.comments_count) ? { l: "coment.", v: n(stats.comments_count) } : null,
-  ].filter(Boolean) as { l: string; v: string }[];
+    { Icon: Eye, v: val(s.views) }, { Icon: Heart, v: val(s.like_count) }, { Icon: MessageCircle, v: val(s.comments_count) },
+  ];
   if (platform === "tiktok") return [
-    has(stats.views)    ? { l: "vistas",  v: n(stats.views) }    : null,
-    has(stats.likes)    ? { l: "likes",   v: n(stats.likes) }    : null,
-    has(stats.comments) ? { l: "coment.", v: n(stats.comments) } : null,
-  ].filter(Boolean) as { l: string; v: string }[];
-  return [];
+    { Icon: Eye, v: val(s.views) }, { Icon: Heart, v: val(s.likes) }, { Icon: MessageCircle, v: val(s.comments) },
+  ];
+  return [{ Icon: Eye, v: "--" }, { Icon: Heart, v: "--" }, { Icon: MessageCircle, v: "--" }];
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -320,18 +320,14 @@ function HistoryRow({ data }: { data: PublishedVideo }) {
       </div>
 
       {!empty && (
-        chips.length > 0 ? (
-          <div className="hidden sm:flex items-center gap-4 flex-shrink-0">
-            {chips.map((c, i) => (
-              <div key={i} className="text-center">
-                <p className="text-xs font-bold text-foreground leading-none">{c.v}</p>
-                <p className="text-[9px] text-muted-foreground mt-0.5">{c.l}</p>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <span className="text-[10px] text-muted-foreground flex-shrink-0">sin stats</span>
-        )
+        <div className="hidden sm:flex items-center gap-3 flex-shrink-0">
+          {chips.map(({ Icon: StatIcon, v }, i) => (
+            <div key={i} className="flex items-center gap-1" title={v}>
+              <StatIcon className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs font-semibold text-foreground tabular-nums">{v}</span>
+            </div>
+          ))}
+        </div>
       )}
 
       {data.platformUrl && data.platform !== "tiktok" && (
@@ -530,30 +526,7 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
     return "bg-blue-500/20 text-blue-300";
   };
 
-  // Mismo criterio que getStatChips: muestra 0 real, oculta lo ausente.
-  const formatStats = (stats?: Record<string, any>, platform?: string): { label: string; value: string }[] => {
-    if (!stats) return [];
-    const has = (v: any) => v != null && v !== "";
-    const num = (v: any) => Number.isFinite(+v) ? (+v).toLocaleString() : "—";
-    const items: { label: string; value: string }[] = [];
-    if (platform === "youtube") {
-      if (has(stats.viewCount))    items.push({ label: "Vistas",      value: num(stats.viewCount) });
-      if (has(stats.likeCount))    items.push({ label: "Likes",       value: num(stats.likeCount) });
-      if (has(stats.commentCount)) items.push({ label: "Comentarios", value: num(stats.commentCount) });
-    } else if (platform === "instagram") {
-      if (has(stats.views))          items.push({ label: "Vistas",      value: num(stats.views) });
-      if (has(stats.like_count))     items.push({ label: "Likes",       value: num(stats.like_count) });
-      if (has(stats.comments_count)) items.push({ label: "Comentarios", value: num(stats.comments_count) });
-    } else if (platform === "tiktok") {
-      if (has(stats.views))    items.push({ label: "Vistas",      value: num(stats.views) });
-      if (has(stats.likes))    items.push({ label: "Likes",       value: num(stats.likes) });
-      if (has(stats.comments)) items.push({ label: "Comentarios", value: num(stats.comments) });
-      if (has(stats.shares))   items.push({ label: "Shares",      value: num(stats.shares) });
-    }
-    return items;
-  };
-
-  const stats = formatStats(data.stats, data.platform);
+  const stats = getStatChips(data.stats, data.platform);
 
   return (
     <div className="flex flex-col gap-2.5 p-4 rounded-2xl border border-border bg-card">
@@ -602,16 +575,14 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
               )}
             </div>
 
-            {stats.length > 0 && (
-              <div className="grid grid-cols-2 gap-1.5 text-xs">
-                {stats.map((item, i) => (
-                  <div key={i} className="flex items-center justify-between px-2 py-1 rounded-md bg-black/20">
-                    <span className="text-muted-foreground">{item.label}</span>
-                    <span className="font-semibold text-foreground">{item.value}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className="grid grid-cols-3 gap-1.5 text-xs">
+              {stats.map(({ Icon: StatIcon, v }, i) => (
+                <div key={i} className="flex items-center justify-center gap-1 px-2 py-1 rounded-md bg-black/20" title={v}>
+                  <StatIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                  <span className="font-semibold text-foreground tabular-nums">{v}</span>
+                </div>
+              ))}
+            </div>
 
             <div className="flex items-center justify-between gap-2">
               <p className={`text-[11px] ${cfg.text}`}>{formatPublishedAt(data.publishedAt)}</p>
