@@ -599,16 +599,32 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
   );
 }
 
+// ── Cache en memoria (sobrevive a montar/desmontar la vista, no a recargar la página) ──
+
+type CalendarCache = {
+  videos:    SlimVideo[];
+  slots:     PlatformSlot[];
+  published: PublishedVideo[];
+  indices:   Record<Platform, number>;
+};
+
+let calendarCache: CalendarCache | null = null;
+
+function patchCalendarCache(patch: Partial<CalendarCache>) {
+  if (!calendarCache) return;
+  calendarCache = { ...calendarCache, ...patch };
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; onOpenVideo?: (fileId: string, title: string) => void }) {
-  const [videos,    setVideos]    = useState<SlimVideo[]>([]);
-  const [slots,     setSlots]     = useState<PlatformSlot[]>(FALLBACK_SLOTS);
-  const [loading,   setLoading]   = useState(true);
-  const [published, setPublished] = useState<PublishedVideo[]>([]);
+  const [videos,    setVideos]    = useState<SlimVideo[]>(calendarCache?.videos ?? []);
+  const [slots,     setSlots]     = useState<PlatformSlot[]>(calendarCache?.slots ?? FALLBACK_SLOTS);
+  const [loading,   setLoading]   = useState(!calendarCache);
+  const [published, setPublished] = useState<PublishedVideo[]>(calendarCache?.published ?? []);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [indices, setIndices] = useState<Record<Platform, number>>({ tiktok: 0, instagram: 0, youtube: 0 });
+  const [indices, setIndices] = useState<Record<Platform, number>>(calendarCache?.indices ?? { tiktok: 0, instagram: 0, youtube: 0 });
   const [pinning, setPinning] = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
   const [pinned,  setPinned]  = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
 
@@ -616,6 +632,8 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     if (showRefresh) setRefreshing(true);
     let loadedVideos: SlimVideo[] = [];
     let loadedNextIds: Partial<Record<Platform, string>> = {};
+    let builtSlots: PlatformSlot[] = FALLBACK_SLOTS;
+    let loadedPublished: PublishedVideo[] = [];
     let videosOk = false;
     let configOk = false;
     let publishedOk = false;
@@ -633,6 +651,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         if (found !== -1) idx[p] = found;
       }
       setIndices(idx);
+      calendarCache = { videos: loadedVideos, slots: builtSlots, published: loadedPublished, indices: idx };
     }
 
     videoService.getSlimList()
@@ -656,26 +675,33 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
             nextDate: cfg.lastPublishedDate ? calcNextDate(cfg.lastPublishedDate, intervalDays) : "",
           };
         });
+        builtSlots = built;
         setSlots(built);
       })
       .catch(() => {})
       .finally(() => { configOk = true; resolve(); });
 
     syncService.getPublishedVideos()
-      .then(data => setPublished(data as PublishedVideo[]))
+      .then(data => { loadedPublished = data as PublishedVideo[]; setPublished(loadedPublished); })
       .catch(() => {})
       .finally(() => { publishedOk = true; resolve(); });
   }
 
+  // Si ya hay cache, la vista se pinta al instante con esos datos y se refresca
+  // en segundo plano (sin spinner) para traer novedades.
   useEffect(() => { loadAll(); }, []);
 
   function updateInterval(platform: Platform, days: number) {
     if (!Number.isFinite(days) || days < 1) return;
-    setSlots(prev => prev.map(s =>
-      s.platform === platform
-        ? { ...s, intervalDays: days, nextDate: s.lastDate ? calcNextDate(s.lastDate, days) : s.nextDate }
-        : s
-    ));
+    setSlots(prev => {
+      const next = prev.map(s =>
+        s.platform === platform
+          ? { ...s, intervalDays: days, nextDate: s.lastDate ? calcNextDate(s.lastDate, days) : s.nextDate }
+          : s
+      );
+      patchCalendarCache({ slots: next });
+      return next;
+    });
     syncService.updateCalendarConfig(platform, { intervalDays: days }).catch(() => {});
   }
 
@@ -707,13 +733,21 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         intervalDays,
         nextVideoId:        nextVideo?.title,
       });
-      setSlots(prev => prev.map(s =>
-        s.platform === platform
-          ? { ...s, lastTitle: video.title, lastDate: today, lastVideoId: video.fileId, nextDate: calcNextDate(today, intervalDays) }
-          : s
-      ));
+      setSlots(prev => {
+        const next = prev.map(s =>
+          s.platform === platform
+            ? { ...s, lastTitle: video.title, lastDate: today, lastVideoId: video.fileId, nextDate: calcNextDate(today, intervalDays) }
+            : s
+        );
+        patchCalendarCache({ slots: next });
+        return next;
+      });
       setPinned(prev => ({ ...prev, [platform]: true }));
-      setIndices(prev => ({ ...prev, [platform]: nextIdx }));
+      setIndices(prev => {
+        const next = { ...prev, [platform]: nextIdx };
+        patchCalendarCache({ indices: next });
+        return next;
+      });
     } catch { /* no-op */ }
     finally { setPinning(prev => ({ ...prev, [platform]: false })); }
   }
