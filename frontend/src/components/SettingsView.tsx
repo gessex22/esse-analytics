@@ -168,10 +168,11 @@ interface SettingsViewProps {
   activeSection: string;
   role: string;
   isLocal?: boolean;
+  isPremium?: boolean;
   onSectionChange: (id: string) => void;
 }
 
-export function SettingsView({ activeSection, role, isLocal, onSectionChange }: SettingsViewProps) {
+export function SettingsView({ activeSection, role, isLocal, isPremium, onSectionChange }: SettingsViewProps) {
   const visibleSections = ALL_SECTIONS.filter(s =>
     s.roles.includes(role) && (!s.localOnly || isLocal)
   );
@@ -205,7 +206,7 @@ export function SettingsView({ activeSection, role, isLocal, onSectionChange }: 
       {activeSection === "biblioteca" && <LibraryPanel />}
       {activeSection === "seguridad"  && <SecurityPanel />}
       {activeSection === "sync"       && <SyncPanel />}
-      {activeSection === "frieden"    && <FriedenPanel />}
+      {activeSection === "frieden"    && <FriedenPanel isPremium={!!isPremium} />}
       {activeSection === "datos"      && <DatosPanel />}
     </div>
   );

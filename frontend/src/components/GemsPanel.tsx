@@ -225,7 +225,7 @@ function LocalNetworkInfo() {
 
 type SyncOp = "push" | "pull" | null;
 
-export function BackupPanel() {
+export function BackupPanel({ locked = false }: { locked?: boolean }) {
   const [localCount, setLocalCount]   = useState<number | null>(null);
   const [cloudCount, setCloudCount]   = useState<number | null>(null);
   const [lastSync,   setLastSync]     = useState<string | null>(null);
@@ -233,6 +233,9 @@ export function BackupPanel() {
   const [result,     setResult]       = useState<{ msg: string; ok: boolean } | null>(null);
 
   const load = useCallback(async () => {
+    // El status/backup en la nube es Premium en la central (requirePremium) — para un
+    // usuario free ese fetch solo daría 403, así que ni lo intentamos.
+    if (locked) return;
     try {
       const [local, cloud] = await Promise.all([
         backupService.getLocalStatus(),
@@ -242,9 +245,18 @@ export function BackupPanel() {
       setLastSync(local.lastSync);
       if (cloud) setCloudCount(cloud.total);
     } catch {/* offline */}
-  }, []);
+  }, [locked]);
 
   useEffect(() => { load(); }, [load]);
+
+  if (locked) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-secondary/40 border border-border/60 px-3 py-2.5">
+        <p className="text-xs text-muted-foreground">Disponible con plan Premium.</p>
+        <LockedBadge />
+      </div>
+    );
+  }
 
   const formatTs = (ts: string | null) => {
     if (!ts) return "Nunca";
@@ -344,7 +356,7 @@ export function BackupPanel() {
 
 // ── Badge de estado extendido ─────────────────────────────────────────────────
 
-function LockedBadge() {
+export function LockedBadge() {
   return (
     <span className="inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400">
       <Lock className="w-3 h-3" />

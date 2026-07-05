@@ -46,7 +46,10 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
 
   if (!upstream.ok) {
     const detail = await upstream.json().catch(() => ({}));
-    throw Object.assign(new Error('Error en central'), { detail, status: 502 });
+    // Preserva el status/mensaje real de la central (p.ej. 403 "Esta función
+    // requiere plan Premium.") en vez de un genérico "Error en central" que
+    // no le dice nada al usuario.
+    throw Object.assign(new Error(detail?.message || 'Error en central'), { detail, status: upstream.status });
   }
 
   const result = await upstream.json();
@@ -99,7 +102,7 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
     const result = await pushFilesToCloud(authHeader);
     res.json({ ok: true, ...result });
   } catch (err: any) {
-    if (err.status === 502) { res.status(502).json({ error: 'Error en central', detail: err.detail }); return; }
+    if (err.status) { res.status(err.status).json({ error: err.message, detail: err.detail }); return; }
     res.status(500).json({ error: err.message });
   }
 }
@@ -117,7 +120,8 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
     });
 
     if (!upstream.ok) {
-      res.status(502).json({ error: 'No se pudo obtener el backup del cloud' });
+      const detail = await upstream.json().catch(() => ({}));
+      res.status(upstream.status).json({ error: detail?.message || 'No se pudo obtener el backup del cloud', detail });
       return;
     }
 
@@ -192,7 +196,8 @@ export async function pullTranscriptsFromCloud(req: Request, res: Response): Pro
     });
 
     if (!upstream.ok) {
-      res.status(502).json({ error: 'No se pudo obtener transcripts del cloud' });
+      const detail = await upstream.json().catch(() => ({}));
+      res.status(upstream.status).json({ error: detail?.message || 'No se pudo obtener transcripts del cloud', detail });
       return;
     }
 

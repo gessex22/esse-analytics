@@ -9,7 +9,7 @@ type RemoteStatus = "not_installed" | "installed" | "running" | "loading";
 // siempre respalda solo, y Acceso Remoto arranca solo si está instalado (ver
 // local-backend/src/server.ts). Acá solo se ve su estado y se puede instalar
 // el ejecutable de Acceso Remoto si todavía falta.
-export function FriedenPanel() {
+export function FriedenPanel({ isPremium }: { isPremium: boolean }) {
   const [remoteStatus, setRemoteStatus] = useState<RemoteStatus>("loading");
 
   const load = useCallback(async () => {
@@ -87,7 +87,7 @@ export function FriedenPanel() {
           </div>
         </div>
         <p className="text-sm text-muted-foreground leading-relaxed">{backup.description}</p>
-        <BackupPanel />
+        <BackupPanel locked={!isPremium} />
       </div>
     </div>
   );

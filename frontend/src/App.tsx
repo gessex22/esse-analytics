@@ -456,7 +456,7 @@ export default function App() {
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <YoutubeUploadView />
-                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} onSectionChange={setActiveSection} />
+                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} isPremium={isPremium} onSectionChange={setActiveSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
