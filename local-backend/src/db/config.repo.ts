@@ -102,6 +102,13 @@ export const configRepo = {
   // ── wipe all tables ────────────────────────────────────────────────────────
   wipeAll(): Record<string, number> {
     const results: Record<string, number> = {};
+
+    // workflow_mode (simple/avanzado) es una preferencia del DISPOSITIVO, no un
+    // dato de la cuenta — si se pierde en cada logout, un usuario free (que no
+    // tiene el pull de la nube para recuperarlo) queda "reseteado" a avanzado
+    // cada vez que vuelve a entrar. Se preserva a través del wipe.
+    const preservedWorkflowMode = this.get('workflow_mode');
+
     // Varias tablas tienen file_id/video_principal_id REFERENCES files(id) y
     // foreign_keys está ON: deben borrarse ANTES que "files", si no el DELETE de
     // files falla por la FK (en silencio, por el catch de abajo) y el catálogo
@@ -116,6 +123,9 @@ export const configRepo = {
         console.error(`[wipeAll] no se pudo limpiar "${t}":`, err.message);
       }
     }
+
+    if (preservedWorkflowMode) this.set('workflow_mode', preservedWorkflowMode);
+
     return results;
   },
 };
