@@ -476,6 +476,21 @@ export const videoService = {
     });
   },
 
+  updateVideosBulk: async (
+    fileIds: string[],
+    updates: {
+      platform?: "youtube" | "instagram" | "tiktok";
+      platformState?: "publicado" | "descartado" | "pendiente";
+      tipo_contenido?: string | null;
+    },
+  ): Promise<{ updated: number }> => {
+    return requestJson<{ updated: number }>(`/api/videos/bulk`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileIds, ...updates }),
+    });
+  },
+
   updateVideoContentStatus: async (fileId: string, status: VideoContentStatus): Promise<void> => {
     await requestJson(`/api/videos/${fileId}/status`, {
       method: "PATCH",

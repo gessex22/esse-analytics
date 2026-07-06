@@ -15,7 +15,8 @@ export const getVideos = (req: Request, res: Response) => {
   const { rows, total } = fileRepo.findAll({
     search:         search as string | undefined,
     status:         status as string | undefined,
-    content_status: content_status as string | undefined,
+    // Sin filtro explícito del frontend → oculta por defecto los completos en las 3 plataformas
+    content_status: (content_status as string | undefined) || 'no_completo',
     tipo:           tipo as string | undefined,
     order:          (order === 'asc' ? 'asc' : 'desc'),
     limit,
@@ -110,6 +111,53 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
   const updated = fileRepo.update(fileId, data);
   if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
   res.json({ platforms, platforms_discarded });
+};
+
+// ── PATCH /api/videos/bulk — edición masiva (plataforma y/o tipo de contenido) ─
+export const updateVideosBulk = (req: Request, res: Response): void => {
+  const { fileIds, platform, platformState, tipo_contenido } = req.body as {
+    fileIds?: string[];
+    platform?: string;
+    platformState?: 'publicado' | 'descartado' | 'pendiente';
+    tipo_contenido?: string | null;
+  };
+
+  if (!Array.isArray(fileIds) || fileIds.length === 0) {
+    res.status(400).json({ message: 'fileIds requerido.' }); return;
+  }
+
+  const validPlatforms = ['youtube', 'instagram', 'tiktok', 'facebook'];
+  if (platform !== undefined && !validPlatforms.includes(platform)) {
+    res.status(400).json({ message: 'Plataforma inválida.' }); return;
+  }
+  const validStates = ['publicado', 'descartado', 'pendiente'];
+  if (platformState !== undefined && !validStates.includes(platformState)) {
+    res.status(400).json({ message: 'Estado inválido.' }); return;
+  }
+
+  let updated = 0;
+  for (const fileId of fileIds) {
+    const file = fileRepo.findById(fileId);
+    if (!file) continue;
+
+    const data: Parameters<typeof fileRepo.update>[1] = {};
+
+    if (platform && platformState) {
+      const p = platform as typeof file.platforms[number];
+      const platforms = file.platforms.filter(x => x !== p);
+      const discarded = file.platforms_discarded.filter(x => x !== p);
+      if (platformState === 'publicado') platforms.push(p);
+      else if (platformState === 'descartado') discarded.push(p);
+      data.platforms = platforms;
+      data.platforms_discarded = discarded;
+    }
+
+    if (tipo_contenido !== undefined) data.tipo_contenido = tipo_contenido;
+
+    if (Object.keys(data).length > 0 && fileRepo.update(fileId, data)) updated++;
+  }
+
+  res.json({ updated });
 };
 
 // ── PATCH /api/videos/:fileId/rename ─────────────────────────────────────────

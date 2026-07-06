@@ -115,8 +115,11 @@ export const fileRepo = {
     } else if (opts.content_status === 'completo') {
       // Las 3 plataformas tienen estado definitivo (publicado o descartado)
       conds.push(`json_array_length(platforms) + json_array_length(platforms_discarded) = 3`);
+    } else if (opts.content_status === 'no_completo') {
+      // Default de la vista principal: oculta los que ya están completos en las 3 plataformas
+      conds.push(`json_array_length(platforms) + json_array_length(platforms_discarded) < 3`);
     }
-    // Sin filtro de content_status → muestra todo (la fuente de verdad son los arrays de platforms)
+    // Sin filtro de content_status → muestra todo, incluidos los completos (usado por scan/backup/watcher)
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const dir = opts.order === 'asc' ? 'ASC' : 'DESC';

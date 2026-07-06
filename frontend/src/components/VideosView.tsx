@@ -151,6 +151,10 @@ export function VideosView({
   // Selección
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds]     = useState<string[]>([]);
+  const [bulkCycle, setBulkCycle] = useState<Record<Platform, PlatformState>>({
+    youtube: "pendiente", instagram: "pendiente", tiktok: "pendiente",
+  });
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   // Edición de título
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -287,6 +291,45 @@ export function VideosView({
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
     );
+
+  // ── Acciones masivas ───────────────────────────────────────────────────────
+  const applyBulkPlatform = async (p: Platform) => {
+    if (selectedIds.length === 0 || bulkSaving) return;
+    const current = bulkCycle[p];
+    const next: PlatformState =
+      current === "pendiente" ? "publicado" : current === "publicado" ? "descartado" : "pendiente";
+    setBulkCycle((prev) => ({ ...prev, [p]: next }));
+
+    const prevVideos = videos;
+    setVideos((prev) => prev.map((v) => {
+      if (!selectedIds.includes(v._id)) return v;
+      let newPlatforms = v.platforms.filter((x) => x !== p);
+      let newDiscarded = v.platforms_discarded.filter((x) => x !== p);
+      if (next === "publicado") newPlatforms = [...newPlatforms, p];
+      else if (next === "descartado") newDiscarded = [...newDiscarded, p];
+      return { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded };
+    }));
+
+    setBulkSaving(true);
+    try {
+      await videoService.updateVideosBulk(selectedIds, { platform: p, platformState: next });
+    } catch {
+      setVideos(prevVideos);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
+  const applyBulkTipo = async (tipo: TipoFilter) => {
+    if (selectedIds.length === 0 || !tipo || bulkSaving) return;
+    setBulkSaving(true);
+    try {
+      await videoService.updateVideosBulk(selectedIds, { tipo_contenido: tipo });
+      await loadPage(currentPage, selectedTipo, selectedStatus);
+    } finally {
+      setBulkSaving(false);
+    }
+  };
 
   // ── Filtro de plataforma client-side ──────────────────────────────────────
   const displayedVideos =
@@ -503,6 +546,52 @@ export function VideosView({
           </button>
         </div>
       </div>
+
+      {/* ── Barra de acciones masivas ─────────────────────────────────────── */}
+      <AnimatePresence initial={false}>
+      {selectionMode && selectedIds.length > 0 && (
+        <motion.div
+          key="bulk-toolbar"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.18 }}
+          style={{ overflow: "hidden" }}
+        >
+          <div className="bg-primary/5 border border-primary/30 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+            <span className="text-xs text-foreground font-medium flex-shrink-0">
+              {selectedIds.length} seleccionado{selectedIds.length === 1 ? "" : "s"}
+            </span>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Plataforma</span>
+                {(["youtube", "instagram", "tiktok"] as Platform[]).map((p) => (
+                  <PlatformBadge key={p} platform={p} state={bulkCycle[p]} onClick={() => applyBulkPlatform(p)} />
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Tipo</span>
+                <select
+                  onChange={(e) => { applyBulkTipo(e.target.value as TipoFilter); e.target.value = ""; }}
+                  defaultValue=""
+                  disabled={bulkSaving}
+                  className="bg-secondary border border-border rounded-lg px-2 py-1 text-xs text-foreground disabled:opacity-50"
+                >
+                  <option value="" disabled>Asignar…</option>
+                  <option value="GUION_ESTRUCTURADO">Guión</option>
+                  <option value="CLIP_RANDOM">Random</option>
+                  <option value="CLIP_SIN_VOZ">Sin Voz</option>
+                </select>
+              </div>
+
+              {bulkSaving && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
+            </div>
+          </div>
+        </motion.div>
+      )}
+      </AnimatePresence>
 
       {/* ── Panel de filtros ──────────────────────────────────────────────── */}
       <AnimatePresence initial={false}>
