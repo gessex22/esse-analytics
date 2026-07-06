@@ -9,7 +9,8 @@ import { VideosView } from "./components/VideosView";
 import { SettingsView } from "./components/SettingsView";
 import { LoginPage } from "./components/LoginPage";
 import { LandingPage } from "./components/LandingPage";
-import { YoutubeUploadView } from "./components/YoutubeUploadView";
+import { WorkflowSetupModal } from "./components/WorkflowSetupModal";
+import { UploadView } from "./components/UploadView";
 import { useAuth } from "./hooks/useAuth";
 import { RemoteGate } from "./components/RemoteGate";
 import { useBackendType } from "./hooks/useBackendType";
@@ -179,6 +180,13 @@ export default function App() {
 
   // ── Auto-detect carpeta + alerta de PC no principal (solo premium, isLocal) ──
   const [newMachineAlert, setNewMachineAlert] = useState<{ video_folder: string | null } | null>(null);
+
+  // ── Setup "simple vs avanzado": se pregunta una sola vez, recién vinculada la instalación ──
+  const [showWorkflowSetup, setShowWorkflowSetup] = useState(false);
+  useEffect(() => {
+    if (!user || !isLocal) return;
+    if (localStorage.getItem("esse_pending_workflow_setup") === "1") setShowWorkflowSetup(true);
+  }, [user?.username, isLocal]);
 
   useEffect(() => {
     if (!user || !isPremium || !isLocal) return;
@@ -455,7 +463,7 @@ export default function App() {
                 style={{ paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
-                  : effectiveNav === 2 ? <YoutubeUploadView />
+                  : effectiveNav === 2 ? <UploadView />
                   : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} isPremium={isPremium} onSectionChange={setActiveSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
@@ -504,6 +512,16 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* ── Setup inicial: flujo simple vs avanzado (una sola vez) ───────────── */}
+      {showWorkflowSetup && (
+        <WorkflowSetupModal
+          onDone={() => {
+            localStorage.removeItem("esse_pending_workflow_setup");
+            setShowWorkflowSetup(false);
+          }}
+        />
+      )}
 
       {/* ── Diálogo de logout ───────────────────────────────────────────────── */}
       <AnimatePresence>

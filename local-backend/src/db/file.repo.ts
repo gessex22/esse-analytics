@@ -224,9 +224,31 @@ export const fileRepo = {
   addPlatform(id: number | string, platform: Platform): void {
     const file = this.findById(id);
     if (!file) return;
-    if (!file.platforms.includes(platform)) {
-      this.update(id, { platforms: [...file.platforms, platform] });
+    const platforms = file.platforms.includes(platform) ? file.platforms : [...file.platforms, platform];
+    // Una subida real siempre gana: si la plataforma había quedado marcada como
+    // descartada (p.ej. por el auto-descarte del flujo simple), sacarla de ahí.
+    const platforms_discarded = file.platforms_discarded.includes(platform)
+      ? file.platforms_discarded.filter(p => p !== platform)
+      : file.platforms_discarded;
+    if (platforms !== file.platforms || platforms_discarded !== file.platforms_discarded) {
+      this.update(id, { platforms, platforms_discarded });
     }
+  },
+
+  /**
+   * Flujo simple: al publicar de verdad en una plataforma, las demás que sigan
+   * "pendientes" (nunca tocadas para este video) se resuelven como descartadas.
+   * Así la cola de esa plataforma avanza al siguiente video en vez de quedarse
+   * esperando que este mismo se termine de publicar en todas partes. Si alguna
+   * ya estaba resuelta (publicada o descartada a propósito) no se toca.
+   */
+  resolveOthersAsDiscarded(id: number | string, published: Platform): void {
+    const file = this.findById(id);
+    if (!file) return;
+    const others: Platform[] = (['youtube', 'instagram', 'tiktok'] as Platform[]).filter(p => p !== published);
+    const stillPending = others.filter(p => !file.platforms.includes(p) && !file.platforms_discarded.includes(p));
+    if (stillPending.length === 0) return;
+    this.update(id, { platforms_discarded: [...file.platforms_discarded, ...stillPending] });
   },
 
   /**

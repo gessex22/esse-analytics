@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { verifyToken, requirePremium } from '../middleware/auth.middleware';
-import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas } from '../controllers/backup.controller';
+import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas, getBackupConfig, upsertBackupConfig } from '../controllers/backup.controller';
 
 const router = Router();
 
@@ -11,5 +11,7 @@ router.get('/api/backup/status',          verifyToken, requirePremium, getBackup
 router.get('/api/backup/transcripts',     verifyToken, requirePremium, getBackupTranscripts);
 router.post('/api/backup/transcripts/bulk', verifyToken, requirePremium, bulkUpsertBackupTranscripts);
 router.get('/api/backup/ideas-centrales', verifyToken, requirePremium, getBackupIdeas);
+router.get('/api/backup/config',          verifyToken, requirePremium, getBackupConfig);
+router.post('/api/backup/config',         verifyToken, requirePremium, upsertBackupConfig);
 
 export default router;

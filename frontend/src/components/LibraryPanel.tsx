@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2, UserMinus } from "lucide-react";
+import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2, UserMinus, Sparkles, SlidersHorizontal } from "lucide-react";
 import { API_BASE as API } from "../config";
 import { useAuth } from "../hooks/useAuth";
+import { setupService, WorkflowMode } from "../services/api";
 
 interface ScanResult {
   scanned: number;
@@ -41,12 +42,27 @@ export function LibraryPanel() {
   const [deactivateConfirm, setDeactivateConfirm] = useState(false);
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
 
+  const [workflowMode, setWorkflowModeState] = useState<WorkflowMode | null>(null);
+  const [savingWorkflow, setSavingWorkflow]   = useState(false);
+
   useEffect(() => {
     fetch(`${API}/api/videos/scan/config`, { headers: authHeaders() })
       .then(r => r.json())
       .then(d => { setSavedDir(d.folder ?? null); setDirExists(!!d.exists); if (d.folder) setFolder(d.folder); })
       .catch(() => {});
+    setupService.getWorkflowMode().then(d => setWorkflowModeState(d.workflowMode)).catch(() => {});
   }, []);
+
+  const changeWorkflowMode = async (mode: WorkflowMode) => {
+    if (mode === workflowMode || savingWorkflow) return;
+    setSavingWorkflow(true);
+    try {
+      await setupService.setWorkflowMode(mode);
+      setWorkflowModeState(mode);
+    } finally {
+      setSavingWorkflow(false);
+    }
+  };
 
   const saveFolder = async () => {
     setError(null); setSaving(true); setResult(null);
@@ -128,6 +144,37 @@ export function LibraryPanel() {
 
   return (
     <div className="space-y-5 max-w-lg">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Flujo de publicación</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Define si marcás el estado de publicación por plataforma o con un solo estado por video.
+        </p>
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          <button
+            onClick={() => changeWorkflowMode("simple")}
+            disabled={savingWorkflow}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+              workflowMode === "simple"
+                ? "bg-primary/15 border-primary/40 text-primary"
+                : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary/70"
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" /> Simple
+          </button>
+          <button
+            onClick={() => changeWorkflowMode("avanzado")}
+            disabled={savingWorkflow}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+              workflowMode === "avanzado"
+                ? "bg-primary/15 border-primary/40 text-primary"
+                : "border-border bg-secondary/40 text-muted-foreground hover:bg-secondary/70"
+            }`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" /> Avanzado
+          </button>
+        </div>
+      </div>
+
       <div>
         <h3 className="text-sm font-semibold text-foreground">Carpeta de videos</h3>
         <p className="text-xs text-muted-foreground mt-0.5">

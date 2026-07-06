@@ -52,6 +52,7 @@ router.get('/api/local/owner', (_req, res) => {
 router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
     const existing = configRepo.getOwner();
+    const isNewInstall = !existing;
     let switched = false;
     if (existing && existing.username !== req.user!.username) {
       // Inicia un usuario DISTINTO al dueño de esta PC → reiniciar local (borrar todo)
@@ -74,10 +75,40 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
       body: JSON.stringify({ installId }),
     }).catch(() => {});
 
-    res.json({ ok: true, username: req.user!.username, switched });
+    res.json({ ok: true, username: req.user!.username, switched, isNewInstall });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al fijar owner.', detail: err.message });
   }
+});
+
+// GET /api/local/setup/workflow-mode — 'simple' (un solo estado por video) o
+// 'avanzado' (estado independiente por plataforma). null = todavía no elegido.
+router.get('/api/local/setup/workflow-mode', (_req, res) => {
+  res.json({ workflowMode: configRepo.get('workflow_mode') });
+});
+
+// POST /api/local/setup/workflow-mode
+router.post('/api/local/setup/workflow-mode', verifyToken, (req: AuthRequest, res: Response) => {
+  const { mode } = req.body as { mode?: string };
+  if (mode !== 'simple' && mode !== 'avanzado') {
+    res.status(400).json({ message: 'mode inválido.' });
+    return;
+  }
+
+  const previous = configRepo.get('workflow_mode');
+  configRepo.set('workflow_mode', mode);
+
+  // Cambio real de modo (no la elección inicial): las 3 colas de "próximo video"
+  // quedaron calculadas bajo la lógica vieja y ya no tienen por qué coincidir con
+  // la del modo nuevo (en simple, las 3 plataformas avanzan siempre juntas). Se
+  // limpian para que se recalculen frescas la próxima vez que se consulten.
+  if (previous && previous !== mode) {
+    for (const platform of ['youtube', 'instagram', 'tiktok']) {
+      configRepo.setPlatformConfig(platform, { last_video_id: null, next_video_id: null });
+    }
+  }
+
+  res.json({ ok: true, workflowMode: mode });
 });
 
 // DELETE /api/local/owner — libera la instancia

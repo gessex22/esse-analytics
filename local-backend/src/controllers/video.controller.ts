@@ -113,11 +113,11 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
   res.json({ platforms, platforms_discarded });
 };
 
-// ── PATCH /api/videos/bulk — edición masiva (plataforma y/o tipo de contenido) ─
+// ── PATCH /api/videos/bulk — edición masiva (plataformas y/o tipo de contenido) ─
 export const updateVideosBulk = (req: Request, res: Response): void => {
-  const { fileIds, platform, platformState, tipo_contenido } = req.body as {
+  const { fileIds, platforms: targetPlatforms, platformState, tipo_contenido } = req.body as {
     fileIds?: string[];
-    platform?: string;
+    platforms?: string[];
     platformState?: 'publicado' | 'descartado' | 'pendiente';
     tipo_contenido?: string | null;
   };
@@ -127,8 +127,8 @@ export const updateVideosBulk = (req: Request, res: Response): void => {
   }
 
   const validPlatforms = ['youtube', 'instagram', 'tiktok', 'facebook'];
-  if (platform !== undefined && !validPlatforms.includes(platform)) {
-    res.status(400).json({ message: 'Plataforma inválida.' }); return;
+  if (targetPlatforms !== undefined && (!Array.isArray(targetPlatforms) || targetPlatforms.some(p => !validPlatforms.includes(p)))) {
+    res.status(400).json({ message: 'Plataformas inválidas.' }); return;
   }
   const validStates = ['publicado', 'descartado', 'pendiente'];
   if (platformState !== undefined && !validStates.includes(platformState)) {
@@ -142,12 +142,12 @@ export const updateVideosBulk = (req: Request, res: Response): void => {
 
     const data: Parameters<typeof fileRepo.update>[1] = {};
 
-    if (platform && platformState) {
-      const p = platform as typeof file.platforms[number];
-      const platforms = file.platforms.filter(x => x !== p);
-      const discarded = file.platforms_discarded.filter(x => x !== p);
-      if (platformState === 'publicado') platforms.push(p);
-      else if (platformState === 'descartado') discarded.push(p);
+    if (targetPlatforms && targetPlatforms.length > 0 && platformState) {
+      const ps = targetPlatforms as typeof file.platforms;
+      const platforms = file.platforms.filter(x => !ps.includes(x));
+      const discarded = file.platforms_discarded.filter(x => !ps.includes(x));
+      if (platformState === 'publicado') platforms.push(...ps);
+      else if (platformState === 'descartado') discarded.push(...ps);
       data.platforms = platforms;
       data.platforms_discarded = discarded;
     }

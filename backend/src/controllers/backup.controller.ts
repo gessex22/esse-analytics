@@ -5,6 +5,7 @@ import { TranscriptBackupModel } from '../models/transcript-backup.model';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideacentral';
+import { BackupConfigModel } from '../models/backup-config.model';
 
 // GET /api/backup/files
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
@@ -247,6 +248,44 @@ export async function getBackupIdeas(req: AuthRequest, res: Response): Promise<v
       .filter(idea => idea.videos.length > 0);
 
     res.json({ ideas: result, total: result.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/backup/config — preferencias de instalación (workflow_mode) + colas de calendario
+export async function getBackupConfig(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const doc = await BackupConfigModel.findOne({ userId }).lean();
+    res.json({
+      workflow_mode:    doc?.workflow_mode ?? null,
+      platform_configs: doc?.platform_configs ?? [],
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// POST /api/backup/config
+export async function upsertBackupConfig(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const { workflow_mode, platform_configs } = req.body as {
+      workflow_mode?: string | null;
+      platform_configs?: unknown[];
+    };
+    await BackupConfigModel.updateOne(
+      { userId },
+      {
+        $set: {
+          ...(workflow_mode !== undefined ? { workflow_mode } : {}),
+          ...(Array.isArray(platform_configs) ? { platform_configs } : {}),
+        },
+      },
+      { upsert: true },
+    );
+    res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -16,7 +16,7 @@ import {
   MonitorOff,
   CalendarClock,
 } from "lucide-react";
-import { videoService, backupService, DashboardVideo, PaginationInfo } from "../services/api";
+import { videoService, backupService, setupService, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
@@ -34,6 +34,16 @@ const PUB_FILTER_LABELS: Record<PubFilter, string> = {
 
 type Platform = "youtube" | "instagram" | "tiktok";
 type PlatformState = "publicado" | "descartado" | "pendiente";
+const ALL_PLATFORMS: Platform[] = ["youtube", "instagram", "tiktok"];
+
+// ── Flujo "simple": un solo estado agregado para las 3 plataformas ────────────
+function aggregatePlatformState(v: { platforms: string[]; platforms_discarded: string[] }): PlatformState {
+  if (ALL_PLATFORMS.every((p) => v.platforms.includes(p))) return "publicado";
+  if (ALL_PLATFORMS.every((p) => v.platforms_discarded.includes(p))) return "descartado";
+  return "pendiente";
+}
+const nextPlatformState = (s: PlatformState): PlatformState =>
+  s === "pendiente" ? "publicado" : s === "publicado" ? "descartado" : "pendiente";
 
 
 // ── Iconos de plataforma ──────────────────────────────────────────────────────
@@ -88,6 +98,28 @@ function PlatformBadge({
       className="transition-transform hover:scale-110 active:scale-95"
     >
       {inner}
+    </button>
+  );
+}
+
+// ── Estado único para flujo "simple" (agrega las 3 plataformas) ──────────────
+const SIMPLE_STATE_LABELS: Record<PlatformState, string> = {
+  publicado:  "Publicado",
+  descartado: "Descartado",
+  pendiente:  "Pendiente",
+};
+const SIMPLE_STATE_STYLES: Record<PlatformState, string> = {
+  publicado:  "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  descartado: "bg-secondary text-muted-foreground border-border line-through",
+  pendiente:  "bg-secondary/60 text-muted-foreground border-border",
+};
+function SimpleStatusBadge({ state, onClick }: { state: PlatformState; onClick?: () => void }) {
+  const label = SIMPLE_STATE_LABELS[state];
+  const cls = `text-[11px] font-medium px-2 py-1 rounded-full border transition-colors ${SIMPLE_STATE_STYLES[state]}`;
+  if (!onClick) return <span className={cls}>{label}</span>;
+  return (
+    <button onClick={onClick} title={`${label} — clic para cambiar`} className={`${cls} hover:brightness-110`}>
+      {label}
     </button>
   );
 }
@@ -148,12 +180,21 @@ export function VideosView({
   const [selectedStatus, setSelectedStatus]       = useState<PubFilter | "">("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([]);
 
+  // Flujo de publicación elegido en el setup inicial: 'simple' colapsa las 3
+  // plataformas en un solo estado; 'avanzado' (o null, instalaciones viejas) mantiene el detalle.
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
+  useEffect(() => {
+    setupService.getWorkflowMode().then(d => setWorkflowMode(d.workflowMode)).catch(() => {});
+  }, []);
+  const isSimpleFlow = workflowMode === "simple";
+
   // Selección
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds]     = useState<string[]>([]);
   const [bulkCycle, setBulkCycle] = useState<Record<Platform, PlatformState>>({
     youtube: "pendiente", instagram: "pendiente", tiktok: "pendiente",
   });
+  const [simpleBulkState, setSimpleBulkState] = useState<PlatformState>("pendiente");
   const [bulkSaving, setBulkSaving] = useState(false);
 
   // Edición de título
@@ -293,31 +334,39 @@ export function VideosView({
     );
 
   // ── Acciones masivas ───────────────────────────────────────────────────────
-  const applyBulkPlatform = async (p: Platform) => {
+  const applyBulkPlatforms = async (ps: Platform[], next: PlatformState) => {
     if (selectedIds.length === 0 || bulkSaving) return;
-    const current = bulkCycle[p];
-    const next: PlatformState =
-      current === "pendiente" ? "publicado" : current === "publicado" ? "descartado" : "pendiente";
-    setBulkCycle((prev) => ({ ...prev, [p]: next }));
 
     const prevVideos = videos;
     setVideos((prev) => prev.map((v) => {
       if (!selectedIds.includes(v._id)) return v;
-      let newPlatforms = v.platforms.filter((x) => x !== p);
-      let newDiscarded = v.platforms_discarded.filter((x) => x !== p);
-      if (next === "publicado") newPlatforms = [...newPlatforms, p];
-      else if (next === "descartado") newDiscarded = [...newDiscarded, p];
+      let newPlatforms = v.platforms.filter((x) => !ps.includes(x));
+      let newDiscarded = v.platforms_discarded.filter((x) => !ps.includes(x));
+      if (next === "publicado") newPlatforms = [...newPlatforms, ...ps];
+      else if (next === "descartado") newDiscarded = [...newDiscarded, ...ps];
       return { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded };
     }));
 
     setBulkSaving(true);
     try {
-      await videoService.updateVideosBulk(selectedIds, { platform: p, platformState: next });
+      await videoService.updateVideosBulk(selectedIds, { platforms: ps, platformState: next });
     } catch {
       setVideos(prevVideos);
     } finally {
       setBulkSaving(false);
     }
+  };
+
+  const applyBulkPlatform = (p: Platform) => {
+    const next = nextPlatformState(bulkCycle[p]);
+    setBulkCycle((prev) => ({ ...prev, [p]: next }));
+    applyBulkPlatforms([p], next);
+  };
+
+  const applyBulkSimple = () => {
+    const next = nextPlatformState(simpleBulkState);
+    setSimpleBulkState(next);
+    applyBulkPlatforms(ALL_PLATFORMS, next);
   };
 
   const applyBulkTipo = async (tipo: TipoFilter) => {
@@ -565,10 +614,16 @@ export function VideosView({
 
             <div className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center gap-2">
-                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Plataforma</span>
-                {(["youtube", "instagram", "tiktok"] as Platform[]).map((p) => (
-                  <PlatformBadge key={p} platform={p} state={bulkCycle[p]} onClick={() => applyBulkPlatform(p)} />
-                ))}
+                <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                  {isSimpleFlow ? "Estado" : "Plataforma"}
+                </span>
+                {isSimpleFlow ? (
+                  <SimpleStatusBadge state={simpleBulkState} onClick={applyBulkSimple} />
+                ) : (
+                  ALL_PLATFORMS.map((p) => (
+                    <PlatformBadge key={p} platform={p} state={bulkCycle[p]} onClick={() => applyBulkPlatform(p)} />
+                  ))
+                )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -814,57 +869,83 @@ export function VideosView({
                   </div>
                 </div>
 
-                {/* Plataformas (3 estados: publicado → descartado → pendiente) */}
+                {/* Plataformas: flujo simple = un estado agregado, avanzado = 3 independientes */}
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                  {(["youtube", "instagram", "tiktok"] as Platform[]).map((p) => {
-                    const state: PlatformState = video.platforms.includes(p)
-                      ? "publicado"
-                      : video.platforms_discarded.includes(p)
-                      ? "descartado"
-                      : "pendiente";
-
-                    if (role !== "todopoderoso") {
-                      return <PlatformBadge key={p} platform={p} state={state} />;
-                    }
-
-                    return (
-                      <PlatformBadge
-                        key={p}
-                        platform={p}
-                        state={state}
-                        onClick={async () => {
-                          if (!video.fileId) return;
-                          // Ciclo: pendiente → publicado → descartado → pendiente
-                          let newPlatforms = [...video.platforms];
-                          let newDiscarded = [...video.platforms_discarded];
-                          if (state === "pendiente") {
-                            newPlatforms = [...newPlatforms.filter(x => x !== p), p];
-                            newDiscarded = newDiscarded.filter(x => x !== p);
-                          } else if (state === "publicado") {
-                            newPlatforms = newPlatforms.filter(x => x !== p);
-                            newDiscarded = [...newDiscarded.filter(x => x !== p), p];
-                          } else {
-                            newPlatforms = newPlatforms.filter(x => x !== p);
-                            newDiscarded = newDiscarded.filter(x => x !== p);
-                          }
+                  {isSimpleFlow ? (
+                    <SimpleStatusBadge
+                      state={aggregatePlatformState(video)}
+                      onClick={role !== "todopoderoso" ? undefined : async () => {
+                        if (!video.fileId) return;
+                        const next = nextPlatformState(aggregatePlatformState(video));
+                        const newPlatforms = next === "publicado" ? [...ALL_PLATFORMS] : [];
+                        const newDiscarded = next === "descartado" ? [...ALL_PLATFORMS] : [];
+                        setVideos(prev => prev.map(v =>
+                          v.fileId === video.fileId
+                            ? { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded }
+                            : v
+                        ));
+                        try {
+                          await videoService.updateVideoPlatforms(video.fileId, newPlatforms, newDiscarded);
+                        } catch {
                           setVideos(prev => prev.map(v =>
                             v.fileId === video.fileId
-                              ? { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded }
+                              ? { ...v, platforms: video.platforms, platforms_discarded: video.platforms_discarded }
                               : v
                           ));
-                          try {
-                            await videoService.updateVideoPlatforms(video.fileId, newPlatforms, newDiscarded);
-                          } catch {
+                        }
+                      }}
+                    />
+                  ) : (
+                    ALL_PLATFORMS.map((p) => {
+                      const state: PlatformState = video.platforms.includes(p)
+                        ? "publicado"
+                        : video.platforms_discarded.includes(p)
+                        ? "descartado"
+                        : "pendiente";
+
+                      if (role !== "todopoderoso") {
+                        return <PlatformBadge key={p} platform={p} state={state} />;
+                      }
+
+                      return (
+                        <PlatformBadge
+                          key={p}
+                          platform={p}
+                          state={state}
+                          onClick={async () => {
+                            if (!video.fileId) return;
+                            // Ciclo: pendiente → publicado → descartado → pendiente
+                            let newPlatforms = [...video.platforms];
+                            let newDiscarded = [...video.platforms_discarded];
+                            if (state === "pendiente") {
+                              newPlatforms = [...newPlatforms.filter(x => x !== p), p];
+                              newDiscarded = newDiscarded.filter(x => x !== p);
+                            } else if (state === "publicado") {
+                              newPlatforms = newPlatforms.filter(x => x !== p);
+                              newDiscarded = [...newDiscarded.filter(x => x !== p), p];
+                            } else {
+                              newPlatforms = newPlatforms.filter(x => x !== p);
+                              newDiscarded = newDiscarded.filter(x => x !== p);
+                            }
                             setVideos(prev => prev.map(v =>
                               v.fileId === video.fileId
-                                ? { ...v, platforms: video.platforms, platforms_discarded: video.platforms_discarded }
+                                ? { ...v, platforms: newPlatforms, platforms_discarded: newDiscarded }
                                 : v
                             ));
-                          }
-                        }}
-                      />
-                    );
-                  })}
+                            try {
+                              await videoService.updateVideoPlatforms(video.fileId, newPlatforms, newDiscarded);
+                            } catch {
+                              setVideos(prev => prev.map(v =>
+                                v.fileId === video.fileId
+                                  ? { ...v, platforms: video.platforms, platforms_discarded: video.platforms_discarded }
+                                  : v
+                              ));
+                            }
+                          }}
+                        />
+                      );
+                    })
+                  )}
                 </div>
 
                 {/* Métricas — solo desktop */}

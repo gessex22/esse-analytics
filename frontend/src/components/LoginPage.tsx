@@ -8,10 +8,16 @@ import logoImg from "../assets/esseAnalytics.png";
 async function setLocalOwner() {
   const token = localStorage.getItem("esse_auth_token");
   if (!token) return;
-  await fetch(`${API_BASE}/api/local/owner`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  }).catch(() => {});
+  try {
+    const res = await fetch(`${API_BASE}/api/local/owner`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    // Instalación recién vinculada por primera vez → preguntar en App.tsx qué
+    // flujo de publicación prefiere (simple vs avanzado) apenas entre al dashboard.
+    if (data?.isNewInstall) localStorage.setItem("esse_pending_workflow_setup", "1");
+  } catch {}
 }
 
 export function LoginPage({ onBack }: { onBack?: () => void }) {

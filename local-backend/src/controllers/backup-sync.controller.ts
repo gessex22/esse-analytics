@@ -66,6 +66,14 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
     console.warn('[backup] push de transcripciones falló:', err.message);
   }
 
+  // Preferencia de flujo (simple/avanzado) + colas de calendario por plataforma.
+  // No fatal: si falla, el push de archivos ya se hizo.
+  try {
+    await pushConfigToCloud(authHeader);
+  } catch (err: any) {
+    console.warn('[backup] push de configuración falló:', err.message);
+  }
+
   return { localCount: files.length, ...result };
 }
 
@@ -78,6 +86,27 @@ async function pushTranscriptsToCloud(authHeader: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ transcripts }),
+  });
+}
+
+// Los IDs de video en platform_config son locales a este SQLite (no tienen sentido
+// en otra máquina) → se guardan por file_name, igual que el import-calendar manual,
+// y se resuelven de vuelta a IDs locales recién al hacer pull.
+async function pushConfigToCloud(authHeader: string): Promise<void> {
+  const workflow_mode = configRepo.get('workflow_mode');
+  const platform_configs = configRepo.getAllPlatformConfigs().map((pc: any) => ({
+    platform:              pc.platform,
+    last_published_title:  pc.last_published_title  ?? null,
+    last_published_date:   pc.last_published_date   ?? null,
+    interval_days:         pc.interval_days          ?? null,
+    last_video_name:       pc.last_video_id ? fileRepo.findById(pc.last_video_id)?.file_name ?? null : null,
+    next_video_name:       pc.next_video_id ? fileRepo.findById(pc.next_video_id)?.file_name ?? null : null,
+  }));
+
+  await fetch(`${CENTRAL}/api/backup/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: JSON.stringify({ workflow_mode, platform_configs }),
   });
 }
 
@@ -175,10 +204,41 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       }
     }
 
+    // Config (workflow_mode + colas por plataforma) — solo rellena lo que falte
+    // localmente, nunca pisa una preferencia o cola que la máquina ya tenga activa.
+    try {
+      await pullConfigFromCloud(authHeader);
+    } catch (err: any) {
+      console.warn('[backup] pull de configuración falló:', err.message);
+    }
+
     configRepo.set('backup_last_pull', new Date().toISOString());
     res.json({ ok: true, cloudCount: cloudFiles.length, cloudWithPlatforms, updated, recovered, skipped, orphans });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+}
+
+async function pullConfigFromCloud(authHeader: string): Promise<void> {
+  const upstream = await fetch(`${CENTRAL}/api/backup/config`, { headers: { Authorization: authHeader } });
+  if (!upstream.ok) return;
+  const cfg: { workflow_mode: string | null; platform_configs: any[] } = await upstream.json();
+
+  if (cfg.workflow_mode && !configRepo.get('workflow_mode')) {
+    configRepo.set('workflow_mode', cfg.workflow_mode);
+  }
+
+  for (const pc of cfg.platform_configs ?? []) {
+    if (!pc.platform || configRepo.getPlatformConfig(pc.platform)) continue; // no pisa una cola local ya activa
+    const lastFile = pc.last_video_name ? fileRepo.findByName(pc.last_video_name) : undefined;
+    const nextFile = pc.next_video_name ? fileRepo.findByName(pc.next_video_name) : undefined;
+    configRepo.setPlatformConfig(pc.platform, {
+      last_published_title: pc.last_published_title ?? undefined,
+      last_published_date:  pc.last_published_date  ?? undefined,
+      interval_days:        pc.interval_days         ?? undefined,
+      last_video_id:        lastFile ? String(lastFile.id) : null,
+      next_video_id:        nextFile ? String(nextFile.id) : null,
+    });
   }
 }
 

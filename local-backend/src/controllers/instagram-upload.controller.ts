@@ -182,6 +182,9 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     }
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'instagram');
+    // Flujo simple: la subida es un evento único — las demás plataformas que
+    // sigan pendientes para este video se resuelven como descartadas.
+    if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'instagram');
     const nextIg = fileRepo.findNewerAdjacent(fileDoc);
     configRepo.markPublished('instagram', fileDoc.file_name, fileId, nextIg ? String(nextIg.id) : null);
     if (crossPostFacebook) fileRepo.addPlatform(fileId, 'facebook');

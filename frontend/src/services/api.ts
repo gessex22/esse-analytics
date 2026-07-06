@@ -479,7 +479,7 @@ export const videoService = {
   updateVideosBulk: async (
     fileIds: string[],
     updates: {
-      platform?: "youtube" | "instagram" | "tiktok";
+      platforms?: ("youtube" | "instagram" | "tiktok")[];
       platformState?: "publicado" | "descartado" | "pendiente";
       tipo_contenido?: string | null;
     },
@@ -708,4 +708,23 @@ export const backupService = {
     await requestJson('/api/local/wipe', { method: 'POST' }).catch(() => {});
     await requestJson('/api/local/owner/reset', { method: 'POST' }).catch(() => {});
   },
+};
+
+// ==========================================
+// SETUP SERVICE (preferencias de la instalación)
+// ==========================================
+
+export type WorkflowMode = 'simple' | 'avanzado';
+
+export const setupService = {
+  // null = todavía no se eligió (instalación vieja o recién creada sin responder aún)
+  getWorkflowMode: (): Promise<{ workflowMode: WorkflowMode | null }> =>
+    requestJson('/api/local/setup/workflow-mode'),
+
+  setWorkflowMode: (mode: WorkflowMode): Promise<{ ok: boolean; workflowMode: WorkflowMode }> =>
+    requestJson('/api/local/setup/workflow-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    }),
 };
