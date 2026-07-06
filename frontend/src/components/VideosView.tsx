@@ -266,46 +266,68 @@ export function VideosView({
     }
 
     let cancelled = false;
-    let attempt = 0;
-    const MAX_ATTEMPTS = 5;
-    const RETRY_MS = 1500;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
-    setRestoring(true);
+    const runRetryLoop = () => {
+      let attempt = 0;
+      const MAX_ATTEMPTS = 5;
+      const RETRY_MS = 1500;
 
-    const recheck = () => {
-      if (cancelled) return;
-      attempt++;
-      Promise.all([
-        backupService.getLocalStatus(),
-        videoService.getAllVideos(1, LIMIT),
-      ]).then(([status, result]) => {
+      setRestoring(true);
+
+      const recheck = () => {
         if (cancelled) return;
-        if (status.videosDir || result.info.totalRecords > 0) {
-          // El auto-detect ya terminó: esta sí es la máquina original.
-          setVideosDir(status.videosDir);
-          setVideos(result.videos);
-          setInfo(result.info);
-          setRestoring(false);
-          return;
-        }
-        if (attempt < MAX_ATTEMPTS) {
-          setTimeout(recheck, RETRY_MS);
-        } else {
-          // Después de reintentar, asumimos que de verdad es otra máquina.
-          backupService.getCatalog()
-            .then(d => { if (!cancelled) setCatalog(d.files ?? []); })
-            .catch(() => { if (!cancelled) setCatalog([]); })
-            .finally(() => { if (!cancelled) setRestoring(false); });
-        }
-      }).catch(() => {
-        if (cancelled) return;
-        if (attempt < MAX_ATTEMPTS) setTimeout(recheck, RETRY_MS);
-        else setRestoring(false);
-      });
+        attempt++;
+        Promise.all([
+          backupService.getLocalStatus(),
+          videoService.getAllVideos(1, LIMIT),
+        ]).then(([status, result]) => {
+          if (cancelled) return;
+          if (status.videosDir || result.info.totalRecords > 0) {
+            // El auto-detect ya terminó: esta sí es la máquina original.
+            setVideosDir(status.videosDir);
+            setVideos(result.videos);
+            setInfo(result.info);
+            setRestoring(false);
+            return;
+          }
+          if (attempt < MAX_ATTEMPTS) {
+            timeoutHandle = setTimeout(recheck, RETRY_MS);
+          } else {
+            // Después de reintentar, asumimos que de verdad es otra máquina.
+            backupService.getCatalog()
+              .then(d => { if (!cancelled) setCatalog(d.files ?? []); })
+              .catch(() => { if (!cancelled) setCatalog([]); })
+              .finally(() => { if (!cancelled) setRestoring(false); });
+          }
+        }).catch(() => {
+          if (cancelled) return;
+          if (attempt < MAX_ATTEMPTS) timeoutHandle = setTimeout(recheck, RETRY_MS);
+          else setRestoring(false);
+        });
+      };
+
+      timeoutHandle = setTimeout(recheck, RETRY_MS);
     };
 
-    const t = setTimeout(recheck, RETRY_MS);
-    return () => { cancelled = true; clearTimeout(t); };
+    // Antes de meternos en el retry loop (~9s de "Restaurando…"), chequeamos UNA
+    // vez si hay algo real que restaurar (carpeta o archivos en la nube). Para
+    // una cuenta genuinamente nueva no hay nada — ni auto-detect ni pull corriendo
+    // en paralelo — así que mostramos "sin videos" al toque en vez de hacerla
+    // esperar los reintentos completos.
+    backupService.getCatalog()
+      .then(d => {
+        if (cancelled) return;
+        const hasSomethingToRestore = !!d.video_folder || (d.files?.length ?? 0) > 0;
+        if (hasSomethingToRestore) runRetryLoop();
+        else setCatalog([]);
+      })
+      .catch(() => {
+        // Sin premium (o sin conexión): no hay backup posible, nada que restaurar.
+        if (!cancelled) setCatalog([]);
+      });
+
+    return () => { cancelled = true; if (timeoutHandle) clearTimeout(timeoutHandle); };
   }, [info, videosDir]);
 
   useEffect(() => {

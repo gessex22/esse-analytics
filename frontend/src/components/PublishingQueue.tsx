@@ -6,7 +6,7 @@ import {
   Eye, Heart, MessageCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { videoService, syncService } from "../services/api";
+import { videoService, syncService, setupService, WorkflowMode } from "../services/api";
 
 type SlimVideo = { fileId: string; title: string; duration: string };
 import {
@@ -628,6 +628,14 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   const [pinning, setPinning] = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
   const [pinned,  setPinned]  = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
 
+  // Flujo simple: las 3 plataformas avanzan siempre juntas — se colapsa la UI a
+  // una sola tarjeta/fila, pero las acciones (fijar, navegar, cambiar intervalo)
+  // se aplican a las 3 por debajo para mantenerlas sincronizadas.
+  const [workflowMode, setWorkflowModeState] = useState<WorkflowMode | null>(null);
+  useEffect(() => { setupService.getWorkflowMode().then(d => setWorkflowModeState(d.workflowMode)).catch(() => {}); }, []);
+  const isSimple: boolean = workflowMode === "simple";
+  const ALL_PLATFORMS: Platform[] = ["youtube", "instagram", "tiktok"];
+
   function loadAll(showRefresh = false) {
     if (showRefresh) setRefreshing(true);
     let loadedVideos: SlimVideo[] = [];
@@ -693,58 +701,73 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
 
   function updateInterval(platform: Platform, days: number) {
     if (!Number.isFinite(days) || days < 1) return;
+    const affected = isSimple ? ALL_PLATFORMS : [platform];
     setSlots(prev => {
       const next = prev.map(s =>
-        s.platform === platform
+        affected.includes(s.platform)
           ? { ...s, intervalDays: days, nextDate: s.lastDate ? calcNextDate(s.lastDate, days) : s.nextDate }
           : s
       );
       patchCalendarCache({ slots: next });
       return next;
     });
-    syncService.updateCalendarConfig(platform, { intervalDays: days }).catch(() => {});
+    affected.forEach(p => syncService.updateCalendarConfig(p, { intervalDays: days }).catch(() => {}));
   }
 
   function navigate(platform: Platform, dir: "older" | "newer") {
-    setIndices(prev => ({
-      ...prev,
-      [platform]: dir === "older"
-        ? Math.min(videos.length - 1, prev[platform] + 1)
-        : Math.max(0, prev[platform] - 1),
-    }));
-    setPinned(prev => ({ ...prev, [platform]: false }));
+    const affected = isSimple ? ALL_PLATFORMS : [platform];
+    setIndices(prev => {
+      const next = { ...prev };
+      for (const p of affected) {
+        next[p] = dir === "older" ? Math.min(videos.length - 1, prev[p] + 1) : Math.max(0, prev[p] - 1);
+      }
+      return next;
+    });
+    setPinned(prev => {
+      const next = { ...prev };
+      affected.forEach(p => { next[p] = false; });
+      return next;
+    });
   }
 
   async function pinVideo(platform: Platform) {
+    const affected = isSimple ? ALL_PLATFORMS : [platform];
     const video = videos[indices[platform]];
     if (!video) return;
-    const slot = slots.find(s => s.platform === platform);
-    const intervalDays = slot?.intervalDays ?? 3;
     const today = todayStr();
     const nextIdx   = Math.max(0, indices[platform] - 1);
     const nextVideo = videos[nextIdx];
 
     setPinning(prev => ({ ...prev, [platform]: true }));
     try {
-      await syncService.updateCalendarConfig(platform, {
-        lastPublishedDate:  today,
-        lastPublishedTitle: video.title,
-        lastVideoId:        video.fileId,
-        intervalDays,
-        nextVideoId:        nextVideo?.title,
-      });
+      await Promise.all(affected.map(p => {
+        const slot = slots.find(s => s.platform === p);
+        const intervalDays = slot?.intervalDays ?? 3;
+        return syncService.updateCalendarConfig(p, {
+          lastPublishedDate:  today,
+          lastPublishedTitle: video.title,
+          lastVideoId:        video.fileId,
+          intervalDays,
+          nextVideoId:        nextVideo?.title,
+        });
+      }));
       setSlots(prev => {
         const next = prev.map(s =>
-          s.platform === platform
-            ? { ...s, lastTitle: video.title, lastDate: today, lastVideoId: video.fileId, nextDate: calcNextDate(today, intervalDays) }
+          affected.includes(s.platform)
+            ? { ...s, lastTitle: video.title, lastDate: today, lastVideoId: video.fileId, nextDate: calcNextDate(today, s.intervalDays) }
             : s
         );
         patchCalendarCache({ slots: next });
         return next;
       });
-      setPinned(prev => ({ ...prev, [platform]: true }));
+      setPinned(prev => {
+        const next = { ...prev };
+        affected.forEach(p => { next[p] = true; });
+        return next;
+      });
       setIndices(prev => {
-        const next = { ...prev, [platform]: nextIdx };
+        const next = { ...prev };
+        affected.forEach(p => { next[p] = nextIdx; });
         patchCalendarCache({ indices: next });
         return next;
       });
@@ -752,8 +775,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     finally { setPinning(prev => ({ ...prev, [platform]: false })); }
   }
 
-  const ORDER: Platform[] = ["youtube", "instagram", "tiktok"];
   const slotFor = (p: Platform) => slots.find(s => s.platform === p) ?? FALLBACK_SLOTS.find(s => s.platform === p)!;
+  // Simple: colapsa a una sola tarjeta/fila — la de la plataforma que ya tenga
+  // historial (o youtube por defecto si todavía no publicó ninguna). El resto de
+  // la UI (grillas y buckets de urgencia) se arma sobre este ORDER sin cambios.
+  const canonicalPlatform: Platform = ALL_PLATFORMS.find(p => slotFor(p).lastDate) ?? "youtube";
+  const ORDER: Platform[] = isSimple ? [canonicalPlatform] : ["youtube", "instagram", "tiktok"];
   const byDate = (a: { slot: PlatformSlot }, b: { slot: PlatformSlot }) =>
     (a.slot.nextDate || "9999").localeCompare(b.slot.nextDate || "9999");
 
