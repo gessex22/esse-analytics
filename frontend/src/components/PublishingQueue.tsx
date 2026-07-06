@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import {
   Play, Camera, Music2, AlertTriangle, Clock, Pencil,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
-  Eye, Heart, MessageCircle,
+  Eye, Heart, MessageCircle, Send,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { videoService, syncService, setupService, WorkflowMode } from "../services/api";
@@ -20,6 +20,11 @@ const PLATFORM_CFG = {
   instagram: { label: "Instagram", icon: Camera,  bg: "bg-purple-500", grad: "from-purple-500 to-fuchsia-600", text: "text-purple-500", light: "bg-purple-500/10" },
   youtube:   { label: "YouTube",   icon: Play,    bg: "bg-red-500",    grad: "from-red-500 to-red-700",        text: "text-red-500",    light: "bg-red-500/10"    },
 } as const;
+
+// Flujo simple: la tarjeta de "próxima publicación" va a las 3 plataformas por
+// igual, así que no tiene sentido pintarla con la marca de una sola (por defecto
+// terminaba siempre en YouTube). Un estilo neutro deja claro que no es "la de YouTube".
+const NEUTRAL_CFG = { label: "Próxima publicación", icon: Send, bg: "bg-primary", grad: "from-primary to-primary/70", text: "text-primary", light: "bg-primary/10" } as const;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -178,19 +183,27 @@ function getStatChips(stats: Record<string, any> | undefined, platform: Platform
   return [{ Icon: Eye, v: "--" }, { Icon: Heart, v: "--" }, { Icon: MessageCircle, v: "--" }];
 }
 
+// Vistas como número (para sumarlas entre plataformas en el modo simple).
+function getViewsCount(stats: Record<string, any> | undefined, platform: Platform | undefined): number {
+  const s = stats ?? {};
+  const raw = platform === "youtube" ? s.viewCount : s.views;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MOBILE — feed por urgencia (fila compacta)
 // ══════════════════════════════════════════════════════════════════════════════
 
 function UpcomingCard({
-  slot, video, index, total, overdue,
+  slot, video, index, total, overdue, neutral,
   onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading,
 }: {
-  slot: PlatformSlot; video: SlimVideo | undefined; index: number; total: number; overdue: boolean;
+  slot: PlatformSlot; video: SlimVideo | undefined; index: number; total: number; overdue: boolean; neutral?: boolean;
   onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
   onIntervalChange: (d: number) => void; pinning: boolean; pinned: boolean; loading: boolean;
 }) {
-  const cfg     = PLATFORM_CFG[slot.platform];
+  const cfg     = neutral ? NEUTRAL_CFG : PLATFORM_CFG[slot.platform];
   const Icon    = cfg.icon;
   const urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
 
@@ -434,13 +447,13 @@ function VideoSwitcher({
 }
 
 function PlatformCard({
-  slot, videos, index, onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading,
+  slot, videos, index, onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading, neutral,
 }: {
   slot: PlatformSlot; videos: SlimVideo[]; index: number;
   onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
-  onIntervalChange: (days: number) => void; pinning: boolean; pinned: boolean; loading: boolean;
+  onIntervalChange: (days: number) => void; pinning: boolean; pinned: boolean; loading: boolean; neutral?: boolean;
 }) {
-  const cfg     = PLATFORM_CFG[slot.platform];
+  const cfg     = neutral ? NEUTRAL_CFG : PLATFORM_CFG[slot.platform];
   const Icon    = cfg.icon;
   const urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
   const [editingInterval, setEditingInterval] = useState(false);
@@ -595,6 +608,127 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ── Flujo simple: tarjeta de historial fusionada (PC) ────────────────────────
+// En vez de elegir una plataforma "canónica" y ocultar las otras 2 (perdiendo
+// sus stats reales), se muestran juntas todas las que efectivamente recibieron
+// ESE video — cada una con sus propios likes/vistas/comentarios — más un total
+// de vistas sumado.
+function MergedPublishedCard({ matches, fileName, publishedAt }: {
+  matches: { platform: Platform; data: PublishedVideo }[];
+  fileName: string | null;
+  publishedAt: string | null;
+}) {
+  if (matches.length === 0) {
+    return (
+      <div className="flex flex-col gap-2.5 p-4 rounded-2xl border border-border bg-card">
+        <p className="text-sm font-semibold text-foreground">Último video publicado</p>
+        <div className="p-3 rounded-xl border border-dashed border-border text-center">
+          <p className="text-sm text-muted-foreground">Sin publicaciones todavía</p>
+        </div>
+      </div>
+    );
+  }
+
+  const totalViews = matches.reduce((sum, m) => sum + getViewsCount(m.data.stats, m.platform), 0);
+  const thumbnail  = matches.map(m => m.data.stats?.thumbnail).find(Boolean);
+
+  return (
+    <div className="flex flex-col gap-3 p-4 rounded-2xl border border-border bg-card">
+      <div className="flex gap-3">
+        {thumbnail && (
+          <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 56, aspectRatio: "9/16" }}>
+            <img src={thumbnail} alt="thumbnail" className="w-full h-full object-cover" />
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-foreground truncate" title={fileName || ""}>{fileName || "—"}</p>
+          {publishedAt && <p className="text-[11px] text-muted-foreground mt-0.5">{formatPublishedAt(publishedAt)}</p>}
+          {totalViews > 0 && (
+            <p className="flex items-center gap-1 text-xs font-semibold text-foreground mt-1">
+              <Eye className="w-3.5 h-3.5 text-muted-foreground" /> {totalViews.toLocaleString()} vistas totales
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {matches.map(({ platform, data }) => {
+          const cfg   = PLATFORM_CFG[platform];
+          const Icon  = cfg.icon;
+          const chips = getStatChips(data.stats, platform);
+          return (
+            <div key={platform} className={`flex items-center gap-2 rounded-xl px-2.5 py-2 ${cfg.light}`}>
+              <div className={`w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
+                <Icon className="w-3.5 h-3.5 text-white" />
+              </div>
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                {chips.map(({ Icon: StatIcon, v }, i) => (
+                  <span key={i} className="flex items-center gap-1 text-xs text-foreground">
+                    <StatIcon className="w-3 h-3 text-muted-foreground flex-shrink-0" /> {v}
+                  </span>
+                ))}
+              </div>
+              {data.platformUrl && platform !== "tiktok" && (
+                <a href={data.platformUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-primary hover:underline flex-shrink-0">
+                  Ver
+                </a>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Flujo simple: fila de historial fusionada (mobile) ───────────────────────
+function MergedHistoryRow({ matches, fileName, publishedAt }: {
+  matches: { platform: Platform; data: PublishedVideo }[];
+  fileName: string | null;
+  publishedAt: string | null;
+}) {
+  if (matches.length === 0) {
+    return (
+      <div className="flex items-center gap-3 px-3.5 py-3 rounded-xl bg-card border border-border">
+        <p className="text-xs text-muted-foreground">Sin publicaciones todavía</p>
+      </div>
+    );
+  }
+
+  const totalViews = matches.reduce((sum, m) => sum + getViewsCount(m.data.stats, m.platform), 0);
+
+  return (
+    <div className="flex flex-col gap-2 px-3.5 py-3 rounded-xl bg-card border border-border">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-foreground truncate" title={fileName || ""}>{fileName ?? "—"}</p>
+        {totalViews > 0 && (
+          <span className="flex items-center gap-1 text-[11px] font-semibold text-foreground flex-shrink-0">
+            <Eye className="w-3 h-3 text-muted-foreground" /> {totalViews.toLocaleString()}
+          </span>
+        )}
+      </div>
+      {publishedAt && <p className="text-[10px] text-muted-foreground">{formatLongDate(publishedAt)}</p>}
+      <div className="flex flex-wrap gap-2">
+        {matches.map(({ platform, data }) => {
+          const cfg   = PLATFORM_CFG[platform];
+          const Icon  = cfg.icon;
+          const chips = getStatChips(data.stats, platform).slice(0, 3);
+          return (
+            <div key={platform} className={`flex items-center gap-1.5 rounded-lg px-2 py-1 ${cfg.light}`}>
+              <Icon className={`w-3 h-3 ${cfg.text}`} />
+              {chips.map(({ Icon: StatIcon, v }, i) => (
+                <span key={i} className="flex items-center gap-0.5 text-[10px] text-foreground">
+                  <StatIcon className="w-2.5 h-2.5 text-muted-foreground flex-shrink-0" /> {v}
+                </span>
+              ))}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -776,10 +910,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   }
 
   const slotFor = (p: Platform) => slots.find(s => s.platform === p) ?? FALLBACK_SLOTS.find(s => s.platform === p)!;
-  // Simple: colapsa a una sola tarjeta/fila — la de la plataforma que ya tenga
-  // historial (o youtube por defecto si todavía no publicó ninguna). El resto de
-  // la UI (grillas y buckets de urgencia) se arma sobre este ORDER sin cambios.
-  const canonicalPlatform: Platform = ALL_PLATFORMS.find(p => slotFor(p).lastDate) ?? "youtube";
+  // Simple: colapsa a una sola tarjeta — la plataforma con el lastDate más
+  // reciente entre las 3 (la que de verdad avanzó última). El resto de la UI
+  // (grillas y buckets de urgencia) se arma sobre este ORDER sin cambios.
+  const canonicalPlatform: Platform = [...ALL_PLATFORMS]
+    .filter(p => slotFor(p).lastDate)
+    .sort((a, b) => (slotFor(b).lastDate || "").localeCompare(slotFor(a).lastDate || ""))[0] ?? "youtube";
   const ORDER: Platform[] = isSimple ? [canonicalPlatform] : ["youtube", "instagram", "tiktok"];
   const byDate = (a: { slot: PlatformSlot }, b: { slot: PlatformSlot }) =>
     (a.slot.nextDate || "9999").localeCompare(b.slot.nextDate || "9999");
@@ -798,11 +934,23 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     .map(p => published.find(d => d.platform === p) ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo)
     .sort((a, b) => (b.publishedAt || "").localeCompare(a.publishedAt || ""));
 
+  // Simple: en vez de mostrar solo la plataforma canónica, se muestran juntas
+  // TODAS las que realmente publicaron ese mismo video (matcheando por nombre
+  // de archivo/título contra el slot canónico), cada una con sus stats reales.
+  const canonicalSlot   = slotFor(canonicalPlatform);
+  const canonicalTitle  = canonicalSlot.lastTitle;
+  const matchedPublished = canonicalTitle
+    ? ALL_PLATFORMS
+        .map(p => ({ platform: p, data: published.find(d => d.platform === p) }))
+        .filter((x): x is { platform: Platform; data: PublishedVideo } =>
+          !!x.data && !!x.data.platformId && (x.data.fileName === canonicalTitle || x.data.title === canonicalTitle))
+    : [];
+
   const renderMobileCard = ({ p, slot }: { p: Platform; slot: PlatformSlot }, isOverdue: boolean) => {
     const currentVideo = videos[indices[p]];
     return (
       <UpcomingCard
-        key={p} slot={slot} video={currentVideo} index={indices[p]} total={videos.length} overdue={isOverdue}
+        key={p} slot={slot} video={currentVideo} index={indices[p]} total={videos.length} overdue={isOverdue} neutral={isSimple}
         onOlder={() => navigate(p, "older")} onNewer={() => navigate(p, "newer")} onPin={() => pinVideo(p)}
         onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
         onIntervalChange={d => updateInterval(p, d)} pinning={pinning[p]} pinned={pinned[p]} loading={loading}
@@ -860,6 +1008,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
                       pinning={pinning[p]}
                       pinned={pinned[p]}
                       loading={loading}
+                      neutral={isSimple}
                     />
                   );
                 })}
@@ -868,13 +1017,19 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
 
             <section className="flex flex-col gap-3 border-t border-border pt-5">
               <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Último video publicado</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {ORDER.map(p => {
-                  const data = published.find(d => d.platform === p)
-                    ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo;
-                  return <PublishedCard key={p} data={data} />;
-                })}
-              </div>
+              {isSimple ? (
+                <div className="max-w-md">
+                  <MergedPublishedCard matches={matchedPublished} fileName={canonicalTitle} publishedAt={canonicalSlot.lastDate} />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {ORDER.map(p => {
+                    const data = published.find(d => d.platform === p)
+                      ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo;
+                    return <PublishedCard key={p} data={data} />;
+                  })}
+                </div>
+              )}
             </section>
           </div>
 
@@ -906,7 +1061,9 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
             )}
             <section className="flex flex-col gap-2 mt-1">
               <Divider label="Últimos publicados" />
-              {history.map(d => <HistoryRow key={d.platform} data={d} />)}
+              {isSimple
+                ? <MergedHistoryRow matches={matchedPublished} fileName={canonicalTitle} publishedAt={canonicalSlot.lastDate} />
+                : history.map(d => <HistoryRow key={d.platform} data={d} />)}
             </section>
           </div>
         </>
