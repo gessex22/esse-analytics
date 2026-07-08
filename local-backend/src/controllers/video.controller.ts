@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { fileRepo, FileContentStatus } from '../db/file.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
+import { ensureThumbnail, deleteThumbnail } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
 
@@ -69,6 +70,20 @@ export const getVideoSlimList = (req: Request, res: Response) => {
     platforms: f.platforms,
     platforms_discarded: f.platforms_discarded,
   })));
+};
+
+// ── GET /api/videos/:fileId/thumbnail — miniatura generada con ffmpeg (local) ──
+export const getVideoThumbnail = async (req: Request, res: Response): Promise<void> => {
+  const { fileId } = req.params;
+  const file = fileRepo.findById(fileId);
+  if (!file || file.status === 'ELIMINADO_DISCO') { res.status(404).end(); return; }
+  if (!fs.existsSync(file.file_path)) { res.status(404).end(); return; }
+
+  const thumb = await ensureThumbnail(file.id, file.file_path, file.duracion_segundos ?? undefined);
+  if (!thumb) { res.status(404).end(); return; }
+
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  res.sendFile(path.resolve(thumb));
 };
 
 // ── GET /api/videos/slim/pending-transcript — usado por esse_transcrip.py ──────
@@ -196,6 +211,7 @@ export const deleteFileFromDisk = (req: Request, res: Response) => {
 
   fileRepo.update(req.params.fileId, { status: 'ELIMINADO_DISCO' });
   publishingStatusRepo.deleteByFileId(Number(req.params.fileId));
+  deleteThumbnail(doc.id);
 
   res.json({ message: 'Archivo eliminado del disco' });
 };

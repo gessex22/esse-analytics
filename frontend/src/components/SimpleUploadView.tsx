@@ -9,7 +9,7 @@ import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import {
   Platform, SlimVideo, PLATFORMS, YT_CATEGORIES,
-  TagInput, VideoPickerModal, AccountCardSkeleton,
+  TagInput, VideoPickerModal, AccountCardSkeleton, resolveNextForPlatform,
 } from "./YoutubeUploadView";
 import { API_BASE as API } from "../config";
 
@@ -77,16 +77,15 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
     setLoadingNext(true);
     return Promise.all([syncService.getCalendarConfig(), videoService.getSlimList().catch(() => [] as SlimVideo[])])
       .then(([configs, slim]) => {
-        const byTitle = new Map(slim.map(v => [v.title, v]));
         // En modo simple las 3 colas deberían coincidir (avanzan siempre juntas) —
-        // se toma la primera que exista como el video canónico a publicar.
-        let next: SlimVideo | null = null;
-        for (const c of configs) {
-          if (!c.nextVideo) continue;
-          const local = byTitle.get(c.nextVideo.title);
-          next = local ? { ...c.nextVideo, fileId: local.fileId, duration: c.nextVideo.duration || local.duration } : c.nextVideo;
-          break;
-        }
+        // se toma la plataforma que de verdad avanzó última como la canónica,
+        // mismo criterio que usa el Calendario para colapsar a una sola tarjeta.
+        const canonical = [...configs]
+          .filter(c => c.lastPublishedDate)
+          .sort((a, b) => (b.lastPublishedDate || "").localeCompare(a.lastPublishedDate || ""))[0]?.platform as Platform | undefined;
+        const platform = canonical ?? "youtube";
+        const cfg = configs.find(c => c.platform === platform);
+        const next = resolveNextForPlatform(slim, cfg?.nextVideoId, platform);
         setVideo(next);
         setTitle(next ? next.title.replace(/\.[^.]+$/, "") : "");
         setDescription("");

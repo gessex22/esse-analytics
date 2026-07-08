@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   getVideos, getVideoSlimList, getVideoSlimPendingTranscript, getVideoPlayerData,
   updateVideoContentStatus, updateVideoPlatforms, updateVideosBulk,
-  renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate,
+  renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate, getVideoThumbnail,
 } from '../controllers/video.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -15,6 +15,8 @@ router.get('/api/videos/slim',                         getVideoSlimList);
 router.get('/api/videos/slim/pending-transcript',      getVideoSlimPendingTranscript);
 router.get('/api/metrics',                             verifyToken, getMetrics);
 router.get('/api/videos/:fileId/player-data',          verifyToken, getVideoPlayerData);
+// Sin verifyToken: <img src> no puede mandar headers custom, igual que /stream/:id.
+router.get('/api/videos/:fileId/thumbnail',            getVideoThumbnail);
 router.patch('/api/videos/:fileId/rename',             verifyToken, renameVideo);
 router.patch('/api/videos/:fileId/status',             verifyToken, updateVideoContentStatus);
 router.patch('/api/videos/:fileId/platforms',          verifyToken, updateVideoPlatforms);

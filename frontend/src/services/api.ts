@@ -430,6 +430,10 @@ export const videoService = {
     return requestJson<DashboardMetrics>("/api/metrics");
   },
 
+  // Miniatura generada con ffmpeg (local-backend, 100% local por ahora). Es una
+  // URL directa para <img src> — no pasa por requestJson porque no es JSON.
+  thumbnailUrl: (fileId: string): string => `${API_BASE_URL}/api/videos/${fileId}/thumbnail`,
+
   getAllVideos: async (
     page = 1,
     limit = 10,

@@ -69,7 +69,24 @@ export function FacebookIcon({ className }: { className?: string }) {
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 export type Platform  = "youtube" | "instagram" | "tiktok";
-export type SlimVideo = { fileId: string; title: string; duration: string };
+export type SlimVideo = { fileId: string; title: string; duration: string; platforms?: string[]; platforms_discarded?: string[] };
+
+// Mismo criterio que el Calendario: de la lista local (ya filtrada a lo que
+// falta resolver en las 3 plataformas), toma el nextVideoId guardado si sigue
+// siendo válido para ESA plataforma puntual; si no hay uno confiable, cae al
+// pendiente más viejo (la lista viene de más nuevo a más viejo). Reemplaza la
+// resolución vieja que dependía del mirror de archivos en la central — si ese
+// mirror no tenía el video (cuenta free, o video nuevo sin sincronizar), "Subir"
+// se quedaba sin preselección aunque el Calendario sí supiera cuál era el próximo.
+export function resolveNextForPlatform(slim: SlimVideo[], nextVideoId: string | undefined, platform: Platform): SlimVideo | null {
+  const list = slim.filter(v => !(v.platforms ?? []).includes(platform) && !(v.platforms_discarded ?? []).includes(platform));
+  if (list.length === 0) return null;
+  if (nextVideoId) {
+    const found = list.find(v => v.fileId === nextVideoId) ?? list.find(v => v.title === nextVideoId);
+    if (found) return found;
+  }
+  return list[list.length - 1];
+}
 type Privacy   = "public" | "unlisted" | "private";
 type Step      = "details" | "visibility" | "uploading" | "done";
 type Audience  = "not_kids" | "kids" | "age_restricted";
@@ -1367,17 +1384,10 @@ export function YoutubeUploadView() {
       videoService.getSlimList().catch(() => [] as SlimVideo[]),
     ])
       .then(([configs, slim]) => {
-        // El calendar-config viene de Mongo: nextVideo.fileId es un ObjectId que NO
-        // existe en SQLite. Remapeamos al fileId real de la biblioteca local cruzando
-        // por título (file_name), así la miniatura/preview puede hacer stream.
-        const byTitle = new Map(slim.map(v => [v.title, v]));
         const map: Record<Platform, SlimVideo | null> = { youtube: null, instagram: null, tiktok: null };
-        for (const c of configs) {
-          if (!c.nextVideo) continue;
-          const local = byTitle.get(c.nextVideo.title);
-          map[c.platform as Platform] = local
-            ? { ...c.nextVideo, fileId: local.fileId, duration: c.nextVideo.duration || local.duration }
-            : c.nextVideo;
+        for (const p of ["youtube", "instagram", "tiktok"] as Platform[]) {
+          const cfg = configs.find(c => c.platform === p);
+          map[p] = resolveNextForPlatform(slim, cfg?.nextVideoId, p);
         }
         setNextVideos(map);
         return map;

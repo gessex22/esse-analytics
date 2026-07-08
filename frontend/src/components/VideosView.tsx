@@ -124,6 +124,21 @@ function SimpleStatusBadge({ state, onClick }: { state: PlatformState; onClick?:
   );
 }
 
+// ── Miniatura (ffmpeg local) con fallback al ícono si no se pudo generar ──────
+function VideoThumb({ fileId }: { fileId?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (!fileId || failed) return <Film className="w-5 h-5 text-muted-foreground/40" />;
+  return (
+    <img
+      src={videoService.thumbnailUrl(fileId)}
+      alt=""
+      loading="lazy"
+      className="w-full h-full object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 // ── Skeleton de lista (imita el layout real para evitar el salto de carga) ────
 function VideoListSkeleton({ rows = 10 }: { rows?: number }) {
   return (
@@ -812,7 +827,7 @@ export function VideosView({
                   disabled={!video.fileId}
                   className="relative w-20 h-12 sm:w-24 sm:h-14 rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed"
                 >
-                  <Film className="w-5 h-5 text-muted-foreground/40" />
+                  <VideoThumb fileId={video.fileId} />
                   {video.duration && video.duration !== "0:00" && (
                     <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded leading-tight font-mono">
                       {video.duration}
