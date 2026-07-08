@@ -32,7 +32,10 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
   contentSecurityPolicy: false,
 }));
-app.use(cors());
+// exposedHeaders: X-Duration-Seconds va en la respuesta de /thumbnail para que
+// el frontend actualice la duración sin esperar a recargar la lista — sin esto,
+// fetch() no puede leer headers custom en respuestas cross-origin (dev server).
+app.use(cors({ exposedHeaders: ['X-Duration-Seconds'] }));
 app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/health', (_req, res) => {

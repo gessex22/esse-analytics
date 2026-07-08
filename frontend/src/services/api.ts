@@ -221,7 +221,7 @@ function formatDate(date?: any) {
   }).format(new Date(rawDate));
 }
 
-function formatDurationFromSeconds(seconds = 0) {
+export function formatDurationFromSeconds(seconds = 0) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${String(secs).padStart(2, "0")}`;

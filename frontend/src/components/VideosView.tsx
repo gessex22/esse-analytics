@@ -16,7 +16,7 @@ import {
   MonitorOff,
   CalendarClock,
 } from "lucide-react";
-import { videoService, backupService, setupService, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
+import { videoService, backupService, setupService, formatDurationFromSeconds, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
@@ -125,18 +125,41 @@ function SimpleStatusBadge({ state, onClick }: { state: PlatformState; onClick?:
 }
 
 // ── Miniatura (ffmpeg local) con fallback al ícono si no se pudo generar ──────
-function VideoThumb({ fileId }: { fileId?: string }) {
+// Usa fetch (no <img src>) para poder leer X-Duration-Seconds del response y
+// avisarle a la fila su duración real apenas se resuelve — si no, la lista
+// solo se autocorrige recargando la página entera (el fetch de la lista ya
+// había terminado antes de que esta miniatura backfilleara la duración).
+function VideoThumb({ fileId, onDuration }: { fileId?: string; onDuration?: (sec: number) => void }) {
+  const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  if (!fileId || failed) return <Film className="w-5 h-5 text-muted-foreground/40" />;
-  return (
-    <img
-      src={videoService.thumbnailUrl(fileId)}
-      alt=""
-      loading="lazy"
-      className="w-full h-full object-cover"
-      onError={() => setFailed(true)}
-    />
-  );
+
+  useEffect(() => {
+    if (!fileId) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    fetch(videoService.thumbnailUrl(fileId))
+      .then((r) => {
+        if (!r.ok) throw new Error("sin miniatura");
+        const dur = Number(r.headers.get("X-Duration-Seconds"));
+        if (Number.isFinite(dur) && dur > 0) onDuration?.(dur);
+        return r.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch(() => { if (!cancelled) setFailed(true); });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [fileId]);
+
+  if (!fileId || failed || !src) return <Film className="w-5 h-5 text-muted-foreground/40" />;
+  return <img src={src} alt="" className="w-full h-full object-cover" onError={() => setFailed(true)} />;
 }
 
 // ── Skeleton de lista (imita el layout real para evitar el salto de carga) ────
@@ -415,6 +438,15 @@ export function VideosView({
     } finally {
       setBulkSaving(false);
     }
+  };
+
+  // La miniatura resuelve (y persiste) la duración real la primera vez que se
+  // pide — esto corrige la fila en el momento en vez de esperar a recargar
+  // toda la lista de Videos.
+  const applyProbedDuration = (fileId: string, sec: number) => {
+    setVideos((prev) => prev.map((v) =>
+      v.fileId === fileId && v.duration === "—" ? { ...v, duration: formatDurationFromSeconds(sec) } : v
+    ));
   };
 
   // ── Filtro de plataforma client-side ──────────────────────────────────────
@@ -828,8 +860,8 @@ export function VideosView({
                   disabled={!video.fileId}
                   className={`relative ${video.ratio === "9:16" ? "w-7 h-12 sm:w-8 sm:h-14" : "w-20 h-12 sm:w-24 sm:h-14"} rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed`}
                 >
-                  <VideoThumb fileId={video.fileId} />
-                  {video.duration && video.duration !== "0:00" && (
+                  <VideoThumb fileId={video.fileId} onDuration={(sec) => video.fileId && applyProbedDuration(video.fileId, sec)} />
+                  {video.duration && video.duration !== "0:00" && video.duration !== "—" && (
                     <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded leading-tight font-mono">
                       {video.duration}
                     </span>

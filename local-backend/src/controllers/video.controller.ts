@@ -83,6 +83,11 @@ export const getVideoThumbnail = async (req: Request, res: Response): Promise<vo
   if (probedDurationSec) fileRepo.update(file.id, { duracion_segundos: probedDurationSec });
   if (!thumb) { res.status(404).end(); return; }
 
+  // Le avisa al frontend la duración ya resuelta (propia o recién probada) para
+  // que la fila se autocorrija sin esperar a recargar toda la lista de Videos.
+  const durationSec = file.duracion_segundos || probedDurationSec || 0;
+  if (durationSec) res.setHeader('X-Duration-Seconds', String(durationSec));
+
   res.setHeader('Cache-Control', 'private, max-age=86400');
   res.sendFile(path.resolve(thumb));
 };
