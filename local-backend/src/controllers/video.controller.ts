@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { fileRepo, FileContentStatus } from '../db/file.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
-import { ensureThumbnail, deleteThumbnail } from '../services/thumbnail.service';
+import { ensureThumbnail, deleteThumbnail, probeDuration } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
 
@@ -79,7 +79,8 @@ export const getVideoThumbnail = async (req: Request, res: Response): Promise<vo
   if (!file || file.status === 'ELIMINADO_DISCO') { res.status(404).end(); return; }
   if (!fs.existsSync(file.file_path)) { res.status(404).end(); return; }
 
-  const thumb = await ensureThumbnail(file.id, file.file_path, file.duracion_segundos ?? undefined);
+  const { path: thumb, probedDurationSec } = await ensureThumbnail(file.id, file.file_path, file.duracion_segundos ?? undefined);
+  if (probedDurationSec) fileRepo.update(file.id, { duracion_segundos: probedDurationSec });
   if (!thumb) { res.status(404).end(); return; }
 
   res.setHeader('Cache-Control', 'private, max-age=86400');
@@ -217,15 +218,25 @@ export const deleteFileFromDisk = (req: Request, res: Response) => {
 };
 
 // ── GET /api/videos/:fileId/player-data ──────────────────────────────────────
-export const getVideoPlayerData = (req: Request, res: Response): void => {
+export const getVideoPlayerData = async (req: Request, res: Response): Promise<void> => {
   const doc = fileRepo.findById(req.params.fileId);
   if (!doc) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+  // Sin duracion_segundos todavía (el plugin de transcripción no la calculó):
+  // la probamos con ffprobe acá mismo, en vez de dejar que el frontend estime
+  // un valor falso ("0:15" fijo) a partir del texto de la transcripción.
+  let durationSec = doc.duracion_segundos ?? 0;
+  if (!durationSec && fs.existsSync(doc.file_path)) {
+    durationSec = await probeDuration(doc.file_path);
+    if (durationSec) fileRepo.update(doc.id, { duracion_segundos: durationSec });
+  }
+
   const tr = transcriptRepo.findByFileId(doc.id);
   res.json({
     file: {
       _id: String(doc.id),
       file_name: doc.file_name,
-      duration_seconds: doc.duracion_segundos ?? 0,
+      duration_seconds: durationSec,
       formato: doc.formato ?? 'HORIZONTAL',
       resolucion: doc.resolucion ?? '',
     },

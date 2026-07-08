@@ -221,13 +221,6 @@ function formatDate(date?: any) {
   }).format(new Date(rawDate));
 }
 
-function formatDuration(text = "", wordsPerMinute = 150) {
-  const words = text.trim().split(/\s+/).filter(Boolean).length;
-  const seconds = Math.max(15, Math.round((words / Math.max(wordsPerMinute, 1)) * 60));
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 function formatDurationFromSeconds(seconds = 0) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
@@ -267,11 +260,13 @@ function toDashboardVideo(item: ApiVideoItem): DashboardVideo {
   const content_status: VideoContentStatus =
     ((file as any)?.content_status as VideoContentStatus) || "borrador";
 
-  // Duración: usar duracion_segundos real si existe, si no estimar del texto
+  // Duración real (ffprobe/plugin de transcripción). Antes, sin esto se estimaba
+  // a partir del largo del texto transcripto — con transcript_text vacío daba
+  // siempre "0:15" fijo, un valor falso. Se backfillea sola al abrir el video o
+  // generar su miniatura (ver getVideoPlayerData/getVideoThumbnail); hasta que
+  // eso pase, mejor mostrar "—" que un número inventado.
   const durSeg = item.duracion_segundos ?? file?.duracion_segundos;
-  const duration = durSeg != null
-    ? formatDurationFromSeconds(durSeg)
-    : formatDuration(item.transcript_text, item.palabras_por_minuto);
+  const duration = durSeg != null ? formatDurationFromSeconds(durSeg) : "—";
 
   const formato = item.formato ?? file?.formato ?? "";
   const resolucion = item.resolucion ?? file?.resolucion;

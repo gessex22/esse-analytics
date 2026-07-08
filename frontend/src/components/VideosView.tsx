@@ -821,11 +821,12 @@ export function VideosView({
                   {String(globalIdx).padStart(2, "0")}
                 </span>
 
-                {/* Miniatura */}
+                {/* Miniatura — la caja respeta el aspecto real del video (la mayoría acá
+                    son reels 9:16, no tiene sentido embutirlos en una caja horizontal) */}
                 <button
                   onClick={() => video.fileId && setPlayerVideo({ fileId: video.fileId, title: video.title })}
                   disabled={!video.fileId}
-                  className="relative w-20 h-12 sm:w-24 sm:h-14 rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed"
+                  className={`relative ${video.ratio === "9:16" ? "w-7 h-12 sm:w-8 sm:h-14" : "w-20 h-12 sm:w-24 sm:h-14"} rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed`}
                 >
                   <VideoThumb fileId={video.fileId} />
                   {video.duration && video.duration !== "0:00" && (

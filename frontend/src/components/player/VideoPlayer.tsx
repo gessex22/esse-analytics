@@ -44,7 +44,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
   const [showControls, setShowControls] = useState(true);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const totalDuration = videoRef.current?.duration || duration || 1;
+  const rawDuration   = videoRef.current?.duration;
+  const totalDuration = (Number.isFinite(rawDuration) && (rawDuration ?? 0) > 0) ? rawDuration! : (duration || 0);
 
   // Auto-hide controls
   const resetHideTimer = useCallback(() => {
@@ -215,7 +216,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
 
           {/* Time */}
           <span className="text-white/80 text-xs font-mono">
-            {formatTime(currentTime)} / {formatTime(totalDuration)}
+            {formatTime(currentTime)} / {totalDuration > 0 ? formatTime(totalDuration) : "--:--"}
           </span>
 
           <div className="flex-1" />

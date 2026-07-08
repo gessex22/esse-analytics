@@ -1,4 +1,5 @@
 import { db } from './database';
+import { deleteAllThumbnails } from '../services/thumbnail.service';
 
 export const configRepo = {
   // ── app_config ────────────────────────────────────────────────────────────
@@ -128,6 +129,11 @@ export const configRepo = {
     }
 
     if (preservedWorkflowMode) this.set('workflow_mode', preservedWorkflowMode);
+
+    // Las miniaturas son datos derivados de los archivos de ESTA cuenta — no
+    // deben sobrevivir al wipe (logout/cambio de cuenta/reset), si no quedan
+    // huérfanas en disco para una cuenta que ya no está vinculada.
+    deleteAllThumbnails();
 
     return results;
   },

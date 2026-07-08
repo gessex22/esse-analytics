@@ -22,10 +22,18 @@ function thumbPath(fileId: string | number): string {
   return path.join(THUMBS_DIR, `${fileId}.jpg`);
 }
 
-function probeDuration(filePath: string): Promise<number> {
+export function probeDuration(filePath: string): Promise<number> {
   return new Promise((resolve) => {
     ffmpeg.ffprobe(filePath, (err, data) => resolve(err ? 0 : Number(data.format?.duration ?? 0)));
   });
+}
+
+export interface ThumbnailResult {
+  path: string | null;
+  // Solo viene seteado cuando tuvimos que probar el archivo porque no había
+  // duracion_segundos guardada — el caller la persiste en la DB. Si ya se
+  // pasó knownDurationSec, no se vuelve a probar (ya está resuelta).
+  probedDurationSec: number | null;
 }
 
 /**
@@ -33,18 +41,25 @@ function probeDuration(filePath: string): Promise<number> {
  * siguientes veces se sirve directo del archivo ya generado. Toma el frame al
  * 10% de la duración (tope 3s) en vez del frame 0, que en clips cortos suele
  * salir en negro o mostrando solo el logo/intro.
+ *
+ * De paso resuelve la duración real con ffprobe cuando no se conoce todavía
+ * (video recién agregado, antes de que el plugin de transcripción la calcule) —
+ * evita el estimado por conteo de palabras que mostraba "0:15" por defecto.
  */
 export async function ensureThumbnail(
   fileId: string | number,
   videoPath: string,
   knownDurationSec?: number,
-): Promise<string | null> {
+): Promise<ThumbnailResult> {
   const out = thumbPath(fileId);
-  if (fs.existsSync(out)) return out;
+  const needsDuration = !knownDurationSec;
+  const probedDurationSec = needsDuration ? await probeDuration(videoPath) : null;
+  const duration = knownDurationSec ?? probedDurationSec ?? 0;
+
+  if (fs.existsSync(out)) return { path: out, probedDurationSec };
 
   try {
     fs.mkdirSync(THUMBS_DIR, { recursive: true });
-    const duration = knownDurationSec ?? await probeDuration(videoPath);
     const offset = duration > 0 ? Math.min(3, duration * 0.1) : 1;
 
     await new Promise<void>((resolve, reject) => {
@@ -59,13 +74,21 @@ export async function ensureThumbnail(
         });
     });
 
-    return fs.existsSync(out) ? out : null;
+    return { path: fs.existsSync(out) ? out : null, probedDurationSec };
   } catch {
-    return null;
+    return { path: null, probedDurationSec };
   }
 }
 
 // Se llama al borrar el archivo original — evita miniaturas huérfanas acumulándose.
 export function deleteThumbnail(fileId: string | number): void {
   try { fs.unlinkSync(thumbPath(fileId)); } catch { /* no existía, no-op */ }
+}
+
+// Se llama en el wipe (logout/cambio de cuenta/reset) — las miniaturas son
+// datos derivados de LOS ARCHIVOS de la cuenta que se está desvinculando, no
+// tiene sentido que sobrevivan al wipe de la base ni queden huérfanas ocupando
+// espacio en disco para una cuenta que ya no está.
+export function deleteAllThumbnails(): void {
+  try { fs.rmSync(THUMBS_DIR, { recursive: true, force: true }); } catch { /* no existía, no-op */ }
 }
