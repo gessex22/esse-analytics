@@ -474,16 +474,33 @@ export const getVideoSlimList = async (req: Request, res: Response) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 1200, 2000);
 
-    const files = await FileModel.find({ status: { $ne: 'ELIMINADO_DISCO' }, userId: ownerId(req) })
+    const files = await FileModel.find({
+      status: { $ne: 'ELIMINADO_DISCO' },
+      userId: ownerId(req),
+      // Mismo default que la vista de Videos: oculta lo ya resuelto en las 3
+      // plataformas (publicado o descartado) — el Calendario usa esta lista
+      // para armar la cola de "próximo a publicar" por plataforma.
+      $expr: {
+        $lt: [
+          { $add: [
+            { $size: { $ifNull: ['$platforms', []] } },
+            { $size: { $ifNull: ['$platforms_discarded', []] } },
+          ] },
+          3,
+        ],
+      },
+    })
       .sort({ fecha_creacion: -1 })
       .limit(limit)
-      .select('_id file_name duracion_segundos fecha_creacion')
+      .select('_id file_name duracion_segundos fecha_creacion platforms platforms_discarded')
       .lean();
 
     res.json(files.map(f => ({
       fileId:    String(f._id),
       title:     f.file_name,
       duration:  f.duracion_segundos ? formatDuration(f.duracion_segundos as number) : '',
+      platforms: f.platforms ?? [],
+      platforms_discarded: f.platforms_discarded ?? [],
     })));
   } catch (error: any) {
     res.status(500).json({ message: error.message });

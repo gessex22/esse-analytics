@@ -773,7 +773,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   // (ni publicados ni descartados ahí) — mismo criterio que la vista de Videos,
   // pero filtrado además por plataforma en vez de agregado.
   const videosForPlatform = (p: Platform): SlimVideo[] =>
-    videos.filter(v => !v.platforms.includes(p) && !v.platforms_discarded.includes(p));
+    videos.filter(v => !(v.platforms ?? []).includes(p) && !(v.platforms_discarded ?? []).includes(p));
 
   function loadAll(showRefresh = false) {
     if (showRefresh) setRefreshing(true);
@@ -791,7 +791,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       setRefreshing(false);
       const idx: Record<Platform, number> = { tiktok: 0, instagram: 0, youtube: 0 };
       for (const p of ["tiktok", "instagram", "youtube"] as Platform[]) {
-        const list = loadedVideos.filter(v => !v.platforms.includes(p) && !v.platforms_discarded.includes(p));
+        const list = loadedVideos.filter(v => !(v.platforms ?? []).includes(p) && !(v.platforms_discarded ?? []).includes(p));
         // Sin nextVideoId confiable (nunca se fijó, o el video ya no existe):
         // el default es el pendiente más VIEJO de esta plataforma — la lista
         // viene de más nuevo a más viejo, así que es el último índice — no el
@@ -890,13 +890,13 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       v.fileId === video.fileId
         ? {
             ...v,
-            platforms: Array.from(new Set([...v.platforms, ...affected])),
-            platforms_discarded: v.platforms_discarded.filter(p => !affected.includes(p)),
+            platforms: Array.from(new Set([...(v.platforms ?? []), ...affected])),
+            platforms_discarded: (v.platforms_discarded ?? []).filter(p => !affected.includes(p)),
           }
         : v
     );
     const nextVideo = projectedVideos
-      .filter(v => !v.platforms.includes(platform) && !v.platforms_discarded.includes(platform))[nextIdx];
+      .filter(v => !(v.platforms ?? []).includes(platform) && !(v.platforms_discarded ?? []).includes(platform))[nextIdx];
 
     setPinning(prev => ({ ...prev, [platform]: true }));
     try {
