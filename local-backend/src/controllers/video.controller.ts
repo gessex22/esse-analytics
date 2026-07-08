@@ -106,7 +106,12 @@ export const getVideoThumbnail = async (req: Request, res: Response): Promise<vo
   const resolucion = updates.resolucion ?? file.resolucion;
   if (resolucion) res.setHeader('X-Resolution', resolucion);
 
-  res.setHeader('Cache-Control', 'private, max-age=86400');
+  // Si todavía falta duración o resolución, NO cacheamos: el navegador (fetch)
+  // respeta Cache-Control tal cual, así que una respuesta cacheada por 24h con
+  // la falla incluida (ffprobe no corrió a tiempo, o falló) se queda pegada
+  // para siempre — la próxima carga de la fila nunca vuelve a intentar. Recién
+  // cacheamos agresivo cuando ya sabemos que no va a cambiar.
+  res.setHeader('Cache-Control', (durationSec && resolucion) ? 'private, max-age=86400' : 'no-store');
   res.sendFile(path.resolve(thumb));
 };
 
