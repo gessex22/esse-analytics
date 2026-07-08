@@ -6,12 +6,16 @@ import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
+import { normalizeForMeta, trimToMaxDuration, appendDebugLog } from '../services/video-normalize.service';
+import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 
 // Facebook Login for Business: central entrega un Page Access Token (de una
 // Página con una Cuenta de Instagram Business vinculada), válido contra
 // graph.facebook.com y compatible con upload_type: resumable para Reels.
 const FB_GRAPH = 'https://graph.facebook.com/v22.0';
 const CENTRAL  = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+
+export type UploadStage = 'original' | 'recorte-60s' | 'recorte-60s+normalizado';
 
 async function fetchToken(authHeader: string): Promise<{ access_token: string; instagram_user_id: string }> {
   const res = await fetch(`${CENTRAL}/api/instagram/token`, {
@@ -46,7 +50,7 @@ async function igPost(path: string, body: Record<string, any>): Promise<any> {
 // OJO: hay que mandar el archivo COMPLETO como buffer (req.end(buffer)). Si se manda
 // como stream (pipe), Meta lo rechaza con ProcessingFailedError "Request processing
 // failed" — confirmado probando ambas formas contra rupload.facebook.com.
-function streamFileToMeta(uri: string, token: string, filePath: string, _fileSize: number): Promise<void> {
+function streamFileToMeta(uri: string, token: string, filePath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const url = new URL(uri);
     const mod = url.protocol === 'https:' ? https : http;
@@ -78,78 +82,132 @@ function streamFileToMeta(uri: string, token: string, filePath: string, _fileSiz
   });
 }
 
+// Crea el contenedor, sube los bytes y espera a que Meta termine de procesar. Tira si
+// cualquier paso falla (incluye el rechazo típico "ProcessingFailedError" al subir bytes).
+async function createAndWaitContainer(
+  filePath: string,
+  ctx: { instagram_user_id: string; access_token: string; fullCaption: string; thumbOffset?: number; crossPostFacebook: boolean },
+): Promise<string> {
+  const { instagram_user_id, access_token, fullCaption, thumbOffset, crossPostFacebook } = ctx;
+
+  const containerPayload: Record<string, any> = {
+    media_type:    'REELS',
+    upload_type:   'resumable',
+    caption:       fullCaption,
+    share_to_feed: true,
+    access_token,
+  };
+  if (thumbOffset != null) containerPayload.thumb_offset = Math.round(Number(thumbOffset) * 1000);
+  if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
+
+  const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
+  appendDebugLog(`[trace] contenedor creado: id=${containerData.id ?? 'NINGUNO'} uri=${containerData.uri ?? 'NINGUNA'} error=${JSON.stringify(containerData.error ?? null)}`);
+  if (!containerData.id) {
+    // Devolvemos el objeto de error completo (code/subcode/fbtrace_id) al frontend
+    // para diagnosticar sin depender de logs de consola (la app empaquetada no
+    // muestra stdout al usuario).
+    const metaError = containerData.error ?? containerData;
+    throw new Error(
+      (metaError.error_user_msg || metaError.message || 'Error al crear contenedor de media') +
+      ` [raw: ${JSON.stringify(metaError)}]`
+    );
+  }
+
+  const containerId = containerData.id as string;
+  const uploadUri   = containerData.uri as string;
+  if (!uploadUri) throw new Error('No se obtuvo upload URI de Meta');
+
+  appendDebugLog(`[trace] subiendo bytes a Meta: ${filePath}`);
+  await streamFileToMeta(uploadUri, access_token, filePath);
+  appendDebugLog(`[trace] subida de bytes a Meta OK, esperando procesamiento`);
+
+  let statusCode = 'IN_PROGRESS';
+  for (let i = 0; i < 72 && statusCode === 'IN_PROGRESS'; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    const statusData = await igGet(`/${containerId}?fields=status_code,status`, access_token);
+    statusCode = (statusData.status_code as string | undefined) ?? 'IN_PROGRESS';
+    if (statusCode === 'ERROR') {
+      throw new Error((statusData.status as string | undefined) ?? 'Error procesando el video en Instagram');
+    }
+  }
+  if (statusCode !== 'FINISHED') {
+    throw new Error('Tiempo de espera agotado. El video sigue procesándose en Instagram.');
+  }
+
+  return containerId;
+}
+
 // POST /api/instagram/upload
 export const uploadToInstagram = async (req: Request, res: Response): Promise<void> => {
-  const { fileId, caption = '', tags = [], thumbOffset, crossPostFacebook = false } = req.body;
+  const { fileId, caption = '', tags = [], thumbOffset, crossPostFacebook = false, trimStartSec = 0, trimDurationSec } = req.body;
+  appendDebugLog(`[trace] uploadToInstagram llamado — fileId=${fileId}`);
   if (!fileId) { res.status(400).json({ error: 'fileId requerido' }); return; }
 
   const fileDoc = fileRepo.findById(fileId);
-  if (!fileDoc)                             { res.status(404).json({ error: 'Archivo no encontrado' }); return; }
-  if (fileDoc.status === 'ELIMINADO_DISCO') { res.status(400).json({ error: 'El archivo fue eliminado del disco' }); return; }
-  if (!fs.existsSync(fileDoc.file_path))   { res.status(400).json({ error: 'Archivo físico no encontrado' }); return; }
+  if (!fileDoc)                             { appendDebugLog(`[trace] fileId=${fileId} no encontrado en DB`); res.status(404).json({ error: 'Archivo no encontrado' }); return; }
+  if (fileDoc.status === 'ELIMINADO_DISCO') { appendDebugLog(`[trace] ${fileDoc.file_name} está ELIMINADO_DISCO`); res.status(400).json({ error: 'El archivo fue eliminado del disco' }); return; }
+  if (!fs.existsSync(fileDoc.file_path))   { appendDebugLog(`[trace] ${fileDoc.file_name} no existe físicamente en ${fileDoc.file_path}`); res.status(400).json({ error: 'Archivo físico no encontrado' }); return; }
 
+  appendDebugLog(`[trace] ${fileDoc.file_name} pasó validaciones — pidiendo token a la central`);
   let tokenData: { access_token: string; instagram_user_id: string };
   try {
     tokenData = await fetchToken(req.headers.authorization!);
-  } catch {
+  } catch (err: any) {
+    appendDebugLog(`[trace] fetchToken falló: ${err.message}`);
     res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
     return;
   }
 
   const { access_token, instagram_user_id } = tokenData;
-  const fileSize = fs.statSync(fileDoc.file_path).size;
   const hashtagLine = (tags as string[]).length ? '\n\n' + (tags as string[]).map(t => `#${t}`).join(' ') : '';
   const fullCaption = String(caption) + hashtagLine;
+  const ctx = { instagram_user_id, access_token, fullCaption, thumbOffset, crossPostFacebook: !!crossPostFacebook };
+
+  // Meta rechaza (ProcessingFailedError genérico, sin decir la causa real) algunos videos
+  // sin explicar por qué. Confirmado que la causa más común es la DURACIÓN — cuentas sin el
+  // rollout de Reels extendido quedan topeadas a 60s vía la API, sin importar el encoding.
+  // En vez de adivinar de antemano, subimos en 3 intentos escalonados y nos quedamos con el
+  // primero que Meta acepte: (1) el original tal cual, (2) recortado a 60s, (3) recortado y
+  // además re-codificado a un baseline seguro (H.264/yuv420p/AAC/faststart, resolución/bitrate
+  // acotados). Cada intento solo genera el archivo intermedio si el anterior falló.
+  const tempFiles: string[] = [];
+  const stages: { label: UploadStage; getPath: () => Promise<string> }[] = [
+    { label: 'original', getPath: async () => fileDoc.file_path },
+    { label: 'recorte-60s', getPath: async () => {
+        const trimmed = await trimToMaxDuration(fileDoc.file_path, Number(trimStartSec) || 0, Number(trimDurationSec) || undefined);
+        tempFiles.push(trimmed);
+        return trimmed;
+      } },
+    { label: 'recorte-60s+normalizado', getPath: async () => {
+        const trimmed = tempFiles[0] ?? await trimToMaxDuration(fileDoc.file_path, Number(trimStartSec) || 0, Number(trimDurationSec) || undefined);
+        if (!tempFiles.includes(trimmed)) tempFiles.push(trimmed);
+        const normalized = await normalizeForMeta(trimmed);
+        tempFiles.push(normalized.outputPath);
+        return normalized.outputPath;
+      } },
+  ];
+
+  let containerId: string | null = null;
+  let usedStage: UploadStage = 'original';
+  let lastErr: any = null;
+
+  for (const stage of stages) {
+    try {
+      const candidatePath = await stage.getPath();
+      appendDebugLog(`[trace] intentando etapa "${stage.label}" con ${candidatePath}`);
+      containerId = await createAndWaitContainer(candidatePath, ctx);
+      usedStage = stage.label;
+      break;
+    } catch (err: any) {
+      lastErr = err;
+      appendDebugLog(`[trace] etapa "${stage.label}" falló: ${err.message}`);
+    }
+  }
 
   try {
-    // 1. Crear contenedor con upload_type: resumable (sube el archivo directo, sin URL pública)
-    const containerPayload: Record<string, any> = {
-      media_type:    'REELS',
-      upload_type:   'resumable',
-      caption:       fullCaption,
-      share_to_feed: true,
-      access_token,
-    };
-    if (thumbOffset != null) containerPayload.thumb_offset = Math.round(Number(thumbOffset) * 1000);
-    if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
+    if (!containerId) throw lastErr ?? new Error('No se pudo subir el video a Instagram');
 
-    const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
-    if (!containerData.id) {
-      // Devolvemos el objeto de error completo (code/subcode/fbtrace_id) al frontend
-      // para diagnosticar sin depender de logs de consola (la app empaquetada no
-      // muestra stdout al usuario).
-      console.error('[Instagram] Error al crear contenedor:', JSON.stringify(containerData.error ?? containerData));
-      const metaError = containerData.error ?? containerData;
-      const err: any = new Error(
-        (metaError.error_user_msg || metaError.message || 'Error al crear contenedor de media') +
-        ` [raw: ${JSON.stringify(metaError)}]`
-      );
-      throw err;
-    }
-
-    const containerId = containerData.id as string;
-    const uploadUri   = containerData.uri as string;
-
-    if (!uploadUri) throw new Error('No se obtuvo upload URI de Meta');
-
-    // 2. Subir archivo directo a Meta desde esta máquina
-    await streamFileToMeta(uploadUri, access_token, fileDoc.file_path, fileSize);
-
-    // 3. Esperar procesamiento
-    let statusCode = 'IN_PROGRESS';
-    for (let i = 0; i < 72 && statusCode === 'IN_PROGRESS'; i++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const statusData = await igGet(`/${containerId}?fields=status_code,status`, access_token);
-      statusCode = (statusData.status_code as string | undefined) ?? 'IN_PROGRESS';
-      if (statusCode === 'ERROR') {
-        throw new Error((statusData.status as string | undefined) ?? 'Error procesando el video en Instagram');
-      }
-    }
-    if (statusCode !== 'FINISHED') {
-      throw new Error('Tiempo de espera agotado. El video sigue procesándose en Instagram.');
-    }
-
-    // 4. Publicar
+    // Publicar (una sola vez, con el intento que sí funcionó)
     const publishData = await igPost(`/${instagram_user_id}/media_publish`, {
       creation_id: containerId,
       access_token,
@@ -159,7 +217,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     const mediaData = await igGet(`/${publishData.id}?fields=permalink`, access_token);
     const postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
 
-    // 5. Guardar en SQLite local
+    // Guardar en SQLite local
     platformVideoRepo.upsert({
       platform:       'instagram',
       platform_id:    publishData.id,
@@ -187,12 +245,20 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'instagram');
     const nextIg = fileRepo.findNewerAdjacent(fileDoc);
     configRepo.markPublished('instagram', fileDoc.file_name, fileId, nextIg ? String(nextIg.id) : null);
+    syncNextVideoToCentral(req.headers.authorization, 'instagram', {
+      lastPublishedDate:  new Date().toISOString().slice(0, 10),
+      lastPublishedTitle: fileDoc.file_name,
+      nextVideoTitle:     nextIg?.file_name ?? null,
+    });
     if (crossPostFacebook) fileRepo.addPlatform(fileId, 'facebook');
     pushFilesToCloudInBackground(req.headers.authorization);
 
-    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook });
+    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook, uploadStage: usedStage });
   } catch (err: any) {
+    appendDebugLog(`[trace] FALLARON las 3 etapas: ${err.message} | stack: ${err.stack}`);
     console.error('Error al subir a Instagram:', err.message);
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });
+  } finally {
+    for (const f of tempFiles) fs.unlink(f, () => {});
   }
 };

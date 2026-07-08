@@ -119,4 +119,8 @@ export const platformVideoRepo = {
   deleteAll(): number {
     return db.prepare('DELETE FROM platform_videos').run().changes;
   },
+
+  findAll(): DbPlatformVideo[] {
+    return (db.prepare('SELECT * FROM platform_videos').all() as RawRow[]).map(parse);
+  },
 };

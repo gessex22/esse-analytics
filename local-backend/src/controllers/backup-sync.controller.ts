@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
 import { transcriptRepo } from '../db/transcript.repo';
+import { platformVideoRepo } from '../db/platform-video.repo';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -66,6 +67,14 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
     console.warn('[backup] push de transcripciones falló:', err.message);
   }
 
+  // Vínculo real archivo↔publicación (platform_id/URL/fecha) — el wipe de logout borra
+  // platform_videos entero en SQLite; sin este push esa info no tenía ninguna copia.
+  try {
+    await pushPlatformVideosToCloud(authHeader);
+  } catch (err: any) {
+    console.warn('[backup] push de platform_videos falló:', err.message);
+  }
+
   // Preferencia de flujo (simple/avanzado) + colas de calendario por plataforma.
   // No fatal: si falla, el push de archivos ya se hizo.
   try {
@@ -75,6 +84,32 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
   }
 
   return { localCount: files.length, ...result };
+}
+
+// Los IDs de archivo en platform_videos.linked_file_id son locales a este SQLite → se
+// mandan por file_name (igual que platform_config), y se resuelven de vuelta a IDs
+// locales recién al hacer pull.
+async function pushPlatformVideosToCloud(authHeader: string): Promise<void> {
+  const rows = platformVideoRepo.findAll();
+  if (rows.length === 0) return;
+
+  const videos = rows.map(pv => ({
+    platform:         pv.platform,
+    platform_id:      pv.platform_id,
+    platform_url:     pv.platform_url    ?? null,
+    published_at:     pv.published_at    ?? null,
+    file_name:        pv.linked_file_id ? fileRepo.findById(pv.linked_file_id)?.file_name ?? null : null,
+    match_status:     pv.match_status,
+    title:            pv.title           ?? null,
+    description:      pv.description     ?? null,
+    local_updated_at: pv.updated_at,
+  }));
+
+  await fetch(`${CENTRAL}/api/backup/platform-videos/bulk`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+    body: JSON.stringify({ videos }),
+  });
 }
 
 async function pushTranscriptsToCloud(authHeader: string): Promise<void> {
@@ -212,11 +247,56 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       console.warn('[backup] pull de configuración falló:', err.message);
     }
 
+    // Vínculo real archivo↔publicación (platform_videos) — el wipe de logout lo borra
+    // entero; sin este pull quedaba solo el flag "platforms: ['youtube']" en el archivo,
+    // pero se perdía el platform_id/URL/fecha exactos de la publicación.
+    let platformVideos = { recovered: 0, skipped: 0, orphans: 0 };
+    try {
+      platformVideos = await pullPlatformVideosFromCloud(authHeader);
+    } catch (err: any) {
+      console.warn('[backup] pull de platform_videos falló:', err.message);
+    }
+
     configRepo.set('backup_last_pull', new Date().toISOString());
-    res.json({ ok: true, cloudCount: cloudFiles.length, cloudWithPlatforms, updated, recovered, skipped, orphans });
+    res.json({ ok: true, cloudCount: cloudFiles.length, cloudWithPlatforms, updated, recovered, skipped, orphans, platformVideos });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+}
+
+// Trae de la nube el vínculo real archivo↔publicación y lo reconstruye en la tabla local
+// platform_videos, matcheando por file_name (los linked_file_id no son portables). Si ya
+// existe un registro local con el mismo platform+platform_id no lo toca (no pisa nada que
+// la máquina ya tenga); si el archivo vinculado no existe localmente, se reporta como huérfano.
+async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recovered: number; skipped: number; orphans: number }> {
+  const upstream = await fetch(`${CENTRAL}/api/backup/platform-videos`, { headers: { Authorization: authHeader } });
+  if (!upstream.ok) return { recovered: 0, skipped: 0, orphans: 0 };
+
+  const { videos: cloudVideos }: { videos: any[] } = await upstream.json();
+
+  let recovered = 0, skipped = 0, orphans = 0;
+
+  for (const cv of cloudVideos) {
+    const existing = platformVideoRepo.findByPlatformAndId(cv.platform, cv.platform_id);
+    if (existing) { skipped++; continue; }
+
+    const file = cv.file_name ? fileRepo.findByName(cv.file_name) : undefined;
+    if (cv.file_name && !file) { orphans++; continue; }
+
+    platformVideoRepo.upsert({
+      platform:       cv.platform,
+      platform_id:    cv.platform_id,
+      platform_url:   cv.platform_url  ?? undefined,
+      published_at:   cv.published_at  ?? undefined,
+      linked_file_id: file?.id,
+      match_status:   cv.match_status  ?? 'sin_match',
+      title:          cv.title         ?? undefined,
+      description:    cv.description   ?? undefined,
+    });
+    recovered++;
+  }
+
+  return { recovered, skipped, orphans };
 }
 
 async function pullConfigFromCloud(authHeader: string): Promise<void> {

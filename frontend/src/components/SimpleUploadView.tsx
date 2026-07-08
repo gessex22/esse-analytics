@@ -136,7 +136,20 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
     const left = window.screenX + (window.outerWidth - w) / 2;
     const top  = window.screenY + (window.outerHeight - h) / 2;
     const popup = window.open(url, `${p}_oauth`, `width=${w},height=${h},left=${left},top=${top}`);
-    const poll = setInterval(() => { if (!popup || popup.closed) { clearInterval(poll); checkStatus(p); } }, 500);
+    if (popup) {
+      const poll = setInterval(() => { if (popup.closed) { clearInterval(poll); checkStatus(p); } }, 500);
+    } else {
+      // En Electron, setWindowOpenHandler intercepta window.open y lo abre en el
+      // navegador externo (shell.openExternal) — no hay ventana ni window.opener
+      // para detectar el cierre ni recibir el postMessage. Reintentamos el
+      // status en el fondo hasta que conecte o se agote el tiempo.
+      let attempts = 0;
+      const poll = setInterval(() => {
+        attempts++;
+        checkStatus(p);
+        if (attempts >= 40) clearInterval(poll);
+      }, 3000);
+    }
   };
 
   const toggleChecked = (p: Platform) => {
@@ -352,7 +365,12 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
                           </div>
                           <label className="flex items-center gap-3 cursor-pointer select-none">
                             <input type="checkbox" checked={igCrossPostFb} onChange={e => setIgCrossPostFb(e.target.checked)} className="accent-primary" />
-                            <span className="text-sm text-muted-foreground">También publicar en Facebook</span>
+                            <span className="text-sm text-muted-foreground">
+                              También publicar en Facebook
+                              <span className="block text-[11px] text-muted-foreground/70">
+                                Solo funciona si tu cuenta de Instagram tiene habilitado "Compartir a Facebook"
+                              </span>
+                            </span>
                           </label>
                         </>
                       )}

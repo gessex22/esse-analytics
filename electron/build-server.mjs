@@ -46,6 +46,11 @@ await build({
     'better-sqlite3',
     'electron',
     'fsevents',
+    // Son solo un path a un binario (ffmpeg.exe/ffprobe.exe) — si se bundlean, el
+    // __dirname que usan para ubicar el binario queda apuntando a dist/ en vez de a
+    // su propia carpeta en node_modules, y el binario nunca se copia ahí.
+    'ffmpeg-static',
+    'ffprobe-static',
   ],
   // Suprime warnings de módulos de Node built-in
   logLevel: 'info',

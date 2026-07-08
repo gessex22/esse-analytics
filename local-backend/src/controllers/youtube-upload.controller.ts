@@ -5,6 +5,7 @@ import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
+import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -145,6 +146,11 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'youtube');
     const nextYt = fileRepo.findNewerAdjacent(fileDoc);
     configRepo.markPublished('youtube', fileDoc.file_name, fileId, nextYt ? String(nextYt.id) : null);
+    syncNextVideoToCentral(req.headers.authorization, 'youtube', {
+      lastPublishedDate:  new Date().toISOString().slice(0, 10),
+      lastPublishedTitle: fileDoc.file_name,
+      nextVideoTitle:     nextYt?.file_name ?? null,
+    });
     pushFilesToCloudInBackground(req.headers.authorization);
 
     res.json({ ok: true, ...result });

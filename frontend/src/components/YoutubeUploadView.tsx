@@ -4,7 +4,7 @@ import {
   CheckCircle2, ChevronRight, ChevronLeft, Film,
   Search, X, Loader2, Tag, Globe, Lock, Eye,
   CalendarDays, Users, AlertCircle, ExternalLink, RefreshCw, Play, ShieldAlert, Camera,
-  UploadCloud, FolderOpen,
+  UploadCloud, FolderOpen, Sparkles,
 } from "lucide-react";
 
 const isRemote = () => {
@@ -267,10 +267,12 @@ function TikTokUploadForm({ selected, onChangeVideo, onUploaded }: {
     if (brandedContent && privacyLevel === "SELF_ONLY") setPrivacyLevel("");
   }, [brandedContent]);
 
-  const recheckTikTok = () => {
+  const recheckTikTok = (): Promise<boolean> => {
     const token = localStorage.getItem("esse_auth_token");
-    fetch(`${API}/api/tiktok/auth/status`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then(r => r.json()).then(d => { setConnected(d.connected); if (d.connected) fetchCreatorInfo(); }).catch(() => {});
+    return fetch(`${API}/api/tiktok/auth/status`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.json())
+      .then(d => { setConnected(d.connected); if (d.connected) fetchCreatorInfo(); return !!d.connected; })
+      .catch(() => false);
   };
 
   const connectTikTok = async () => {
@@ -281,9 +283,20 @@ function TikTokUploadForm({ selected, onChangeVideo, onUploaded }: {
     const left = window.screenX + (window.outerWidth - w) / 2;
     const top  = window.screenY + (window.outerHeight - h) / 2;
     const popup = window.open(url, "tk_oauth", `width=${w},height=${h},left=${left},top=${top}`);
-    const poll = setInterval(() => {
-      if (!popup || popup.closed) { clearInterval(poll); recheckTikTok(); }
-    }, 500);
+    if (popup) {
+      const poll = setInterval(() => {
+        if (popup.closed) { clearInterval(poll); recheckTikTok(); }
+      }, 500);
+    } else {
+      // Ver comentario equivalente en connectInstagram: en Electron no hay
+      // ventana real para detectar el cierre, así que reintentamos en el fondo.
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        const ok = await recheckTikTok();
+        if (ok || attempts >= 40) clearInterval(poll);
+      }, 3000);
+    }
   };
 
   // Declaración de consentimiento (cambia según commercial content)
@@ -686,6 +699,106 @@ function ThumbOffsetPicker({ fileId, onSelect }: {
   );
 }
 
+const TRIM_MAX_SEC = 60;
+const TRIM_MIN_SEC = 3;
+
+// Elige el recorte (inicio y fin, hasta 60s de largo) que se usa como 2do intento si
+// Instagram rechaza el video completo (cuentas sin el rollout de Reels extendido quedan
+// topeadas a 60s vía la API, sin importar el encoding — ver instagram-upload.controller.ts).
+// Las dos manijas son independientes: se puede achicar la ventana por debajo de 60s.
+function TrimStartPicker({ fileId, durationSec, onSelect }: {
+  fileId: string;
+  durationSec: number;
+  onSelect: (startSeconds: number, durationSeconds: number) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const dragging  = useRef<"start" | "end" | null>(null);
+  const [start, setStart] = useState(0);
+  const [end,   setEnd]   = useState(Math.min(durationSec, TRIM_MAX_SEC));
+  const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+  const seekPreview = (t: number) => { if (videoRef.current) videoRef.current.currentTime = t; };
+
+  const posToTime = (clientX: number): number => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return ratio * durationSec;
+  };
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!dragging.current) return;
+      const t = posToTime(e.clientX);
+      if (dragging.current === "start") {
+        // No puede pasar el fin (menos TRIM_MIN_SEC) ni hacer la ventana más larga que 60s.
+        const newStart = Math.min(Math.max(0, t), end - TRIM_MIN_SEC);
+        const bounded  = Math.max(newStart, end - TRIM_MAX_SEC);
+        setStart(bounded);
+        seekPreview(bounded);
+      } else {
+        const newEnd = Math.max(Math.min(t, durationSec), start + TRIM_MIN_SEC);
+        const bounded = Math.min(newEnd, start + TRIM_MAX_SEC);
+        setEnd(bounded);
+        seekPreview(bounded);
+      }
+    };
+    const onUp = () => { dragging.current = null; };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [start, end, durationSec]);
+
+  const startPct = durationSec ? (start / durationSec) * 100 : 0;
+  const endPct   = durationSec ? (end   / durationSec) * 100 : 100;
+  const clipLen  = end - start;
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg overflow-hidden bg-black flex items-center justify-center" style={{ maxHeight: 160 }}>
+        <video ref={videoRef} src={streamUrl(fileId)}
+          muted playsInline preload="metadata"
+          className="max-h-[160px] max-w-full object-contain"
+        />
+      </div>
+
+      <div className="space-y-2 px-2">
+        <div ref={trackRef} className="relative h-5 flex items-center select-none touch-none">
+          <div className="absolute inset-x-0 h-1.5 rounded-full bg-secondary" />
+          <div className="absolute h-1.5 rounded-full bg-amber-500"
+            style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }} />
+          <div
+            onPointerDown={() => { dragging.current = "start"; seekPreview(start); }}
+            className="absolute w-4 h-4 rounded-full bg-amber-400 border-2 border-background shadow cursor-grab active:cursor-grabbing"
+            style={{ left: `calc(${startPct}% - 8px)` }}
+          />
+          <div
+            onPointerDown={() => { dragging.current = "end"; seekPreview(end); }}
+            className="absolute w-4 h-4 rounded-full bg-amber-400 border-2 border-background shadow cursor-grab active:cursor-grabbing"
+            style={{ left: `calc(${endPct}% - 8px)` }}
+          />
+        </div>
+        <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+          <span>Inicio {fmt(start)}</span>
+          <span className="text-amber-400">{clipLen.toFixed(0)}s</span>
+          <span>Fin {fmt(end)}</span>
+        </div>
+        <div className="text-center text-[10px] text-muted-foreground/60">Video completo: {fmt(durationSec)} · máximo 60s por recorte</div>
+      </div>
+
+      <button type="button" onClick={() => onSelect(start, clipLen)}
+        className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-secondary border border-border text-sm text-foreground hover:bg-secondary/80 transition-colors">
+        Usar este recorte
+      </button>
+    </div>
+  );
+}
+
 // ── Formulario de subida a Instagram ─────────────────────────────────────────
 function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
   selected: SlimVideo | null;
@@ -704,8 +817,22 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
   const [doneFacebook,     setDoneFacebook]     = useState(false);
   const [uploadError,      setUploadError]      = useState<string | null>(null);
   const [previewVideo,     setPreviewVideo]     = useState<SlimVideo | null>(null);
+  const [uploadStage,      setUploadStage]      = useState<"original" | "recorte-60s" | "recorte-60s+normalizado" | null>(null);
+  const [trimStartSec,     setTrimStartSec]     = useState(0);
+  const [trimDurationSec,  setTrimDurationSec]  = useState(60);
+  const [showTrimEditor,   setShowTrimEditor]   = useState(false);
+  // duracion_segundos en la DB solo se completa cuando el plugin de transcripción ya
+  // procesó el video — muchos videos recién agregados todavía no la tienen. Por eso medimos
+  // la duración real acá con un <video> oculto en vez de confiar solo en selected.duration.
+  const [probedDurationSec, setProbedDurationSec] = useState<number | null>(null);
+  const probeVideoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => { setProbedDurationSec(null); }, [selected?.fileId]);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const dbDurationSec = durationToSeconds(selected?.duration);
+  const videoDurationSec = dbDurationSec > 0 ? dbDurationSec : (probedDurationSec ?? 0);
+  const exceedsMetaLimit = videoDurationSec > 60;
 
   const fetchAccount = () => {
     const token = localStorage.getItem("esse_auth_token");
@@ -753,10 +880,12 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
     setShowScrubber(false);
   }, [selected?.fileId]);
 
-  const recheckInstagram = () => {
+  const recheckInstagram = (): Promise<boolean> => {
     const token = localStorage.getItem("esse_auth_token");
-    fetch(`${API}/api/instagram/auth/status`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-      .then(r => r.json()).then(d => { setConnected(d.connected); if (d.connected) fetchAccount(); }).catch(() => {});
+    return fetch(`${API}/api/instagram/auth/status`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(r => r.json())
+      .then(d => { setConnected(d.connected); if (d.connected) fetchAccount(); return !!d.connected; })
+      .catch(() => false);
   };
 
   const connectInstagram = async () => {
@@ -767,9 +896,22 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
     const left = window.screenX + (window.outerWidth - w) / 2;
     const top  = window.screenY + (window.outerHeight - h) / 2;
     const popup = window.open(url, "ig_oauth", `width=${w},height=${h},left=${left},top=${top}`);
-    const poll = setInterval(() => {
-      if (!popup || popup.closed) { clearInterval(poll); recheckInstagram(); }
-    }, 500);
+    if (popup) {
+      const poll = setInterval(() => {
+        if (popup.closed) { clearInterval(poll); recheckInstagram(); }
+      }, 500);
+    } else {
+      // En Electron, setWindowOpenHandler intercepta window.open y lo abre en el
+      // navegador externo (shell.openExternal) por seguridad — no hay ventana ni
+      // window.opener, así que ni "popup.closed" ni el postMessage del callback
+      // pueden avisarnos. Reintentamos el status en el fondo hasta conectar.
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        const ok = await recheckInstagram();
+        if (ok || attempts >= 40) clearInterval(poll);
+      }, 3000);
+    }
   };
 
   const handleUpload = async () => {
@@ -781,12 +923,13 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
       const res = await fetch(`${API}/api/instagram/upload`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify({ fileId: selected.fileId, caption, tags, thumbOffset, crossPostFacebook }),
+        body: JSON.stringify({ fileId: selected.fileId, caption, tags, thumbOffset, crossPostFacebook, trimStartSec, trimDurationSec }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
       setDoneUrl(data.postUrl);
       setDoneFacebook(crossPostFacebook);
+      setUploadStage(data.uploadStage ?? null);
       setStep("done");
       onUploaded();
     } catch (err: any) {
@@ -799,11 +942,24 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
     setStep("details");
     setCaption(selected ? selected.title.replace(/\.[^.]+$/, "") : "");
     setTags([]); setThumbOffset(null); setShowScrubber(false);
-    setUploadError(null); setDoneUrl(null); setDoneFacebook(false);
+    setUploadError(null); setDoneUrl(null); setDoneFacebook(false); setUploadStage(null);
+    setTrimStartSec(0); setTrimDurationSec(60); setShowTrimEditor(false);
   };
 
   return (
     <div className="space-y-4">
+
+      {/* Sondeo oculto de duración real — no depende de duracion_segundos (que solo se
+          completa cuando el plugin de transcripción ya procesó el video). */}
+      {selected && dbDurationSec === 0 && (
+        <video
+          ref={probeVideoRef}
+          src={streamUrl(selected.fileId)}
+          preload="metadata"
+          className="hidden"
+          onLoadedMetadata={() => setProbedDurationSec(probeVideoRef.current?.duration ?? null)}
+        />
+      )}
 
       {/* Video seleccionado */}
       <div className="bg-card border border-border rounded-xl p-4">
@@ -907,6 +1063,14 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
             <p className="text-foreground font-semibold">¡Reel publicado!</p>
             <p className="text-muted-foreground text-xs mt-1 truncate max-w-xs">{caption}</p>
           </div>
+          {uploadStage && uploadStage !== "original" && (
+            <div className="flex items-center gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-full">
+              <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
+              {uploadStage === "recorte-60s"
+                ? "Instagram rechazó el video completo — se publicó recortado a 60 segundos"
+                : "Instagram rechazó el video completo — se recortó a 60s y se optimizó automáticamente"}
+            </div>
+          )}
           <div className="flex flex-col items-center gap-2">
             {doneUrl && (
               <a href={doneUrl} target="_blank" rel="noopener noreferrer"
@@ -915,9 +1079,15 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
               </a>
             )}
             {doneFacebook && (
-              <span className="flex items-center gap-1.5 text-sm text-blue-400">
-                <FacebookIcon className="w-3.5 h-3.5" /> También publicado en Facebook
-              </span>
+              <div className="flex flex-col items-center gap-1 max-w-xs text-center">
+                <span className="flex items-center gap-1.5 text-sm text-blue-400">
+                  <FacebookIcon className="w-3.5 h-3.5" /> Cross-post a Facebook solicitado
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Meta no confirma si se publicó realmente — revisá la Página de Facebook. Si no aparece,
+                  activá "Compartir a Facebook" en Instagram → Configuración → Cuentas → Compartir entre perfiles.
+                </span>
+              </div>
             )}
           </div>
           <button onClick={reset} className="px-5 py-2 rounded-lg border border-border bg-secondary text-sm text-foreground hover:bg-secondary/80 transition-colors">
@@ -993,6 +1163,34 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
             )}
           </div>
 
+          {/* Recorte de seguridad a 60s — algunas cuentas quedan topeadas a 60s para Reels
+              vía la API de Meta; si el video completo falla, se reintenta recortado. */}
+          {exceedsMetaLimit && (
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5" /> Recorte de seguridad (por si Instagram rechaza el video completo)
+              </label>
+              {showTrimEditor && selected ? (
+                <div className="border border-border rounded-xl p-3 space-y-3 bg-secondary/20">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">Elegí el tramo del recorte (hasta 60s)</span>
+                    <button type="button" onClick={() => setShowTrimEditor(false)}>
+                      <X className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground transition-colors" />
+                    </button>
+                  </div>
+                  <TrimStartPicker fileId={selected.fileId} durationSec={videoDurationSec}
+                    onSelect={(start, dur) => { setTrimStartSec(start); setTrimDurationSec(dur); setShowTrimEditor(false); }} />
+                </div>
+              ) : (
+                <button type="button" onClick={() => setShowTrimEditor(true)}
+                  className="w-full flex items-center justify-between gap-2 border border-border rounded-lg py-2.5 px-3 text-muted-foreground text-xs hover:border-amber-500/40 hover:text-foreground transition-colors">
+                  <span>Este video dura {fmt(videoDurationSec)}. Si Instagram lo rechaza, se recorta a {trimDurationSec.toFixed(0)}s desde {fmt(trimStartSec)}.</span>
+                  <span className="text-amber-400 flex-shrink-0">Ajustar</span>
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Cross-post a Facebook */}
           <label className="flex items-center gap-3 cursor-pointer select-none group">
             <div className="relative flex-shrink-0">
@@ -1005,9 +1203,14 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
               <div className="w-9 h-5 rounded-full bg-secondary border border-border peer-checked:bg-blue-600 peer-checked:border-blue-600 transition-colors" />
               <div className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-muted-foreground peer-checked:bg-white peer-checked:translate-x-4 transition-all" />
             </div>
-            <div className="flex items-center gap-1.5 text-sm text-muted-foreground group-hover:text-foreground transition-colors">
-              <FacebookIcon className="w-4 h-4 text-blue-400" />
-              También publicar en Facebook
+            <div className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground group-hover:text-foreground transition-colors">
+                <FacebookIcon className="w-4 h-4 text-blue-400" />
+                También publicar en Facebook
+              </div>
+              <span className="text-[11px] text-muted-foreground/70">
+                Solo funciona si tu cuenta de Instagram tiene habilitado "Compartir a Facebook"
+              </span>
             </div>
           </label>
 
@@ -1364,27 +1567,28 @@ export function YoutubeUploadView() {
         })}
       </div>
 
-      {/* ── Contenido por plataforma ──────────────────────────────────────── */}
+      {/* Instagram y TikTok quedan SIEMPRE montados (solo ocultos por CSS) — antes se
+          desmontaban al cambiar de pestaña (dentro del motion.div con key={activePlatform}),
+          lo que borraba caption/tags/recorte porque cada uno guarda su estado internamente. */}
+      <div className={activePlatform === "instagram" ? "" : "hidden"}>
+        <InstagramUploadForm
+          selected={selected}
+          onChangeVideo={() => setShowPicker(true)}
+          onUploaded={() => refreshAfterUpload("instagram")}
+        />
+      </div>
+      <div className={activePlatform === "tiktok" ? "" : "hidden"}>
+        <TikTokUploadForm
+          selected={selected}
+          onChangeVideo={() => setShowPicker(true)}
+          onUploaded={() => refreshAfterUpload("tiktok")}
+        />
+      </div>
+
+      {/* ── Contenido de YouTube (vive inline en este componente, su estado ya
+          persiste en el padre — no hace falta sacarlo del wrapper animado) ──────── */}
       <AnimatePresence mode="wait">
         <motion.div key={activePlatform} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.18 }}>
-
-          {/* Instagram */}
-          {activePlatform === "instagram" && (
-            <InstagramUploadForm
-              selected={selected}
-              onChangeVideo={() => setShowPicker(true)}
-              onUploaded={() => refreshAfterUpload("instagram")}
-            />
-          )}
-
-          {/* TikTok */}
-          {activePlatform === "tiktok" && (
-            <TikTokUploadForm
-              selected={selected}
-              onChangeVideo={() => setShowPicker(true)}
-              onUploaded={() => refreshAfterUpload("tiktok")}
-            />
-          )}
 
           {/* YouTube */}
           {activePlatform === "youtube" && (

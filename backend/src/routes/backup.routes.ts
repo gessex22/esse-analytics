@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { verifyToken, requirePremium } from '../middleware/auth.middleware';
-import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas, getBackupConfig, upsertBackupConfig } from '../controllers/backup.controller';
+import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas, getBackupConfig, upsertBackupConfig, getBackupPlatformVideos, bulkUpsertBackupPlatformVideos } from '../controllers/backup.controller';
 
 const router = Router();
 
@@ -13,5 +13,7 @@ router.post('/api/backup/transcripts/bulk', verifyToken, requirePremium, bulkUps
 router.get('/api/backup/ideas-centrales', verifyToken, requirePremium, getBackupIdeas);
 router.get('/api/backup/config',          verifyToken, requirePremium, getBackupConfig);
 router.post('/api/backup/config',         verifyToken, requirePremium, upsertBackupConfig);
+router.get('/api/backup/platform-videos',       verifyToken, requirePremium, getBackupPlatformVideos);
+router.post('/api/backup/platform-videos/bulk', verifyToken, requirePremium, bulkUpsertBackupPlatformVideos);
 
 export default router;

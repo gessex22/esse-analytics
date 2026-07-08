@@ -6,6 +6,7 @@ import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideacentral';
 import { BackupConfigModel } from '../models/backup-config.model';
+import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 
 // GET /api/backup/files
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
@@ -286,6 +287,61 @@ export async function upsertBackupConfig(req: AuthRequest, res: Response): Promi
       { upsert: true },
     );
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/backup/platform-videos
+// Espejo del vínculo real archivo↔publicación (platform_videos local). A diferencia de
+// files.platforms (solo un flag por plataforma), acá se conserva el platform_id/URL/fecha
+// exactos, que el wipe de logout borra de SQLite sin dejar copia local.
+export async function getBackupPlatformVideos(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const videos = await BackupPlatformVideoModel.find({ userId }).lean();
+    res.json({ videos, total: videos.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// POST /api/backup/platform-videos/bulk
+export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const incoming: any[] = req.body.videos;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      res.json({ ok: true, updated: 0 });
+      return;
+    }
+
+    await BackupPlatformVideoModel.bulkWrite(
+      incoming
+        .filter(v => v && v.platform && v.platform_id)
+        .map(v => ({
+          updateOne: {
+            filter: { userId, platform: v.platform, platform_id: v.platform_id },
+            update: {
+              $set: {
+                userId,
+                platform:         v.platform,
+                platform_id:      v.platform_id,
+                platform_url:     v.platform_url    ?? null,
+                published_at:     v.published_at    ?? null,
+                file_name:        v.file_name       ?? null,
+                match_status:     v.match_status    ?? 'sin_match',
+                title:            v.title           ?? null,
+                description:      v.description     ?? null,
+                local_updated_at: new Date(v.local_updated_at),
+              },
+            },
+            upsert: true,
+          },
+        })),
+    );
+
+    res.json({ ok: true, updated: incoming.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

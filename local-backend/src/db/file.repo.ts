@@ -137,12 +137,18 @@ export const fileRepo = {
     return { rows, total };
   },
 
-  findSlim(limit: number): { id: number; file_name: string; file_path: string; duracion_segundos: number | null }[] {
-    return db.prepare(
-      `SELECT id, file_name, file_path, duracion_segundos FROM files
+  findSlim(limit: number): { id: number; file_name: string; file_path: string; duracion_segundos: number | null; platforms: Platform[]; platforms_discarded: Platform[] }[] {
+    const rows = db.prepare(
+      `SELECT id, file_name, file_path, duracion_segundos, platforms, platforms_discarded FROM files
        WHERE status != 'ELIMINADO_DISCO'
+         AND json_array_length(platforms) + json_array_length(platforms_discarded) < 3
        ORDER BY COALESCE(fecha_creacion, created_at) DESC LIMIT ?`
     ).all(limit) as any[];
+    return rows.map(r => ({
+      ...r,
+      platforms:           JSON.parse(r.platforms           || '[]'),
+      platforms_discarded: JSON.parse(r.platforms_discarded || '[]'),
+    }));
   },
 
   /** Igual que findSlim pero solo los que todavía no tienen transcripción — evita que

@@ -8,7 +8,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { videoService, syncService, setupService, WorkflowMode } from "../services/api";
 
-type SlimVideo = { fileId: string; title: string; duration: string };
+type SlimVideo = { fileId: string; title: string; duration: string; platforms: string[]; platforms_discarded: string[] };
 import {
   Platform, PlatformSlot, calcNextDate, FALLBACK_SLOTS,
 } from "../data/mockPublishingData";
@@ -298,42 +298,46 @@ function HistoryRow({ data }: { data: PublishedVideo }) {
   const empty     = !data.platformId;
 
   return (
-    <div className="flex items-center gap-3 px-3.5 py-3 rounded-xl bg-card border border-border">
-      {thumbnail ? (
-        <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 40, aspectRatio: "9/16" }}>
-          <img src={thumbnail} alt="" className="w-full h-full object-cover" />
-        </div>
-      ) : (
-        <div className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`} style={{ width: 40, aspectRatio: "9/16" }}>
-          <Icon className="w-5 h-5 text-white/90" />
-        </div>
-      )}
-
-      <div className="w-[96px] flex-shrink-0">
-        <div className="flex items-center gap-1.5">
-          <span className={`w-3 h-3 rounded-sm flex-shrink-0 ${cfg.bg}`} />
-          <span className="text-xs font-semibold text-foreground">{cfg.label}</span>
-        </div>
-        {data.publishedAt && (
-          <p className="text-[10px] text-muted-foreground mt-0.5">{formatLongDate(data.publishedAt)}</p>
-        )}
-      </div>
-
-      <div className="flex-1 min-w-0">
-        {empty ? (
-          <p className="text-xs text-muted-foreground">Sin publicaciones</p>
+    <div className="flex flex-col gap-2 px-3.5 py-3 rounded-xl bg-card border border-border">
+      <div className="flex items-center gap-3">
+        {thumbnail ? (
+          <div className="rounded-lg overflow-hidden bg-black flex-shrink-0" style={{ width: 44, aspectRatio: "9/16" }}>
+            <img src={thumbnail} alt="" className="w-full h-full object-cover" />
+          </div>
         ) : (
-          <>
-            <p className="text-xs font-medium text-foreground truncate">{data.fileName ?? data.title ?? "—"}</p>
-            {data.fileName && data.title && data.platform !== "tiktok" && (
-              <p className="text-[10px] text-muted-foreground truncate italic">{data.title}</p>
+          <div className={`rounded-lg flex items-center justify-center flex-shrink-0 bg-gradient-to-br ${cfg.grad}`} style={{ width: 44, aspectRatio: "9/16" }}>
+            <Icon className="w-5 h-5 text-white/90" />
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`w-3 h-3 rounded-sm flex-shrink-0 ${cfg.bg}`} />
+            <span className="text-xs font-semibold text-foreground">{cfg.label}</span>
+            {data.publishedAt && (
+              <span className="text-[10px] text-muted-foreground">· {formatLongDate(data.publishedAt)}</span>
             )}
-          </>
+          </div>
+          {empty ? (
+            <p className="text-xs text-muted-foreground mt-0.5">Sin publicaciones</p>
+          ) : (
+            <>
+              <p className="text-xs font-medium text-foreground truncate mt-0.5">{data.fileName ?? data.title ?? "—"}</p>
+              {data.fileName && data.title && (
+                <p className="text-[10px] text-muted-foreground truncate italic">{data.title}</p>
+              )}
+            </>
+          )}
+        </div>
+
+        {data.platformUrl && data.platform !== "tiktok" && (
+          <a href={data.platformUrl} target="_blank" rel="noopener noreferrer"
+            className="text-sm text-primary hover:underline flex-shrink-0">↗</a>
         )}
       </div>
 
       {!empty && (
-        <div className="hidden sm:flex items-center gap-3 flex-shrink-0">
+        <div className="flex items-center gap-4 pl-[56px]">
           {chips.map(({ Icon: StatIcon, v }, i) => (
             <div key={i} className="flex items-center gap-1" title={v}>
               <StatIcon className="w-3.5 h-3.5 text-muted-foreground" />
@@ -341,11 +345,6 @@ function HistoryRow({ data }: { data: PublishedVideo }) {
             </div>
           ))}
         </div>
-      )}
-
-      {data.platformUrl && data.platform !== "tiktok" && (
-        <a href={data.platformUrl} target="_blank" rel="noopener noreferrer"
-          className="text-sm text-primary hover:underline flex-shrink-0">↗</a>
       )}
     </div>
   );
@@ -571,7 +570,7 @@ function PublishedCard({ data }: { data: PublishedVideo }) {
                 </p>
               </div>
 
-              {data.title && data.platform !== "tiktok" && (
+              {data.title && (
                 <div>
                   <p className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">Título</p>
                   <p className="text-xs text-foreground break-words line-clamp-2" title={data.title}>{data.title}</p>
@@ -770,6 +769,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   const isSimple: boolean = workflowMode === "simple";
   const ALL_PLATFORMS: Platform[] = ["youtube", "instagram", "tiktok"];
 
+  // Cada tarjeta solo debe ofrecer videos que todavía le faltan a ESA plataforma
+  // (ni publicados ni descartados ahí) — mismo criterio que la vista de Videos,
+  // pero filtrado además por plataforma en vez de agregado.
+  const videosForPlatform = (p: Platform): SlimVideo[] =>
+    videos.filter(v => !v.platforms.includes(p) && !v.platforms_discarded.includes(p));
+
   function loadAll(showRefresh = false) {
     if (showRefresh) setRefreshing(true);
     let loadedVideos: SlimVideo[] = [];
@@ -786,10 +791,16 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       setRefreshing(false);
       const idx: Record<Platform, number> = { tiktok: 0, instagram: 0, youtube: 0 };
       for (const p of ["tiktok", "instagram", "youtube"] as Platform[]) {
+        const list = loadedVideos.filter(v => !v.platforms.includes(p) && !v.platforms_discarded.includes(p));
+        // Sin nextVideoId confiable (nunca se fijó, o el video ya no existe):
+        // el default es el pendiente más VIEJO de esta plataforma — la lista
+        // viene de más nuevo a más viejo, así que es el último índice — no el
+        // más nuevo (índice 0), que es lo que se mostraba antes por defecto.
+        idx[p] = Math.max(0, list.length - 1);
         const id = loadedNextIds[p];
         if (!id) continue;
-        let found = loadedVideos.findIndex(v => v.fileId === id);
-        if (found === -1) found = loadedVideos.findIndex(v => v.title === id);
+        let found = list.findIndex(v => v.fileId === id);
+        if (found === -1) found = list.findIndex(v => v.title === id);
         if (found !== -1) idx[p] = found;
       }
       setIndices(idx);
@@ -853,7 +864,8 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     setIndices(prev => {
       const next = { ...prev };
       for (const p of affected) {
-        next[p] = dir === "older" ? Math.min(videos.length - 1, prev[p] + 1) : Math.max(0, prev[p] - 1);
+        const len = videosForPlatform(p).length;
+        next[p] = dir === "older" ? Math.min(len - 1, prev[p] + 1) : Math.max(0, prev[p] - 1);
       }
       return next;
     });
@@ -866,11 +878,25 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
 
   async function pinVideo(platform: Platform) {
     const affected = isSimple ? ALL_PLATFORMS : [platform];
-    const video = videos[indices[platform]];
+    const list = videosForPlatform(platform);
+    const video = list[indices[platform]];
     if (!video) return;
     const today = todayStr();
-    const nextIdx   = Math.max(0, indices[platform] - 1);
-    const nextVideo = videos[nextIdx];
+    const nextIdx = Math.max(0, indices[platform] - 1);
+    // El video que se acaba de pinnear deja de estar pendiente para "affected" —
+    // se proyecta ese cambio ANTES de leer "próximo", si no seguiría ofreciendo
+    // el mismo video recién publicado en la tarjeta.
+    const projectedVideos = videos.map(v =>
+      v.fileId === video.fileId
+        ? {
+            ...v,
+            platforms: Array.from(new Set([...v.platforms, ...affected])),
+            platforms_discarded: v.platforms_discarded.filter(p => !affected.includes(p)),
+          }
+        : v
+    );
+    const nextVideo = projectedVideos
+      .filter(v => !v.platforms.includes(platform) && !v.platforms_discarded.includes(platform))[nextIdx];
 
     setPinning(prev => ({ ...prev, [platform]: true }));
     try {
@@ -885,6 +911,13 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
           nextVideoId:        nextVideo?.title,
         });
       }));
+      // Sin esto, el video queda "pendiente" para siempre en la lista general de
+      // Videos (esa vista oculta por defecto solo lo que ya está resuelto en las
+      // 3 plataformas) aunque acá lo hayamos marcado publicado — se acumulaba
+      // como conteo inflado e innecesario.
+      await videoService.updateVideosBulk([String(video.fileId)], { platforms: affected, platformState: "publicado" }).catch(() => {});
+      setVideos(projectedVideos);
+      patchCalendarCache({ videos: projectedVideos });
       setSlots(prev => {
         const next = prev.map(s =>
           affected.includes(s.platform)
@@ -947,10 +980,11 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     : [];
 
   const renderMobileCard = ({ p, slot }: { p: Platform; slot: PlatformSlot }, isOverdue: boolean) => {
-    const currentVideo = videos[indices[p]];
+    const platformVideos = videosForPlatform(p);
+    const currentVideo = platformVideos[indices[p]];
     return (
       <UpcomingCard
-        key={p} slot={slot} video={currentVideo} index={indices[p]} total={videos.length} overdue={isOverdue} neutral={isSimple}
+        key={p} slot={slot} video={currentVideo} index={indices[p]} total={platformVideos.length} overdue={isOverdue} neutral={isSimple}
         onOlder={() => navigate(p, "older")} onNewer={() => navigate(p, "newer")} onPin={() => pinVideo(p)}
         onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
         onIntervalChange={d => updateInterval(p, d)} pinning={pinning[p]} pinned={pinned[p]} loading={loading}
@@ -993,12 +1027,13 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
               <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximas publicaciones</p>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {ORDER.map(p => {
-                  const currentVideo = videos[indices[p]];
+                  const platformVideos = videosForPlatform(p);
+                  const currentVideo = platformVideos[indices[p]];
                   return (
                     <PlatformCard
                       key={p}
                       slot={slotFor(p)}
-                      videos={videos}
+                      videos={platformVideos}
                       index={indices[p]}
                       onOlder={() => navigate(p, "older")}
                       onNewer={() => navigate(p, "newer")}

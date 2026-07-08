@@ -66,6 +66,8 @@ export const getVideoSlimList = (req: Request, res: Response) => {
     title:     f.file_name,
     filePath:  f.file_path,
     duration:  f.duracion_segundos ? formatDuration(f.duracion_segundos) : '',
+    platforms: f.platforms,
+    platforms_discarded: f.platforms_discarded,
   })));
 };
 

@@ -148,7 +148,9 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
     params.set('config_id', configId);
   } else {
     // Fallback si todavía no se creó la Login Configuration en el dashboard.
-    params.set('scope', 'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,business_management');
+    // instagram_manage_insights es lo que habilita /insights?metric=views (sin
+    // él, Meta devuelve error de permisos y las vistas quedan en "--" en la UI).
+    params.set('scope', 'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,instagram_manage_insights,business_management');
   }
   res.json({ url: `${FB_OAUTH_DIALOG}?${params}` });
 };

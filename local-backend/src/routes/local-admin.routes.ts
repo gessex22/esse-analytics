@@ -1,5 +1,6 @@
 import { Router, Response } from 'express';
 import { randomUUID } from 'crypto';
+import jwt from 'jsonwebtoken';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { configRepo } from '../db/config.repo';
 import { db } from '../db/database';
@@ -8,6 +9,7 @@ import { fileRepo } from '../db/file.repo';
 const router = Router();
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
 
 // Devuelve el secreto de instalación, generándolo la primera vez.
 export function getOrCreateInstallId(): string {
@@ -63,6 +65,12 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
       switched = true;
     }
     configRepo.setOwner(req.user!.username);
+
+    // Cachea el token de ESTE login para que otros dispositivos en la misma LAN
+    // (misma instalación, misma PC física en :4000) puedan entrar sin volver a
+    // autenticar contra la central — ver GET /api/local/session.
+    const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    if (bearer) configRepo.set('owner_token', bearer);
 
     // Vincular el secreto de instalación a la cuenta en la central.
     const installId = getOrCreateInstallId();
@@ -165,6 +173,22 @@ router.post('/api/local/reset-all', (req, res) => {
     return;
   }
   res.json({ ok: true, cleared });
+});
+
+// GET /api/local/session — reusa la sesión del dueño para cualquier dispositivo
+// que hable con ESTE local-backend (misma instalación, típicamente por LAN o
+// túnel). Evita que cada dispositivo tenga que loguearse de nuevo contra la
+// central: si ya hay un dueño vinculado y su token sigue siendo válido, se lo
+// devolvemos tal cual para que el frontend lo use como si hubiera logueado.
+router.get('/api/local/session', (_req, res) => {
+  const token = configRepo.get('owner_token');
+  if (!token) { res.status(404).json({ message: 'Sin sesión local.' }); return; }
+  try {
+    jwt.verify(token, JWT_SECRET);
+    res.json({ token });
+  } catch {
+    res.status(404).json({ message: 'Sesión local expirada.' });
+  }
 });
 
 // GET /api/local/health

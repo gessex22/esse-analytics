@@ -66,7 +66,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Revalidación: lee de DB para tener el tier siempre actualizado
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return;
+    if (!saved) {
+      // Sin token guardado en este navegador: si estamos hablando con un
+      // local-backend que ya tiene dueño vinculado (misma instalación, típico
+      // de otro dispositivo en la misma LAN), reusamos esa sesión en vez de
+      // exigir un login manual contra la central.
+      fetch(`${API_BASE}/api/local/session`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((data) => {
+          const decoded = decodeJwtUser(data.token);
+          if (!decoded) return Promise.reject();
+          setToken(data.token);
+          setUser(decoded);
+          localStorage.setItem(STORAGE_KEY, data.token);
+        })
+        .catch(() => {});
+      return;
+    }
 
     fetch(`${API_BASE}/api/auth/me`, {
       headers: { Authorization: `Bearer ${saved}` },

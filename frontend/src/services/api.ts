@@ -445,7 +445,7 @@ export const videoService = {
     };
   },
 
-  getSlimList: (): Promise<{ fileId: string; title: string; duration: string }[]> =>
+  getSlimList: (): Promise<{ fileId: string; title: string; duration: string; platforms: ("youtube" | "instagram" | "tiktok")[]; platforms_discarded: ("youtube" | "instagram" | "tiktok")[] }[]> =>
     requestJson('/api/videos/slim'),
 
   deleteFile: async (fileId: string): Promise<void> => {

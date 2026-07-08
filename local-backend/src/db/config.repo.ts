@@ -97,6 +97,9 @@ export const configRepo = {
     // El secreto de instalación muere con la vinculación: al volver a vincular
     // (misma u otra cuenta) se generará uno nuevo. Evita reusarlo entre cuentas.
     db.prepare("DELETE FROM app_config WHERE key = 'install_id'").run();
+    // La sesión cacheada para dispositivos LAN también muere: no debe sobrevivir
+    // a un cambio/liberación de dueño de la instalación.
+    db.prepare("DELETE FROM app_config WHERE key = 'owner_token'").run();
   },
 
   // ── wipe all tables ────────────────────────────────────────────────────────
