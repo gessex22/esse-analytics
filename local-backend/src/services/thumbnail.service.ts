@@ -4,6 +4,7 @@ import ffprobeStatic from 'ffprobe-static';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { appendDebugLog } from './video-normalize.service';
 
 // Ver mismo fix en video-normalize.service.ts: en la app empaquetada hay que
 // apuntar a la ruta unpacked, si no Node no puede ejecutar el binario dentro del asar.
@@ -22,18 +23,42 @@ function thumbPath(fileId: string | number): string {
   return path.join(THUMBS_DIR, `${fileId}.jpg`);
 }
 
-export function probeDuration(filePath: string): Promise<number> {
+export interface ProbedVideoInfo {
+  durationSec: number;
+  width: number | null;
+  height: number | null;
+}
+
+// Trae duración Y dimensiones en una sola pasada de ffprobe — se usa tanto
+// para backfillear la duración como formato/resolución (antes solo se pedía
+// duración, y formato/resolución quedaban en null hasta que el plugin de
+// transcripción externo los calculaba, así que reels recién agregados se
+// clasificaban por default como "16:9" al no tener con qué derivar 9:16).
+export function probeVideoInfo(filePath: string): Promise<ProbedVideoInfo> {
+  const name = path.basename(filePath);
   return new Promise((resolve) => {
-    ffmpeg.ffprobe(filePath, (err, data) => resolve(err ? 0 : Number(data.format?.duration ?? 0)));
+    ffmpeg.ffprobe(filePath, (err, data) => {
+      if (err) {
+        appendDebugLog(`[thumb] ffprobe FALLÓ para "${name}": ${err.message}`);
+        resolve({ durationSec: 0, width: null, height: null });
+        return;
+      }
+      const video = data.streams.find(s => s.codec_type === 'video');
+      resolve({
+        durationSec: Number(data.format?.duration ?? 0),
+        width:  video?.width  ?? null,
+        height: video?.height ?? null,
+      });
+    });
   });
 }
 
 export interface ThumbnailResult {
   path: string | null;
-  // Solo viene seteado cuando tuvimos que probar el archivo porque no había
-  // duracion_segundos guardada — el caller la persiste en la DB. Si ya se
-  // pasó knownDurationSec, no se vuelve a probar (ya está resuelta).
-  probedDurationSec: number | null;
+  // Solo viene seteado cuando probamos el archivo porque faltaba algún dato
+  // (duración, formato o resolución) — el caller persiste en la DB lo que
+  // corresponda. Si ya se conocía todo, no se vuelve a probar.
+  probed: ProbedVideoInfo | null;
 }
 
 /**
@@ -42,21 +67,24 @@ export interface ThumbnailResult {
  * 10% de la duración (tope 3s) en vez del frame 0, que en clips cortos suele
  * salir en negro o mostrando solo el logo/intro.
  *
- * De paso resuelve la duración real con ffprobe cuando no se conoce todavía
- * (video recién agregado, antes de que el plugin de transcripción la calcule) —
- * evita el estimado por conteo de palabras que mostraba "0:15" por defecto.
+ * De paso resuelve con ffprobe lo que no se conozca todavía (duración,
+ * formato, resolución) — antes duración se estimaba por conteo de palabras
+ * (siempre "0:15" fijo si no había transcripción) y formato/resolución
+ * quedaban en null hasta que el plugin de transcripción externo los calculaba,
+ * así que un reel (9:16) recién agregado se mostraba como "16:9" por default.
  */
 export async function ensureThumbnail(
   fileId: string | number,
   videoPath: string,
-  knownDurationSec?: number,
+  known: { durationSec?: number; hasDimensions?: boolean },
 ): Promise<ThumbnailResult> {
+  const name = path.basename(videoPath);
   const out = thumbPath(fileId);
-  const needsDuration = !knownDurationSec;
-  const probedDurationSec = needsDuration ? await probeDuration(videoPath) : null;
-  const duration = knownDurationSec ?? probedDurationSec ?? 0;
+  const needsProbe = !known.durationSec || !known.hasDimensions;
+  const probed = needsProbe ? await probeVideoInfo(videoPath) : null;
+  const duration = known.durationSec ?? probed?.durationSec ?? 0;
 
-  if (fs.existsSync(out)) return { path: out, probedDurationSec };
+  if (fs.existsSync(out)) return { path: out, probed };
 
   try {
     fs.mkdirSync(THUMBS_DIR, { recursive: true });
@@ -74,9 +102,12 @@ export async function ensureThumbnail(
         });
     });
 
-    return { path: fs.existsSync(out) ? out : null, probedDurationSec };
-  } catch {
-    return { path: null, probedDurationSec };
+    const ok = fs.existsSync(out);
+    if (!ok) appendDebugLog(`[thumb] "${name}" → ffmpeg terminó sin error pero no generó el .jpg (offset=${offset.toFixed(1)}s)`);
+    return { path: ok ? out : null, probed };
+  } catch (err: any) {
+    appendDebugLog(`[thumb] "${name}" → ffmpeg FALLÓ generando miniatura: ${err.message}`);
+    return { path: null, probed };
   }
 }
 

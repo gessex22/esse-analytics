@@ -16,7 +16,7 @@ import {
   MonitorOff,
   CalendarClock,
 } from "lucide-react";
-import { videoService, backupService, setupService, formatDurationFromSeconds, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
+import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
@@ -129,7 +129,9 @@ function SimpleStatusBadge({ state, onClick }: { state: PlatformState; onClick?:
 // avisarle a la fila su duración real apenas se resuelve — si no, la lista
 // solo se autocorrige recargando la página entera (el fetch de la lista ya
 // había terminado antes de que esta miniatura backfilleara la duración).
-function VideoThumb({ fileId, onDuration }: { fileId?: string; onDuration?: (sec: number) => void }) {
+function VideoThumb({ fileId, onDuration, onResolution }: {
+  fileId?: string; onDuration?: (sec: number) => void; onResolution?: (res: string) => void;
+}) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -143,6 +145,8 @@ function VideoThumb({ fileId, onDuration }: { fileId?: string; onDuration?: (sec
         if (!r.ok) throw new Error("sin miniatura");
         const dur = Number(r.headers.get("X-Duration-Seconds"));
         if (Number.isFinite(dur) && dur > 0) onDuration?.(dur);
+        const res = r.headers.get("X-Resolution");
+        if (res) onResolution?.(res);
         return r.blob();
       })
       .then((blob) => {
@@ -446,6 +450,16 @@ export function VideosView({
   const applyProbedDuration = (fileId: string, sec: number) => {
     setVideos((prev) => prev.map((v) =>
       v.fileId === fileId && v.duration === "—" ? { ...v, duration: formatDurationFromSeconds(sec) } : v
+    ));
+  };
+
+  // Mismo mecanismo para el aspecto real: sin esto, un reel (9:16) recién
+  // agregado quedaba clasificado "16:9" por default (sin formato/resolución
+  // todavía) y el container de la miniatura nunca usaba la caja vertical.
+  const applyProbedResolution = (fileId: string, resolucion: string) => {
+    const ratio = deriveRatio(undefined, resolucion);
+    setVideos((prev) => prev.map((v) =>
+      v.fileId === fileId && v.ratio !== ratio ? { ...v, ratio } : v
     ));
   };
 
@@ -853,14 +867,18 @@ export function VideosView({
                   {String(globalIdx).padStart(2, "0")}
                 </span>
 
-                {/* Miniatura — la caja respeta el aspecto real del video (la mayoría acá
-                    son reels 9:16, no tiene sentido embutirlos en una caja horizontal) */}
+                {/* Miniatura — mismo tamaño fijo que usa Taller.tsx para esta misma fila,
+                    el ratio ya se ve aparte en el chip 9:16/16:9 junto al título */}
                 <button
                   onClick={() => video.fileId && setPlayerVideo({ fileId: video.fileId, title: video.title })}
                   disabled={!video.fileId}
-                  className={`relative ${video.ratio === "9:16" ? "w-7 h-12 sm:w-8 sm:h-14" : "w-20 h-12 sm:w-24 sm:h-14"} rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed`}
+                  className="relative w-20 h-12 sm:w-24 sm:h-14 rounded-lg overflow-hidden bg-secondary flex-shrink-0 flex items-center justify-center border border-border hover:border-primary/50 hover:brightness-110 transition-all disabled:cursor-not-allowed"
                 >
-                  <VideoThumb fileId={video.fileId} onDuration={(sec) => video.fileId && applyProbedDuration(video.fileId, sec)} />
+                  <VideoThumb
+                    fileId={video.fileId}
+                    onDuration={(sec) => video.fileId && applyProbedDuration(video.fileId, sec)}
+                    onResolution={(res) => video.fileId && applyProbedResolution(video.fileId, res)}
+                  />
                   {video.duration && video.duration !== "0:00" && video.duration !== "—" && (
                     <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded leading-tight font-mono">
                       {video.duration}

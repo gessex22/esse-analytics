@@ -238,7 +238,7 @@ function readableTipo(tipo?: string) {
   return TIPO_LABELS[tipo] ?? tipo.replaceAll("_", " ");
 }
 
-function deriveRatio(formato?: string, resolucion?: string): "9:16" | "16:9" {
+export function deriveRatio(formato?: string, resolucion?: string): "9:16" | "16:9" {
   if (formato?.toUpperCase() === "VERTICAL") return "9:16";
   if (resolucion) {
     const [w, h] = resolucion.split("x").map(Number);

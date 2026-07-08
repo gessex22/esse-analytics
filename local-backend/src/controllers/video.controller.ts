@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { fileRepo, FileContentStatus } from '../db/file.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
-import { ensureThumbnail, deleteThumbnail, probeDuration } from '../services/thumbnail.service';
+import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
 
@@ -79,14 +79,32 @@ export const getVideoThumbnail = async (req: Request, res: Response): Promise<vo
   if (!file || file.status === 'ELIMINADO_DISCO') { res.status(404).end(); return; }
   if (!fs.existsSync(file.file_path)) { res.status(404).end(); return; }
 
-  const { path: thumb, probedDurationSec } = await ensureThumbnail(file.id, file.file_path, file.duracion_segundos ?? undefined);
-  if (probedDurationSec) fileRepo.update(file.id, { duracion_segundos: probedDurationSec });
+  const hasDimensions = !!(file.formato && file.resolucion);
+  const { path: thumb, probed } = await ensureThumbnail(file.id, file.file_path, {
+    durationSec: file.duracion_segundos ?? undefined,
+    hasDimensions,
+  });
+
+  // Backfillea lo que faltaba: sin esto, un reel (9:16) recién agregado se
+  // clasificaba "16:9" por default al no tener formato/resolución todavía
+  // (esos campos los llenaba solo el plugin de transcripción externo).
+  const updates: Partial<{ duracion_segundos: number; formato: string; resolucion: string }> = {};
+  if (probed) {
+    if (!file.duracion_segundos && probed.durationSec) updates.duracion_segundos = probed.durationSec;
+    if (!hasDimensions && probed.width && probed.height) {
+      updates.formato    = probed.height > probed.width ? 'VERTICAL' : 'HORIZONTAL';
+      updates.resolucion = `${probed.width}x${probed.height}`;
+    }
+  }
+  if (Object.keys(updates).length) fileRepo.update(file.id, updates);
   if (!thumb) { res.status(404).end(); return; }
 
-  // Le avisa al frontend la duración ya resuelta (propia o recién probada) para
-  // que la fila se autocorrija sin esperar a recargar toda la lista de Videos.
-  const durationSec = file.duracion_segundos || probedDurationSec || 0;
+  // Le avisa al frontend lo ya resuelto (propio o recién probado) para que la
+  // fila se autocorrija sin esperar a recargar toda la lista de Videos.
+  const durationSec = updates.duracion_segundos ?? file.duracion_segundos ?? 0;
   if (durationSec) res.setHeader('X-Duration-Seconds', String(durationSec));
+  const resolucion = updates.resolucion ?? file.resolucion;
+  if (resolucion) res.setHeader('X-Resolution', resolucion);
 
   res.setHeader('Cache-Control', 'private, max-age=86400');
   res.sendFile(path.resolve(thumb));
@@ -227,13 +245,24 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
   const doc = fileRepo.findById(req.params.fileId);
   if (!doc) { res.status(404).json({ message: 'No encontrado.' }); return; }
 
-  // Sin duracion_segundos todavía (el plugin de transcripción no la calculó):
-  // la probamos con ffprobe acá mismo, en vez de dejar que el frontend estime
-  // un valor falso ("0:15" fijo) a partir del texto de la transcripción.
+  // Sin duracion_segundos/formato/resolución todavía (el plugin de transcripción
+  // no los calculó): los probamos con ffprobe acá mismo, en vez de dejar que el
+  // frontend estime una duración falsa ("0:15" fijo) o asuma "16:9" por default.
   let durationSec = doc.duracion_segundos ?? 0;
-  if (!durationSec && fs.existsSync(doc.file_path)) {
-    durationSec = await probeDuration(doc.file_path);
-    if (durationSec) fileRepo.update(doc.id, { duracion_segundos: durationSec });
+  let formato      = doc.formato;
+  let resolucion   = doc.resolucion;
+  const hasDimensions = !!(formato && resolucion);
+  if ((!durationSec || !hasDimensions) && fs.existsSync(doc.file_path)) {
+    const probed = await probeVideoInfo(doc.file_path);
+    const updates: Partial<{ duracion_segundos: number; formato: string; resolucion: string }> = {};
+    if (!durationSec && probed.durationSec) { durationSec = probed.durationSec; updates.duracion_segundos = probed.durationSec; }
+    if (!hasDimensions && probed.width && probed.height) {
+      formato    = probed.height > probed.width ? 'VERTICAL' : 'HORIZONTAL';
+      resolucion = `${probed.width}x${probed.height}`;
+      updates.formato = formato;
+      updates.resolucion = resolucion;
+    }
+    if (Object.keys(updates).length) fileRepo.update(doc.id, updates);
   }
 
   const tr = transcriptRepo.findByFileId(doc.id);
@@ -242,8 +271,8 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
       _id: String(doc.id),
       file_name: doc.file_name,
       duration_seconds: durationSec,
-      formato: doc.formato ?? 'HORIZONTAL',
-      resolucion: doc.resolucion ?? '',
+      formato: formato ?? 'HORIZONTAL',
+      resolucion: resolucion ?? '',
     },
     transcript: tr ? {
       _id: String(doc.id),

@@ -203,6 +203,8 @@ export const fileRepo = {
     platforms_discarded: Platform[];
     tipo_contenido: string | null;
     duracion_segundos: number;
+    resolucion: string;
+    formato: string;
     fecha_creacion: string | Date | null;
     scheduled_date: string | Date | null;
   }>): boolean {
@@ -219,6 +221,8 @@ export const fileRepo = {
     if (data.platforms_discarded !== undefined) setStr('platforms_discarded', JSON.stringify(data.platforms_discarded));
     if ('tipo_contenido' in data)              setStr('tipo_contenido', data.tipo_contenido ?? null);
     if (data.duracion_segundos !== undefined) setStr('duracion_segundos', data.duracion_segundos);
+    if (data.resolucion !== undefined)        setStr('resolucion', data.resolucion);
+    if (data.formato !== undefined)           setStr('formato', data.formato);
     if ('fecha_creacion' in data)           setStr('fecha_creacion', data.fecha_creacion ? new Date(data.fecha_creacion!).toISOString() : null);
     if ('scheduled_date' in data)           setStr('scheduled_date', data.scheduled_date ? new Date(data.scheduled_date!).toISOString() : null);
 
