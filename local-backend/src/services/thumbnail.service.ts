@@ -19,8 +19,15 @@ ffmpeg.setFfprobePath(unpackAsarPath(ffprobeStatic.path));
 // haga falta mostrarlas fuera de esta instalación.
 const THUMBS_DIR = path.join(process.env.SQLITE_DIR || path.join(os.homedir(), '.esse-analytics'), 'thumbnails');
 
+// v2: miniatura de tamaño fijo con fondo desenfocado rellenando los bordes en
+// vez de recortar — un reel 9:16 ya no se ve cortado ni con barras negras
+// dentro de la caja 16:9 de la lista. El sufijo de versión evita servir para
+// siempre las .jpg viejas (recorte simple) ya generadas por versiones previas.
+const THUMB_W = 320;
+const THUMB_H = 180;
+
 function thumbPath(fileId: string | number): string {
-  return path.join(THUMBS_DIR, `${fileId}.jpg`);
+  return path.join(THUMBS_DIR, `${fileId}.v2.jpg`);
 }
 
 export interface ProbedVideoInfo {
@@ -92,14 +99,18 @@ export async function ensureThumbnail(
 
     await new Promise<void>((resolve, reject) => {
       ffmpeg(videoPath)
+        .seekInput(offset)
+        .complexFilter([
+          // Fondo: llena el cuadro entero (recorta lo que sobre) y lo difumina fuerte.
+          `[0:v]scale=${THUMB_W}:${THUMB_H}:force_original_aspect_ratio=increase,crop=${THUMB_W}:${THUMB_H},boxblur=20:5[bg]`,
+          // Frente: entra completo sin recortar (letterbox), centrado sobre el fondo.
+          `[0:v]scale=${THUMB_W}:${THUMB_H}:force_original_aspect_ratio=decrease[fg]`,
+          `[bg][fg]overlay=(W-w)/2:(H-h)/2[out]`,
+        ], 'out')
+        .outputOptions(['-frames:v', '1', '-update', '1'])
         .on('error', reject)
         .on('end', () => resolve())
-        .screenshots({
-          timestamps: [offset],
-          filename:   path.basename(out),
-          folder:     THUMBS_DIR,
-          size:       '480x?',
-        });
+        .save(out);
     });
 
     const ok = fs.existsSync(out);
@@ -112,8 +123,10 @@ export async function ensureThumbnail(
 }
 
 // Se llama al borrar el archivo original — evita miniaturas huérfanas acumulándose.
+// Borra también el nombre viejo (sin .v2) por si quedó de una versión anterior.
 export function deleteThumbnail(fileId: string | number): void {
   try { fs.unlinkSync(thumbPath(fileId)); } catch { /* no existía, no-op */ }
+  try { fs.unlinkSync(path.join(THUMBS_DIR, `${fileId}.jpg`)); } catch { /* no existía, no-op */ }
 }
 
 // Se llama en el wipe (logout/cambio de cuenta/reset) — las miniaturas son
