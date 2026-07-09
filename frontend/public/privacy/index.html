@@ -39,7 +39,7 @@
     <header>
       <div class="brand"><img src="/favicon.png" alt="EsseAnalytics" />Esse<span>Analytics</span></div>
       <h1>Privacy Policy</h1>
-      <p class="meta">Effective date: January 1, 2026 &nbsp;·&nbsp; Last updated: January 1, 2026</p>
+      <p class="meta">Effective date: January 1, 2026 &nbsp;·&nbsp; Last updated: July 9, 2026</p>
     </header>
 
     <h2>1. Overview</h2>
@@ -50,8 +50,8 @@
     <ul>
       <li><strong>Account credentials:</strong> username and encrypted password for authentication</li>
       <li><strong>OAuth tokens:</strong> access and refresh tokens for connected social media platforms (TikTok, YouTube, Instagram), stored encrypted in our database</li>
-      <li><strong>Content metadata:</strong> titles, descriptions, tags, and publishing status of videos managed through the Service</li>
-      <li><strong>Usage data:</strong> basic server logs for security and debugging purposes</li>
+      <li><strong>Content metadata:</strong> titles, descriptions, tags, transcripts, and publishing status of videos managed through the Service</li>
+      <li><strong>Usage data:</strong> IP address, device/browser information, and basic server logs for security and debugging purposes</li>
     </ul>
 
     <h2>3. How We Use Your Information</h2>
@@ -64,20 +64,20 @@
     </ul>
 
     <h2>4. TikTok Data</h2>
-    <p>When you connect your TikTok account, we request access to the following scopes: <code>user.info.basic</code>, <code>video.publish</code>, and <code>video.upload</code>. We use these permissions solely to publish videos on your behalf. We do not share TikTok user data with any third parties. You can revoke access at any time from within the Service or directly from your TikTok account settings.</p>
+    <p>When you connect your TikTok account, we request access to the following scopes: <code>user.info.basic</code>, <code>video.publish</code>, <code>video.upload</code>, and <code>video.list</code>. We use these permissions solely to publish videos on your behalf and to read your list of published videos so we can match and sync their publishing status. We do not share TikTok user data with any third parties. You can revoke access at any time from within the Service or directly from your TikTok account settings.</p>
 
     <h2>4b. Meta (Facebook / Instagram) Data</h2>
-    <p>When you connect your Instagram account (via Facebook Login for Business), we request access to the following permissions: <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>instagram_basic</code>, <code>instagram_content_publish</code>, and <code>business_management</code>. We use these permissions exclusively to:</p>
+    <p>When you connect your Instagram account (via Facebook Login for Business), we request access to the following permissions: <code>pages_show_list</code>, <code>pages_read_engagement</code>, <code>instagram_basic</code>, <code>instagram_content_publish</code>, <code>instagram_manage_insights</code>, and <code>business_management</code>. We use these permissions exclusively to:</p>
     <ul>
       <li>Identify the Facebook Page and linked Instagram Business Account you choose to connect (<code>pages_show_list</code>, <code>business_management</code>)</li>
       <li>Read basic profile info of the connected Instagram account, such as username and profile picture (<code>instagram_basic</code>)</li>
       <li>Publish Reels/videos to that Instagram account on your behalf, only when you explicitly choose to publish (<code>instagram_content_publish</code>)</li>
-      <li>Retrieve engagement metrics (views, likes, comments) of content published through the Service (<code>pages_read_engagement</code>)</li>
+      <li>Retrieve engagement metrics and insights (views, likes, comments, reach) of content published through the Service (<code>pages_read_engagement</code>, <code>instagram_manage_insights</code>)</li>
     </ul>
     <p>We never post, message, or modify anything on your Facebook Page or Instagram account without your explicit action within the Service. We do not share Meta user data with any third parties. You can revoke access at any time from within the Service or from your Facebook account's "Apps and Websites" settings.</p>
 
     <h2>4c. YouTube Data</h2>
-    <p>When you connect your YouTube account via Google OAuth, we request access to upload videos and read your channel's basic info and video statistics. We use this exclusively to publish videos on your behalf and show you their performance. We do not share YouTube/Google user data with any third parties, and our use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+    <p>When you connect your YouTube account via Google OAuth, we request the <code>youtube.upload</code>, <code>youtube</code>, and <code>youtube.readonly</code> scopes. We use these permissions exclusively to publish videos on your behalf, manage the metadata of videos published through the Service, and show you their performance statistics. We do not share YouTube/Google user data with any third parties, and our use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
 
     <h2>5. Data Storage and Security</h2>
     <p>All data is stored in a secured MongoDB database hosted on MongoDB Atlas. OAuth tokens are stored at rest and transmitted over HTTPS only. We do not sell, rent, or share your personal information with third parties.</p>
@@ -99,7 +99,10 @@
     <h2>9. Changes to This Policy</h2>
     <p>We may update this Privacy Policy from time to time. The "Last updated" date at the top of this page will reflect any changes.</p>
 
-    <h2>10. Contact</h2>
+    <h2>10. Data Not Collected</h2>
+    <p>Your video files never leave your device. EsseAnalytics' local application stores your videos on your own computer; only metadata about them (title, description, transcript, publishing status) is synced to our servers, exclusively to enable cross-device access and scheduling.</p>
+
+    <h2>11. Contact</h2>
     <p>For privacy-related questions or data deletion requests, contact us at <a href="mailto:gesse.socialmedia@gmail.com">gesse.socialmedia@gmail.com</a>.</p>
 
     <footer>
