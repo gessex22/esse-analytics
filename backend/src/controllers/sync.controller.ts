@@ -336,6 +336,18 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
   }
 };
 
+// Cuánto tiempo se banca un valor guardado antes de pedirlo de nuevo en vivo —
+// un video recién publicado se mueve rápido (vale la pena refrescar seguido),
+// uno viejo ya está en plateau (refrescarlo todo el tiempo es gastar cuota de
+// las APIs para no ver casi ningún cambio).
+function statsCacheWindowMs(publishedAt?: Date | string | null): number {
+  if (!publishedAt) return 6 * 60 * 60 * 1000; // sin fecha conocida → ventana media
+  const ageDays = (Date.now() - new Date(publishedAt).getTime()) / 86_400_000;
+  if (ageDays < 7)  return 15 * 60 * 1000;       // < 1 semana: cada 15 min
+  if (ageDays < 30) return 6 * 60 * 60 * 1000;   // < 1 mes: cada 6 horas
+  return 24 * 60 * 60 * 1000;                    // más viejo: 1 vez por día
+}
+
 // GET /api/sync/group-stats?limit=5 — para la vista de Estadísticas: los últimos
 // N videos que YA están matcheados en las 3 plataformas, con las stats de cada
 // una para compararlas lado a lado. Es la misma vista para modo simple y
@@ -352,7 +364,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
 
     const fileIds = files.map(f => f._id);
     const linked = await PlatformVideoModel.find({ userId, linkedFileId: { $in: fileIds } })
-      .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments')
+      .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
       .lean();
     const byFile = new Map<string, typeof linked>();
     for (const pv of linked) {
@@ -361,6 +373,10 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     }
 
     const items: any[] = [];
+    // Solo se piden en vivo los platformId que ya vencieron su ventana de
+    // cache — el resto se sirve directo de lo guardado en Mongo.
+    const toRefresh: Record<SyncPlatform, string[]> = { youtube: [], instagram: [], tiktok: [] };
+
     for (const f of files) {
       if (items.length >= limit) break;
       const pvs = byFile.get(String(f._id)) ?? [];
@@ -372,22 +388,19 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
           platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
           views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,
         };
+        const lastSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
+        const stale = Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt);
+        if (stale) toRefresh[pv.platform as SyncPlatform].push(pv.platformId);
       }
       items.push({ fileId: String(f._id), fileName: f.file_name, fecha_creacion: f.fecha_creacion, platforms });
     }
 
-    // Refresco en vivo — acotado a como mucho `limit` videos × 3 plataformas,
-    // así que no pega contra las cuotas de las APIs como sí pasaría si esto
-    // fuera para toda la biblioteca. Si una plataforma falla (token vencido,
-    // TikTok sin aprobar, etc.) se conserva el valor guardado en Mongo.
-    const youtubeIds   = items.map(i => i.platforms.youtube?.platformId).filter(Boolean) as string[];
-    const instagramIds = items.map(i => i.platforms.instagram?.platformId).filter(Boolean) as string[];
-    const tiktokIds     = items.map(i => i.platforms.tiktok?.platformId).filter(Boolean) as string[];
-
+    // Refresco en vivo — acotado por la ventana de cache de arriba y, en el
+    // peor caso (todo vencido), a como mucho `limit` videos × 3 plataformas.
     const [ytStats, igStats, tkStats] = await Promise.all([
-      getYoutubeVideoStats(youtubeIds).catch(() => ({} as Record<string, any>)),
-      getMediaStats(userId, instagramIds).catch(() => ({} as Record<string, any>)),
-      getTiktokVideoStats(userId, tiktokIds).catch(() => ({} as Record<string, any>)),
+      getYoutubeVideoStats(toRefresh.youtube).catch(() => ({} as Record<string, any>)),
+      getMediaStats(userId, toRefresh.instagram).catch(() => ({} as Record<string, any>)),
+      getTiktokVideoStats(userId, toRefresh.tiktok).catch(() => ({} as Record<string, any>)),
     ]);
 
     const bulkOps: any[] = [];
@@ -400,7 +413,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         bulkOps.push({
           updateOne: {
             filter: { userId, platform, platformId: slot.platformId },
-            update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0 } },
+            update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0, lastSyncedAt: new Date() } },
           },
         });
       }
