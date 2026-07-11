@@ -362,7 +362,12 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       .lean();
 
     const fileIds = files.map(f => f._id);
-    const linked = await PlatformVideoModel.find({ userId, linkedFileId: { $in: fileIds } })
+    // La vista compara solo las 3 redes con stats propias — los registros de
+    // 'facebook' (crossposting) quedan afuera para no inflar el conteo de "3
+    // plataformas vinculadas" ni pedir stats que Facebook no expone acá.
+    const linked = await PlatformVideoModel.find({
+      userId, linkedFileId: { $in: fileIds }, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
+    })
       .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
       .lean();
     const byFile = new Map<string, typeof linked>();
@@ -374,7 +379,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     const items: any[] = [];
     // Solo se piden en vivo los platformId que ya vencieron su ventana de
     // cache — el resto se sirve directo de lo guardado en Mongo.
-    const toRefresh: Record<SyncPlatform, string[]> = { youtube: [], instagram: [], tiktok: [] };
+    const toRefresh: Record<'youtube' | 'instagram' | 'tiktok', string[]> = { youtube: [], instagram: [], tiktok: [] };
 
     for (const f of files) {
       if (items.length >= limit) break;
@@ -389,7 +394,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         };
         const lastSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
         const stale = Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt);
-        if (stale) toRefresh[pv.platform as SyncPlatform].push(pv.platformId);
+        if (stale) toRefresh[pv.platform as 'youtube' | 'instagram' | 'tiktok'].push(pv.platformId);
       }
       items.push({ fileId: String(f._id), fileName: f.file_name, fecha_creacion: f.fecha_creacion, platforms });
     }

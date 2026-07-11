@@ -23,7 +23,7 @@ const TK_PRIVACY_LABELS: Record<TkPrivacy, string> = {
 
 type ConnStatus = boolean | null;
 type ResultStatus = "idle" | "uploading" | "success" | "error";
-interface UploadResult { status: ResultStatus; message?: string; url?: string; }
+interface UploadResult { status: ResultStatus; message?: string; url?: string; note?: string; }
 
 const IDLE_RESULTS: Record<Platform, UploadResult> = {
   youtube: { status: "idle" }, instagram: { status: "idle" }, tiktok: { status: "idle" },
@@ -189,7 +189,12 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
-      setResults(prev => ({ ...prev, [p]: { status: "success", url: data.videoUrl || data.postUrl } }));
+      // Instagram con cross-post: reportar el resultado REAL de Facebook (antes
+      // el checkbox no hacía nada y el éxito era silencioso/falso).
+      const note = p === "instagram" && igCrossPostFb
+        ? (data.facebookUrl ? undefined : `Facebook no salió: ${data.facebookError ?? "error desconocido"}`)
+        : undefined;
+      setResults(prev => ({ ...prev, [p]: { status: "success", url: data.videoUrl || data.postUrl, note } }));
     } catch (err: any) {
       setResults(prev => ({ ...prev, [p]: { status: "error", message: err.message } }));
     }
@@ -319,6 +324,9 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
               {result.status === "error" && result.message && (
                 <p className="px-4 pb-3 text-xs text-red-300">{result.message}</p>
+              )}
+              {result.status === "success" && result.note && (
+                <p className="px-4 pb-3 text-xs text-amber-300">{result.note}</p>
               )}
 
               <AnimatePresence initial={false}>

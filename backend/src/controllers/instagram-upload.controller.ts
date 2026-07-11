@@ -91,6 +91,55 @@ function streamFileToMeta(uri: string, token: string, filePath: string, _fileSiz
   });
 }
 
+// Publica el MISMO archivo como Reel en la Página de Facebook vía la Reels
+// Publishing API (/{page_id}/video_reels). Es el crossposting robusto: el flag
+// cross_post_facebook_reels del contenedor de IG no está documentado y Meta lo
+// ignora en silencio, y el "Compartir a Facebook" manual desde la app de IG
+// falla con "no se puede reusar el audio" en reels subidos por API (el audio
+// queda registrado como audio original de ese reel). Publicar directo en la
+// Página evita ambos problemas. Requiere el scope pages_manage_posts.
+export async function publishReelToFacebookPage(
+  filePath: string,
+  pageId: string,
+  pageToken: string,
+  description: string,
+): Promise<{ videoId: string; url: string }> {
+  // 1. Iniciar sesión de subida → video_id + upload_url (rupload.facebook.com)
+  const start = await igPost(`/${pageId}/video_reels`, { upload_phase: 'start', access_token: pageToken });
+  if (!start.video_id || !start.upload_url) {
+    throw new Error(start.error?.message ?? `No se pudo iniciar la subida a Facebook [${JSON.stringify(start)}]`);
+  }
+
+  // 2. Subir los bytes — mismo protocolo (OAuth + offset + file_size) que el
+  //    resumable upload de Instagram, así que se reusa el helper tal cual.
+  await streamFileToMeta(start.upload_url, pageToken, filePath, 0);
+
+  // 3. Publicar
+  const finish = await igPost(`/${pageId}/video_reels`, {
+    upload_phase: 'finish',
+    video_id:     start.video_id,
+    video_state:  'PUBLISHED',
+    description,
+    access_token: pageToken,
+  });
+  if (finish.error) throw new Error(finish.error.message ?? 'Error al publicar el Reel en Facebook');
+
+  // 4. Esperar (acotado) a que Meta termine de procesar/publicar. Si no llega a
+  //    ready en ese tiempo igual devolvemos éxito — el video ya quedó encolado
+  //    del lado de Meta y termina de publicarse solo.
+  for (let i = 0; i < 12; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    const st = await igGet(`/${start.video_id}?fields=status`, pageToken);
+    const phase = st.status?.publishing_phase?.status ?? st.status?.video_status;
+    if (st.status?.video_status === 'error') {
+      throw new Error(`Facebook rechazó el video [${JSON.stringify(st.status)}]`);
+    }
+    if (phase === 'complete' || st.status?.video_status === 'ready') break;
+  }
+
+  return { videoId: start.video_id, url: `https://www.facebook.com/reel/${start.video_id}` };
+}
+
 // Facebook Login for Business es un permiso de la Meta App principal, no una
 // app separada — usa las mismas credenciales que el resto de la integración.
 const fbAppId     = () => process.env.META_APP_ID!;
@@ -128,7 +177,10 @@ export const getToken = async (req: AuthRequest, res: Response) => {
   if (!isUsableInstagramConnection(tokens)) {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
-  res.json({ access_token: tokens!.access_token, instagram_user_id: tokens!.instagram_user_id });
+  // page_id: lo necesita el local-backend para publicar el Reel también en la
+  // Página de Facebook (crossposting robusto vía /video_reels, no el flag
+  // cross_post_facebook_reels que Meta ignora silenciosamente).
+  res.json({ access_token: tokens!.access_token, instagram_user_id: tokens!.instagram_user_id, page_id: tokens!.page_id ?? null });
 };
 
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
@@ -150,7 +202,9 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
     // Fallback si todavía no se creó la Login Configuration en el dashboard.
     // instagram_manage_insights es lo que habilita /insights?metric=views (sin
     // él, Meta devuelve error de permisos y las vistas quedan en "--" en la UI).
-    params.set('scope', 'pages_show_list,pages_read_engagement,instagram_basic,instagram_content_publish,instagram_manage_insights,business_management');
+    // pages_manage_posts habilita publicar Reels directo en la Página de
+    // Facebook (/video_reels) — el crossposting robusto depende de él.
+    params.set('scope', 'pages_show_list,pages_read_engagement,pages_manage_posts,instagram_basic,instagram_content_publish,instagram_manage_insights,business_management');
   }
   res.json({ url: `${FB_OAUTH_DIALOG}?${params}` });
 };
@@ -290,7 +344,7 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram primero' });
   }
 
-  const { access_token, instagram_user_id } = tokenData!;
+  const { access_token, instagram_user_id, page_id } = tokenData!;
 
   const hashtagLine = (tags as string[]).length
     ? '\n\n' + (tags as string[]).map(t => `#${t}`).join(' ')
@@ -311,7 +365,9 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
       access_token,
     };
     if (thumbOffset != null) containerPayload.thumb_offset = Math.round(Number(thumbOffset) * 1000);
-    if (crossPostFacebook) containerPayload.cross_post_facebook_reels = true;
+    // El crossposting a Facebook NO va acá (cross_post_facebook_reels no existe
+    // en la API y Meta lo ignoraba en silencio) — se publica aparte en la Página
+    // vía publishReelToFacebookPage() después de que IG confirme.
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
     if (!containerData.id) {
@@ -357,13 +413,37 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
       { upsert: true },
     );
 
-    const platformsToAdd = crossPostFacebook ? ['instagram', 'facebook'] : ['instagram'];
+    // Crossposting robusto: el mismo archivo se publica como Reel en la Página
+    // de Facebook. No-fatal: si falla, la subida a IG ya está hecha y se
+    // reporta el detalle para que el usuario sepa que Facebook NO salió.
+    let facebookUrl: string | null = null;
+    let facebookError: string | null = null;
+    if (crossPostFacebook) {
+      if (!page_id) {
+        facebookError = 'La conexión no tiene una Página de Facebook asociada — reconectá Instagram.';
+      } else {
+        try {
+          const fb = await publishReelToFacebookPage(filePath, page_id, access_token, fullCaption);
+          facebookUrl = fb.url;
+          await PlatformVideoModel.findOneAndUpdate(
+            { userId: req.user!.id, platform: 'facebook', platformId: fb.videoId },
+            { userId: req.user!.id, platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
+            { upsert: true },
+          );
+        } catch (err: any) {
+          facebookError = err.message;
+          console.error('[Facebook] Cross-post falló:', err.message);
+        }
+      }
+    }
+
+    const platformsToAdd = facebookUrl ? ['instagram', 'facebook'] : ['instagram'];
     await FileModel.findByIdAndUpdate(fileId, {
       $set: { content_status: 'publicado' },
       $addToSet: { platforms: { $each: platformsToAdd } },
     });
 
-    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!crossPostFacebook });
+    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!facebookUrl, facebookUrl, facebookError });
   } catch (err: any) {
     console.error('Error al subir a Instagram:', err.message);
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });

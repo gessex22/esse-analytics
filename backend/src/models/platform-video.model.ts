@@ -1,6 +1,8 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
-export type SyncPlatform = 'youtube' | 'instagram' | 'tiktok';
+// 'facebook' solo aparece como destino de crossposting (Reel publicado en la
+// Página al subir a IG) — no participa del matching ni de las vistas de sync.
+export type SyncPlatform = 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 export type PlatformVideoStatus = 'public' | 'private' | 'unlisted' | 'deleted';
 
 export interface IPlatformVideo extends Document {
@@ -31,7 +33,7 @@ export interface IPlatformVideo extends Document {
 
 const platformVideoSchema = new Schema<IPlatformVideo>({
   userId:         { type: String, required: true, index: true },
-  platform:       { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok'] },
+  platform:       { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok', 'facebook'] },
   platformId:     { type: String, required: true },
   platformUrl:    { type: String, required: true },
   title:          { type: String, default: '' },

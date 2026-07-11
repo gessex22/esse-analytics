@@ -832,6 +832,8 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
   const [step,             setStep]             = useState<"details" | "uploading" | "done">("details");
   const [doneUrl,          setDoneUrl]          = useState<string | null>(null);
   const [doneFacebook,     setDoneFacebook]     = useState(false);
+  const [facebookUrl,      setFacebookUrl]      = useState<string | null>(null);
+  const [facebookError,    setFacebookError]    = useState<string | null>(null);
   const [uploadError,      setUploadError]      = useState<string | null>(null);
   const [previewVideo,     setPreviewVideo]     = useState<SlimVideo | null>(null);
   const [uploadStage,      setUploadStage]      = useState<"original" | "recorte-60s" | "recorte-60s+normalizado" | null>(null);
@@ -946,6 +948,8 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
       if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
       setDoneUrl(data.postUrl);
       setDoneFacebook(crossPostFacebook);
+      setFacebookUrl(data.facebookUrl ?? null);
+      setFacebookError(data.facebookError ?? null);
       setUploadStage(data.uploadStage ?? null);
       setStep("done");
       onUploaded();
@@ -959,7 +963,7 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
     setStep("details");
     setCaption(selected ? selected.title.replace(/\.[^.]+$/, "") : "");
     setTags([]); setThumbOffset(null); setShowScrubber(false);
-    setUploadError(null); setDoneUrl(null); setDoneFacebook(false); setUploadStage(null);
+    setUploadError(null); setDoneUrl(null); setDoneFacebook(false); setFacebookUrl(null); setFacebookError(null); setUploadStage(null);
     setTrimStartSec(0); setTrimDurationSec(60); setShowTrimEditor(false);
   };
 
@@ -1095,14 +1099,22 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
                 <InstagramIcon className="w-3.5 h-3.5" /> Ver en Instagram <ExternalLink className="w-3.5 h-3.5" />
               </a>
             )}
-            {doneFacebook && (
+            {facebookUrl && (
+              <a href={facebookUrl} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-sm text-blue-400 hover:underline">
+                <FacebookIcon className="w-3.5 h-3.5" /> Ver en Facebook <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+            {doneFacebook && !facebookUrl && (
               <div className="flex flex-col items-center gap-1 max-w-xs text-center">
-                <span className="flex items-center gap-1.5 text-sm text-blue-400">
-                  <FacebookIcon className="w-3.5 h-3.5" /> Cross-post a Facebook solicitado
+                <span className="flex items-center gap-1.5 text-sm text-amber-400">
+                  <FacebookIcon className="w-3.5 h-3.5" /> No se pudo publicar en Facebook
                 </span>
                 <span className="text-[11px] text-muted-foreground">
-                  Meta no confirma si se publicó realmente — revisá la Página de Facebook. Si no aparece,
-                  activá "Compartir a Facebook" en Instagram → Configuración → Cuentas → Compartir entre perfiles.
+                  {facebookError ?? "Error desconocido"}
+                  {facebookError?.includes("permission") || facebookError?.includes("permiso")
+                    ? " — probablemente falte el permiso pages_manage_posts: desconectá y volvé a conectar Instagram."
+                    : ""}
                 </span>
               </div>
             )}
