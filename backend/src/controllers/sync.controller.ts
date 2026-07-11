@@ -2,9 +2,9 @@ import { Response } from 'express';
 import { randomUUID } from 'crypto';
 import { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { syncYouTubeChannel, getYouTubeVideos } from '../services/youtube.service';
-import { getRecentInstagramMedia, PlatformRecentItem } from '../services/instagram.service';
-import { getRecentTikTokVideos } from '../services/tiktok.service';
+import { syncYouTubeChannel, getYouTubeVideos, getVideoStats as getYoutubeVideoStats } from '../services/youtube.service';
+import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../services/instagram.service';
+import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats } from '../services/tiktok.service';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
 
@@ -375,6 +375,37 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       }
       items.push({ fileId: String(f._id), fileName: f.file_name, fecha_creacion: f.fecha_creacion, platforms });
     }
+
+    // Refresco en vivo — acotado a como mucho `limit` videos × 3 plataformas,
+    // así que no pega contra las cuotas de las APIs como sí pasaría si esto
+    // fuera para toda la biblioteca. Si una plataforma falla (token vencido,
+    // TikTok sin aprobar, etc.) se conserva el valor guardado en Mongo.
+    const youtubeIds   = items.map(i => i.platforms.youtube?.platformId).filter(Boolean) as string[];
+    const instagramIds = items.map(i => i.platforms.instagram?.platformId).filter(Boolean) as string[];
+    const tiktokIds     = items.map(i => i.platforms.tiktok?.platformId).filter(Boolean) as string[];
+
+    const [ytStats, igStats, tkStats] = await Promise.all([
+      getYoutubeVideoStats(youtubeIds).catch(() => ({} as Record<string, any>)),
+      getMediaStats(userId, instagramIds).catch(() => ({} as Record<string, any>)),
+      getTiktokVideoStats(userId, tiktokIds).catch(() => ({} as Record<string, any>)),
+    ]);
+
+    const bulkOps: any[] = [];
+    for (const item of items) {
+      for (const [platform, fresh] of [['youtube', ytStats], ['instagram', igStats], ['tiktok', tkStats]] as const) {
+        const slot = item.platforms[platform];
+        const update = slot && fresh[slot.platformId];
+        if (!update) continue;
+        Object.assign(slot, update);
+        bulkOps.push({
+          updateOne: {
+            filter: { userId, platform, platformId: slot.platformId },
+            update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0 } },
+          },
+        });
+      }
+    }
+    if (bulkOps.length > 0) PlatformVideoModel.bulkWrite(bulkOps).catch(() => {});
 
     res.json({ items });
   } catch (err: any) {

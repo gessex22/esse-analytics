@@ -117,6 +117,22 @@ export async function syncYouTubeChannel(userId: string): Promise<{ total: numbe
   return { total: allIds.length, shorts, upserted };
 }
 
+// Stats en vivo para un puñado puntual de videos (ej. la vista de Estadísticas,
+// acotada a 5 videos) — a diferencia de getYouTubeVideos, no lee de Mongo.
+export async function getVideoStats(ids: string[]): Promise<Record<string, { views: number; likes: number; comments: number }>> {
+  if (ids.length === 0) return {};
+  const details = await getVideoDetails(ids);
+  const result: Record<string, { views: number; likes: number; comments: number }> = {};
+  for (const item of details) {
+    result[item.id] = {
+      views:    parseInt(item.statistics?.viewCount    ?? '0'),
+      likes:    parseInt(item.statistics?.likeCount    ?? '0'),
+      comments: parseInt(item.statistics?.commentCount ?? '0'),
+    };
+  }
+  return result;
+}
+
 // Obtener los videos de YouTube ya guardados en BD
 export async function getYouTubeVideos(userId: string, page = 1, limit = 50) {
   const skip  = (page - 1) * limit;

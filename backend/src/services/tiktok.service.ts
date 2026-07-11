@@ -59,3 +59,42 @@ export async function getRecentTikTokVideos(userId: string, limit: number, curso
   const nextCursor = data.data?.has_more && data.data?.cursor ? String(data.data.cursor) : null;
   return { items, nextCursor };
 }
+
+// Stats en vivo para un puñado puntual de video ids (ej. vista de Estadísticas)
+// vía /v2/video/query/ — a diferencia de /video/list/ (que trae "los últimos N"),
+// este permite pedir videos puntuales por id.
+export async function getVideoStatsByIds(userId: string, videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; shares: number }>> {
+  if (videoIds.length === 0) return {};
+  let token: { access_token: string };
+  try {
+    token = await getValidToken(userId);
+  } catch {
+    return {};
+  }
+
+  try {
+    const res = await fetch(`${TK_BASE}/video/query/?fields=id,like_count,view_count,comment_count,share_count`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ filters: { video_ids: videoIds } }),
+    });
+    if (!res.ok) return {};
+    const data = await res.json() as any;
+    const videos = data.data?.videos ?? [];
+    const result: Record<string, { views: number; likes: number; comments: number; shares: number }> = {};
+    for (const v of videos) {
+      result[v.id] = {
+        views:    v.view_count    ?? 0,
+        likes:    v.like_count    ?? 0,
+        comments: v.comment_count ?? 0,
+        shares:   v.share_count   ?? 0,
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}

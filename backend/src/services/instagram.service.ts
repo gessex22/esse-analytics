@@ -59,3 +59,23 @@ export async function getRecentInstagramMedia(userId: string, limit: number, aft
 
   return { items, nextCursor: data.paging?.cursors?.after ?? null };
 }
+
+// Stats en vivo para un puñado puntual de media ids (ej. vista de Estadísticas).
+// Graph API no soporta traer varios media ids sueltos en una sola llamada, así
+// que va uno por uno — está bien acotado a los ~5 videos de esa vista.
+export async function getMediaStats(userId: string, mediaIds: string[]): Promise<Record<string, { likes: number; comments: number }>> {
+  const tokens = await loadTokens(userId);
+  if (!isUsableInstagramConnection(tokens) || mediaIds.length === 0) return {};
+
+  const result: Record<string, { likes: number; comments: number }> = {};
+  await Promise.all(mediaIds.map(async (id) => {
+    try {
+      const res = await fetch(`${FB_GRAPH}/${id}?fields=like_count,comments_count&access_token=${tokens!.access_token}`);
+      if (!res.ok) return;
+      const data = await res.json() as any;
+      if (data.error) return;
+      result[id] = { likes: data.like_count ?? 0, comments: data.comments_count ?? 0 };
+    } catch { /* deja el id afuera del resultado — el caller conserva el valor guardado */ }
+  }));
+  return result;
+}
