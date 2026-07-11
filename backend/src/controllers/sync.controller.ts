@@ -341,11 +341,10 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
 // uno viejo ya está en plateau (refrescarlo todo el tiempo es gastar cuota de
 // las APIs para no ver casi ningún cambio).
 function statsCacheWindowMs(publishedAt?: Date | string | null): number {
-  if (!publishedAt) return 6 * 60 * 60 * 1000; // sin fecha conocida → ventana media
+  if (!publishedAt) return 60 * 60 * 1000; // sin fecha conocida → cada hora
   const ageDays = (Date.now() - new Date(publishedAt).getTime()) / 86_400_000;
-  if (ageDays < 7)  return 15 * 60 * 1000;       // < 1 semana: cada 15 min
-  if (ageDays < 30) return 6 * 60 * 60 * 1000;   // < 1 mes: cada 6 horas
-  return 24 * 60 * 60 * 1000;                    // más viejo: 1 vez por día
+  if (ageDays < 2) return 5 * 60 * 1000;   // < 2 días: cada 5 min
+  return 60 * 60 * 1000;                    // 2+ días: cada hora
 }
 
 // GET /api/sync/group-stats?limit=5 — para la vista de Estadísticas: los últimos
