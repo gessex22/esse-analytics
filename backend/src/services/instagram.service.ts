@@ -60,21 +60,40 @@ export async function getRecentInstagramMedia(userId: string, limit: number, aft
   return { items, nextCursor: data.paging?.cursors?.after ?? null };
 }
 
+// Las vistas de un Reel NO vienen en los campos básicos del media — hay que
+// pedirlas aparte via /insights. Si el token no tiene el scope
+// instagram_business_manage_insights, la API responde error de permiso y acá
+// se devuelve 0 en vez de romper el resto de las stats.
+async function fetchInsightViews(mediaId: string, accessToken: string): Promise<number> {
+  try {
+    const r = await fetch(`${FB_GRAPH}/${mediaId}/insights?metric=views&access_token=${accessToken}`);
+    const d = await r.json() as any;
+    if (!r.ok || d.error) return 0;
+    const val = d.data?.[0]?.values?.[0]?.value ?? d.data?.[0]?.total_value?.value;
+    return typeof val === 'number' ? val : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // Stats en vivo para un puñado puntual de media ids (ej. vista de Estadísticas).
 // Graph API no soporta traer varios media ids sueltos en una sola llamada, así
 // que va uno por uno — está bien acotado a los ~5 videos de esa vista.
-export async function getMediaStats(userId: string, mediaIds: string[]): Promise<Record<string, { likes: number; comments: number }>> {
+export async function getMediaStats(userId: string, mediaIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number }>> {
   const tokens = await loadTokens(userId);
   if (!isUsableInstagramConnection(tokens) || mediaIds.length === 0) return {};
 
-  const result: Record<string, { likes: number; comments: number }> = {};
+  const result: Record<string, { views: number; likes: number; comments: number }> = {};
   await Promise.all(mediaIds.map(async (id) => {
     try {
-      const res = await fetch(`${FB_GRAPH}/${id}?fields=like_count,comments_count&access_token=${tokens!.access_token}`);
+      const [res, views] = await Promise.all([
+        fetch(`${FB_GRAPH}/${id}?fields=like_count,comments_count&access_token=${tokens!.access_token}`),
+        fetchInsightViews(id, tokens!.access_token),
+      ]);
       if (!res.ok) return;
       const data = await res.json() as any;
       if (data.error) return;
-      result[id] = { likes: data.like_count ?? 0, comments: data.comments_count ?? 0 };
+      result[id] = { views, likes: data.like_count ?? 0, comments: data.comments_count ?? 0 };
     } catch { /* deja el id afuera del resultado — el caller conserva el valor guardado */ }
   }));
   return result;
