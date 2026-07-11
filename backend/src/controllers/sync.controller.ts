@@ -1,8 +1,11 @@
 import { Response } from 'express';
+import { randomUUID } from 'crypto';
 import { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { syncYouTubeChannel, getYouTubeVideos } from '../services/youtube.service';
-import { PlatformVideoModel } from '../models/platform-video.model';
+import { getRecentInstagramMedia, PlatformRecentItem } from '../services/instagram.service';
+import { getRecentTikTokVideos } from '../services/tiktok.service';
+import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -107,6 +110,273 @@ export const markOrphan = async (req: AuthRequest, res: Response): Promise<void>
     });
     if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/sync/platform-recent/:platform?limit=20&cursor=... — página de videos
+// EN VIVO de la plataforma, para elegir manualmente cuáles son "el mismo video"
+// entre redes (emparejado cruzado). `cursor` es lo que devolvió la página
+// anterior en `nextCursor` — hace falta paginar de verdad (no solo traer un lote
+// fijo) porque cada plataforma publica a un ritmo distinto: si TikTok publica
+// mucho más seguido que YouTube/Instagram, sus últimos 20 pueden cubrir apenas
+// unos días mientras las otras cubren meses, y nunca se llega a la misma fecha
+// sin poder seguir retrocediendo. Excluye los que ya quedaron agrupados antes.
+export const getPlatformRecent = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { platform } = req.params as { platform: SyncPlatform };
+    const limit  = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const cursor = (req.query.cursor as string | undefined) || undefined;
+    const userId = req.user!.id;
+
+    if (!['youtube', 'instagram', 'tiktok'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' });
+      return;
+    }
+
+    let items: PlatformRecentItem[];
+    let nextCursor: string | null;
+    if (platform === 'youtube') {
+      // getYouTubeVideos pagina por número de página — el cursor acá ES esa página.
+      const page = cursor ? parseInt(cursor) : 1;
+      const yt = await getYouTubeVideos(userId, page, limit);
+      items = yt.items.map((v: any) => ({
+        platformId:  v.platformId,
+        title:       v.title,
+        thumbnail:   v.thumbnail,
+        publishedAt: new Date(v.publishedAt).toISOString(),
+        platformUrl: v.platformUrl,
+        stats: { views: v.views, likes: v.likes, comments: v.comments },
+      }));
+      nextCursor = page * limit < yt.total ? String(page + 1) : null;
+    } else if (platform === 'instagram') {
+      const page = await getRecentInstagramMedia(userId, limit, cursor);
+      items = page.items;
+      nextCursor = page.nextCursor;
+    } else {
+      const page = await getRecentTikTokVideos(userId, limit, cursor);
+      items = page.items;
+      nextCursor = page.nextCursor;
+    }
+
+    // Filtra los que ya quedaron agrupados en un match cruzado previo.
+    const already = await PlatformVideoModel.find({
+      userId, platform, platformId: { $in: items.map(i => i.platformId) },
+      crossMatchGroupId: { $ne: null },
+    }).select('platformId').lean();
+    const excluded = new Set(already.map(d => d.platformId));
+
+    res.json({ items: items.filter(i => !excluded.has(i.platformId)), nextCursor });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/cross-match — confirma que 2 o 3 videos (uno por plataforma) son
+// el mismo contenido publicado en varias redes. NO toca linkedFileId/matchStatus:
+// ese vínculo con el archivo local es independiente de este agrupamiento.
+export const confirmCrossMatch = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const items = (req.body?.items ?? []) as Array<{
+      platform: SyncPlatform; platformId: string; title?: string; thumbnail?: string;
+      publishedAt?: string; platformUrl?: string | null;
+    }>;
+
+    if (!Array.isArray(items) || items.length < 2) {
+      res.status(400).json({ message: 'Se necesitan al menos 2 videos para emparejar.' });
+      return;
+    }
+    const platforms = new Set(items.map(i => i.platform));
+    if (platforms.size !== items.length) {
+      res.status(400).json({ message: 'No se puede emparejar dos videos de la misma plataforma.' });
+      return;
+    }
+
+    // Si alguno ya pertenece a un grupo, se reutiliza ese id — así uniones
+    // sucesivas terminan en el mismo grupo en vez de fragmentarse en varios.
+    const existing = await PlatformVideoModel.find({
+      userId,
+      $or: items.map(i => ({ platform: i.platform, platformId: i.platformId })),
+    }).lean();
+    const groupId = existing.find(e => e.crossMatchGroupId)?.crossMatchGroupId ?? randomUUID();
+
+    for (const item of items) {
+      await PlatformVideoModel.findOneAndUpdate(
+        { userId, platform: item.platform, platformId: item.platformId },
+        {
+          $set: {
+            userId,
+            platform:          item.platform,
+            platformId:        item.platformId,
+            platformUrl:       item.platformUrl ?? '',
+            title:             item.title ?? '',
+            publishedAt:       item.publishedAt ? new Date(item.publishedAt) : new Date(),
+            thumbnail:         item.thumbnail ?? '',
+            crossMatchGroupId: groupId,
+            lastSyncedAt:      new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    }
+
+    res.json({ ok: true, groupId });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/sync/cross-match/candidates?limit=20&page=1 — en vez de adivinar a
+// ciegas con las 3 ruedas por separado, arranca de lo que YA se sabe local: los
+// archivos que tienen las 3 badges de plataforma marcadas (files.platforms).
+// Por cada uno, resuelve qué plataformas ya tienen un platform_video vinculado
+// (linkedFileId) y cuáles todavía faltan — así el usuario solo busca lo que
+// realmente falta, no todo desde cero.
+export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const limit  = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const page   = Math.max(1, parseInt(req.query.page as string) || 1);
+
+    const query = { userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } };
+    const [total, files] = await Promise.all([
+      FileModel.countDocuments(query),
+      FileModel.find(query)
+        .sort({ fecha_creacion: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .select('file_name fecha_creacion duracion_segundos')
+        .lean(),
+    ]);
+
+    const fileIds = files.map(f => f._id);
+    const linked = await PlatformVideoModel.find({ userId, linkedFileId: { $in: fileIds } })
+      .select('linkedFileId platform platformId platformUrl title thumbnail')
+      .lean();
+    const byFile = new Map<string, typeof linked>();
+    for (const pv of linked) {
+      const key = String(pv.linkedFileId);
+      byFile.set(key, [...(byFile.get(key) ?? []), pv]);
+    }
+
+    const candidates = files.map(f => {
+      const resolvedFor = byFile.get(String(f._id)) ?? [];
+      const resolved: Record<string, any> = { youtube: null, instagram: null, tiktok: null };
+      for (const pv of resolvedFor) {
+        resolved[pv.platform] = {
+          platformId: pv.platformId, platformUrl: pv.platformUrl,
+          title: pv.title, thumbnail: pv.thumbnail,
+        };
+      }
+      return {
+        fileId:   String(f._id),
+        fileName: f.file_name,
+        fecha_creacion: f.fecha_creacion,
+        resolved,
+      };
+    });
+
+    res.json({ items: candidates, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/cross-match/resolve — confirma que un video de una plataforma
+// específica corresponde a un archivo local puntual (ya sabido de antemano por
+// tener las 3 badges). A diferencia de confirmCrossMatch, acá SÍ fija
+// linkedFileId — es exactamente la misma acción que "Vincular con archivo local"
+// (confirmLink), solo que el candidato puede venir de un fetch en vivo (IG/TikTok)
+// que todavía no tiene un doc propio en Mongo, por eso hace upsert.
+export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { fileId, platform, platformId, title, thumbnail, publishedAt, platformUrl, stats } = req.body ?? {};
+
+    if (!fileId || !platform || !platformId) {
+      res.status(400).json({ message: 'fileId, platform y platformId son requeridos.' });
+      return;
+    }
+    if (!['youtube', 'instagram', 'tiktok'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' });
+      return;
+    }
+
+    // Los nombres de campo de stats no son uniformes entre plataformas
+    // (ver instagram.service.ts / tiktok.service.ts) — se normalizan acá para
+    // que la vista de Estadísticas los pueda leer siempre igual.
+    const s = stats ?? {};
+    const views    = s.views    ?? 0;
+    const likes    = s.likes    ?? s.like_count     ?? 0;
+    const comments = s.comments ?? s.comments_count ?? 0;
+
+    await PlatformVideoModel.findOneAndUpdate(
+      { userId, platform, platformId },
+      {
+        $set: {
+          userId, platform, platformId,
+          platformUrl:  platformUrl ?? '',
+          title:        title ?? '',
+          thumbnail:    thumbnail ?? '',
+          publishedAt:  publishedAt ? new Date(publishedAt) : new Date(),
+          linkedFileId: new Types.ObjectId(fileId),
+          matchStatus:  'manual',
+          views, likes, comments,
+          lastSyncedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/sync/group-stats?limit=5 — para la vista de Estadísticas: los últimos
+// N videos que YA están matcheados en las 3 plataformas, con las stats de cada
+// una para compararlas lado a lado. Es la misma vista para modo simple y
+// avanzado (no depende de workflow_mode) — el matching es siempre por archivo.
+export const getGroupStats = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const limit  = Math.min(parseInt(req.query.limit as string) || 5, 20);
+
+    const files = await FileModel.find({ userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } })
+      .sort({ fecha_creacion: -1 })
+      .select('file_name fecha_creacion')
+      .lean();
+
+    const fileIds = files.map(f => f._id);
+    const linked = await PlatformVideoModel.find({ userId, linkedFileId: { $in: fileIds } })
+      .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments')
+      .lean();
+    const byFile = new Map<string, typeof linked>();
+    for (const pv of linked) {
+      const key = String(pv.linkedFileId);
+      byFile.set(key, [...(byFile.get(key) ?? []), pv]);
+    }
+
+    const items: any[] = [];
+    for (const f of files) {
+      if (items.length >= limit) break;
+      const pvs = byFile.get(String(f._id)) ?? [];
+      if (pvs.length < 3) continue; // solo videos con las 3 plataformas YA vinculadas
+
+      const platforms: Record<string, any> = {};
+      for (const pv of pvs) {
+        platforms[pv.platform] = {
+          platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
+          views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,
+        };
+      }
+      items.push({ fileId: String(f._id), fileName: f.file_name, fecha_creacion: f.fecha_creacion, platforms });
+    }
+
+    res.json({ items });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }

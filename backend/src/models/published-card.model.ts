@@ -7,6 +7,7 @@ export interface IPublishedCard extends Document {
   userId: string;
   platform: 'youtube' | 'instagram' | 'tiktok';
   fileName?: string | null;
+  fileId?: string | null;
   platformId?: string | null;
   platformUrl?: string | null;
   publishedAt?: Date | null;
@@ -20,6 +21,7 @@ const publishedCardSchema = new Schema<IPublishedCard>({
   userId:      { type: String, required: true },
   platform:    { type: String, required: true, enum: ['youtube', 'instagram', 'tiktok'] },
   fileName:    { type: String, default: null },
+  fileId:      { type: String, default: null },
   platformId:  { type: String, default: null },
   platformUrl: { type: String, default: null },
   publishedAt: { type: Date,   default: null },

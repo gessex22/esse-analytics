@@ -16,24 +16,25 @@ export const SETTINGS_SECTIONS = [
 ];
 
 export const navItems = [
-  { icon: BarChart2,    label: "Dashboard"   },
-  { icon: Film,         label: "Videos"      },
-  { icon: Upload,       label: "Subir"       },
-  { icon: Users,        label: "Usuarios"    },
-  { icon: TrendingUp,   label: "Analíticas"  },
-  { icon: Wrench,       label: "Taller"      },
-  { icon: Settings,     label: "Ajustes"     },
-  { icon: CalendarDays, label: "Calendario"  },
-  { icon: Gem,          label: "Gemas"       },
+  { icon: BarChart2,    label: "Dashboard"     },
+  { icon: Film,         label: "Videos"        },
+  { icon: Upload,       label: "Subir"         },
+  { icon: Users,        label: "Usuarios"      },
+  { icon: TrendingUp,   label: "Estadísticas"  },
+  { icon: Wrench,       label: "Taller"        },
+  { icon: Settings,     label: "Ajustes"       },
+  { icon: CalendarDays, label: "Calendario"    },
+  { icon: Gem,          label: "Gemas"         },
 ];
 
-export const ACTIVE_VIEWS = new Set([1, 2, 3, 5, 6, 7, 8]);
+export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 export const MOBILE_NAV   = [1, 2, 7, 5, 6];
 
 // Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
 // la navegación sigue siendo por índice, así que esto NO cambia la lógica, solo el
 // orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
-export const NAV_ORDER = [0, 1, 2, 7, 5, 4, 8, 3, 6];
+// Estadísticas (4) va justo debajo de Dashboard (0).
+export const NAV_ORDER = [0, 4, 1, 2, 7, 5, 8, 3, 6];
 
 interface SidebarProps {
   effectiveNav: number;

@@ -26,7 +26,7 @@ async function saveTokens(userId: string, data: object) {
   );
 }
 
-async function loadTokens(userId: string): Promise<Record<string, any> | null> {
+export async function loadTokens(userId: string): Promise<Record<string, any> | null> {
   const db = mongoose.connection.db!;
   const doc = await db.collection('oauth_tokens').findOne({ provider: 'instagram', userId });
   return doc ?? null;
@@ -118,7 +118,7 @@ function popupResult(res: Response, status: string, origin = process.env.FRONTEN
 // Login for Business (Instagram User Token, no Page Access Token) — no sirve
 // contra graph.facebook.com. Se trata como "no conectado" para que el usuario
 // reconecte por el flujo normal en vez de fallar con un error críptico de Meta.
-function isUsableInstagramConnection(tokens: Record<string, any> | null): boolean {
+export function isUsableInstagramConnection(tokens: Record<string, any> | null): boolean {
   return !!(tokens?.access_token && tokens?.instagram_user_id && tokens?.authType === 'facebook_login_business');
 }
 

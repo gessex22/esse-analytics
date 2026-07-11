@@ -19,6 +19,7 @@ import { canPublishOnMobile } from "./lib/mobileMode";
 import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
+import { StatsView } from "./components/StatsView";
 import { Sidebar, MobileNav, navItems, SETTINGS_SECTIONS } from "./components/Sidebar";
 import { usePluginActivity, phaseLabel } from "./hooks/usePluginActivity";
 import logoImg from "./assets/esseAnalytics.png";
@@ -464,9 +465,10 @@ export default function App() {
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <UploadView />
-                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} isPremium={isPremium} onSectionChange={setActiveSection} />
+                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} isPremium={isPremium} onSectionChange={setActiveSection} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
+                  : effectiveNav === 4 ? <StatsView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }

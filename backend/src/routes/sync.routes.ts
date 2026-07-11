@@ -2,6 +2,8 @@ import { Router } from 'express';
 import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
+  getPlatformRecent, confirmCrossMatch,
+  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats,
   getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -19,6 +21,11 @@ router.get ('/api/sync/stats',              verifyToken, requireRole('todopodero
 router.get ('/api/sync/review',                    verifyToken, requireRole('todopoderoso'), getReviewList);
 router.post('/api/sync/review/:pvId/link',         verifyToken, requireRole('todopoderoso'), confirmLink);
 router.post('/api/sync/review/:pvId/orphan',       verifyToken, requireRole('todopoderoso'), markOrphan);
+router.get ('/api/sync/platform-recent/:platform', verifyToken, requireRole('todopoderoso'), getPlatformRecent);
+router.post('/api/sync/cross-match',               verifyToken, requireRole('todopoderoso'), confirmCrossMatch);
+router.get ('/api/sync/cross-match/candidates',     verifyToken, requireRole('todopoderoso'), getCrossMatchCandidates);
+router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('todopoderoso'), resolveCrossMatchSlot);
+router.get ('/api/sync/group-stats',                verifyToken, requireRole('todopoderoso'), getGroupStats);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
 

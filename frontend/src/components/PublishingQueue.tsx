@@ -104,6 +104,7 @@ const URG_TEXT: Record<Urgency, string> = {
 type PublishedVideo = {
   platform:    Platform;
   fileName:    string | null;
+  fileId:      string | null;
   platformId:  string | null;
   platformUrl: string | null;
   publishedAt: string | null;
@@ -964,7 +965,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   const laterB   = withUrg.filter(x => x.urg === "ok").sort(byDate);
 
   const history = ORDER
-    .map(p => published.find(d => d.platform === p) ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo)
+    .map(p => published.find(d => d.platform === p) ?? { platform: p, fileName: null, fileId: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo)
     .sort((a, b) => (b.publishedAt || "").localeCompare(a.publishedAt || ""));
 
   // Simple: en vez de mostrar solo la plataforma canónica, se muestran juntas
@@ -1060,7 +1061,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {ORDER.map(p => {
                     const data = published.find(d => d.platform === p)
-                      ?? { platform: p, fileName: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo;
+                      ?? { platform: p, fileName: null, fileId: null, platformId: null, platformUrl: null, publishedAt: null } as PublishedVideo;
                     return <PublishedCard key={p} data={data} />;
                   })}
                 </div>

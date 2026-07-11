@@ -3,6 +3,7 @@ import {
   getVideos, getVideoSlimList, getVideoSlimPendingTranscript, getVideoPlayerData,
   updateVideoContentStatus, updateVideoPlatforms, updateVideosBulk,
   renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate, getVideoThumbnail,
+  resolveFilesByName,
 } from '../controllers/video.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -12,6 +13,7 @@ router.get('/api/videos',                              verifyToken, getVideos);
 // Sin verifyToken: las consume esse_transcrip.py (proceso local, sin sesión de usuario),
 // igual que /api/videos/:id/transcript y el resto de rutas plugin-facing.
 router.get('/api/videos/slim',                         getVideoSlimList);
+router.post('/api/videos/resolve-by-name',             verifyToken, resolveFilesByName);
 router.get('/api/videos/slim/pending-transcript',      getVideoSlimPendingTranscript);
 router.get('/api/metrics',                             verifyToken, getMetrics);
 router.get('/api/videos/:fileId/player-data',          verifyToken, getVideoPlayerData);

@@ -67,4 +67,15 @@ router.use('/api/instagram/token',  proxyToCentral);
 // Calendario — la config vive en MongoDB (central), no en SQLite
 router.use('/api/sync/calendar-config', proxyToCentral);
 
+// Sincronización (match YouTube↔archivo local y emparejado entre plataformas) —
+// vive en Mongo/central, no en SQLite. Sin esto, estas rutas no matcheaban nada
+// local y caían en el catch-all de frontend estático (devolvía HTML en vez de
+// proxyar), rompiendo el panel de Sincronización cuando se usa desde la app.
+router.use('/api/sync/stats',           proxyToCentral);
+router.use('/api/sync/review',          proxyToCentral);
+router.use('/api/sync/youtube',         proxyToCentral);
+router.use('/api/sync/platform-recent', proxyToCentral);
+router.use('/api/sync/cross-match',     proxyToCentral);
+router.use('/api/sync/group-stats',     proxyToCentral);
+
 export default router;

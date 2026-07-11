@@ -170,9 +170,10 @@ interface SettingsViewProps {
   isLocal?: boolean;
   isPremium?: boolean;
   onSectionChange: (id: string) => void;
+  onOpenVideo?: (fileId: string, title: string) => void;
 }
 
-export function SettingsView({ activeSection, role, isLocal, isPremium, onSectionChange }: SettingsViewProps) {
+export function SettingsView({ activeSection, role, isLocal, isPremium, onSectionChange, onOpenVideo }: SettingsViewProps) {
   const visibleSections = ALL_SECTIONS.filter(s =>
     s.roles.includes(role) && (!s.localOnly || isLocal)
   );
@@ -205,7 +206,7 @@ export function SettingsView({ activeSection, role, isLocal, isPremium, onSectio
       {activeSection === "colores"    && <ColoresPanel />}
       {activeSection === "biblioteca" && <LibraryPanel />}
       {activeSection === "seguridad"  && <SecurityPanel />}
-      {activeSection === "sync"       && <SyncPanel />}
+      {activeSection === "sync"       && <SyncPanel onOpenVideo={onOpenVideo} />}
       {activeSection === "frieden"    && <FriedenPanel isPremium={!!isPremium} />}
       {activeSection === "datos"      && <DatosPanel />}
     </div>

@@ -15,11 +15,12 @@ export async function getPublishedCards(req: AuthRequest, res: Response): Promis
     const result = PLATFORMS.map((platform) => {
       const d = byPlatform.get(platform);
       if (!d) {
-        return { platform, fileName: null, platformId: null, platformUrl: null, publishedAt: null };
+        return { platform, fileName: null, fileId: null, platformId: null, platformUrl: null, publishedAt: null };
       }
       return {
         platform,
         fileName:    d.fileName ?? null,
+        fileId:      d.fileId ?? null,
         platformId:  d.platformId ?? null,
         platformUrl: d.platformUrl ?? null,
         publishedAt: d.publishedAt ?? null,
@@ -53,6 +54,7 @@ export async function mirrorPublishedCards(req: AuthRequest, res: Response): Pro
               userId,
               platform:    c.platform,
               fileName:    c.fileName ?? null,
+              fileId:      c.fileId ?? null,
               platformId:  c.platformId ?? null,
               platformUrl: c.platformUrl ?? null,
               publishedAt: c.publishedAt ? new Date(c.publishedAt) : null,

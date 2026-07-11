@@ -47,7 +47,7 @@ async function refreshAccessToken(refreshToken: string): Promise<Record<string, 
   return data;
 }
 
-async function getValidToken(userId: string): Promise<{ access_token: string; open_id: string }> {
+export async function getValidToken(userId: string): Promise<{ access_token: string; open_id: string }> {
   const stored = await loadTokens(userId);
   if (!stored?.access_token) throw new Error('NO_AUTH');
 

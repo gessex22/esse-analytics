@@ -429,6 +429,15 @@ export const videoService = {
   // URL directa para <img src> — no pasa por requestJson porque no es JSON.
   thumbnailUrl: (fileId: string): string => `${API_BASE_URL}/api/videos/${fileId}/thumbnail`,
 
+  // Resuelve file_name → id local (SQLite). Hace falta cuando el fileId viene de
+  // la central (Mongo _id, distinto del id local) — ej. candidatos de sync.
+  resolveByNames: (names: string[]): Promise<Record<string, string | null>> =>
+    requestJson('/api/videos/resolve-by-name', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names }),
+    }),
+
   getAllVideos: async (
     page = 1,
     limit = 10,
@@ -612,6 +621,76 @@ export interface SyncStats {
   sinMatch: number;
 }
 
+export interface PlatformRecentItem {
+  platformId:  string;
+  title:       string;
+  thumbnail:   string;
+  publishedAt: string;
+  platformUrl: string | null;
+  stats: Record<string, any>;
+}
+
+export interface PlatformRecentPage {
+  items: PlatformRecentItem[];
+  nextCursor: string | null;
+}
+
+export interface CrossMatchItem {
+  platform:    string;
+  platformId:  string;
+  title?:      string;
+  thumbnail?:  string;
+  publishedAt?: string;
+  platformUrl?: string | null;
+  stats?: Record<string, any>;
+}
+
+export interface CrossMatchResolvedSlot {
+  platformId: string;
+  platformUrl: string;
+  title: string;
+  thumbnail: string;
+}
+
+export interface CrossMatchCandidate {
+  fileId: string;
+  fileName: string;
+  fecha_creacion: string;
+  resolved: {
+    youtube: CrossMatchResolvedSlot | null;
+    instagram: CrossMatchResolvedSlot | null;
+    tiktok: CrossMatchResolvedSlot | null;
+  };
+}
+
+export interface CrossMatchCandidatesResponse {
+  items: CrossMatchCandidate[];
+  total: number;
+  page: number;
+  totalPages: number;
+}
+
+export interface GroupStatsSlot {
+  platformId: string;
+  platformUrl: string;
+  title: string;
+  thumbnail: string;
+  views: number;
+  likes: number;
+  comments: number;
+}
+
+export interface GroupStatsItem {
+  fileId: string;
+  fileName: string;
+  fecha_creacion: string;
+  platforms: {
+    youtube?: GroupStatsSlot;
+    instagram?: GroupStatsSlot;
+    tiktok?: GroupStatsSlot;
+  };
+}
+
 export const syncService = {
   getStats: (): Promise<SyncStats> =>
     requestJson('/api/sync/stats'),
@@ -637,7 +716,7 @@ export const syncService = {
   getCalendarConfig: (): Promise<{ platform: string; lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number; lastVideoId?: string; nextVideoId?: string; nextVideo?: { fileId: string; title: string; duration: string } | null }[]> =>
     requestJson('/api/sync/calendar-config'),
 
-  getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null; title?: string | null; status?: string | null; stats?: Record<string, any> }[]> =>
+  getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; fileId: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null; title?: string | null; status?: string | null; stats?: Record<string, any> }[]> =>
     requestJson('/api/sync/published-videos'),
 
   updateCalendarConfig: (platform: string, data: { lastPublishedDate?: string; lastPublishedTitle?: string; intervalDays?: number; nextVideoId?: string }): Promise<void> =>
@@ -646,6 +725,36 @@ export const syncService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
+
+  // Página de videos EN VIVO de una plataforma, para el emparejado manual entre
+  // redes. Pasar el nextCursor de la respuesta anterior para seguir retrocediendo.
+  getPlatformRecent: (platform: string, limit = 20, cursor?: string): Promise<PlatformRecentPage> =>
+    requestJson(`/api/sync/platform-recent/${platform}?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+
+  // Confirma que 2-3 videos (uno por plataforma) son el mismo contenido.
+  crossMatch: (items: CrossMatchItem[]): Promise<{ ok: boolean; groupId: string }> =>
+    requestJson('/api/sync/cross-match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    }),
+
+  // Archivos locales que ya tienen las 3 badges de plataforma — punto de partida
+  // para completar los links que falten en vez de adivinar a ciegas.
+  getCrossMatchCandidates: (page = 1, limit = 20): Promise<CrossMatchCandidatesResponse> =>
+    requestJson(`/api/sync/cross-match/candidates?page=${page}&limit=${limit}`),
+
+  // Confirma que un video puntual de una plataforma es ESTE archivo local.
+  resolveCrossMatchSlot: (data: { fileId: string; platform: string } & CrossMatchItem): Promise<void> =>
+    requestJson('/api/sync/cross-match/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }),
+
+  // Últimos N videos ya matcheados en las 3 plataformas, con stats de cada una.
+  getGroupStats: (limit = 5): Promise<{ items: GroupStatsItem[] }> =>
+    requestJson(`/api/sync/group-stats?limit=${limit}`),
 };
 
 // ==========================================

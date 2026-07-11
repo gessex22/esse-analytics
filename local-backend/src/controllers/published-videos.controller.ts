@@ -8,6 +8,7 @@ const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
 type PublishedVideo = {
   platform: string;
   fileName: string | null;
+  fileId: string | null;
   platformId: string | null;
   platformUrl: string | null;
   publishedAt: string | null;
@@ -47,13 +48,17 @@ async function fetchToken(
 // de platform_videos local para DECIDIR cuál es el último. Si fue subido por fuera
 // de la app, igual aparece (fileName queda null porque no hay match local).
 
-// Si ese platformId coincide con un video subido desde esta app, resuelve el nombre
-// del archivo local vinculado (linked_file_id) para mostrarlo en la tarjeta.
-function resolveLocalFileName(platform: string, platformId: string | null): string | null {
+// Si ese platformId coincide con un video subido desde esta app (o matcheado
+// retroactivamente por el script de YouTube), resuelve el archivo local vinculado
+// (linked_file_id) — el fileId es lo que permite agrupar el mismo video entre
+// plataformas sin depender de comparar títulos.
+function resolveLocalFile(platform: string, platformId: string | null): { fileId: string; fileName: string } | null {
   if (!platformId) return null;
   const pv = platformVideoRepo.findByPlatformAndId(platform, platformId);
   if (!pv?.linked_file_id) return null;
-  return fileRepo.findById(pv.linked_file_id)?.file_name ?? null;
+  const file = fileRepo.findById(pv.linked_file_id);
+  if (!file) return null;
+  return { fileId: String(pv.linked_file_id), fileName: file.file_name };
 }
 
 async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVideo | null> {
@@ -120,6 +125,7 @@ async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVid
     return {
       platform:    'youtube',
       fileName:    null,
+      fileId:      null,
       platformId:  videoId,
       platformUrl: `https://www.youtube.com/watch?v=${videoId}`,
       publishedAt: item.snippet?.publishedAt ?? null,
@@ -171,6 +177,7 @@ async function fetchInstagramLatest(token: TokenLike): Promise<PublishedVideo | 
     return {
       platform:    'instagram',
       fileName:    null,
+      fileId:      null,
       platformId:  m.id,
       platformUrl: m.permalink ?? null,
       publishedAt: m.timestamp ?? null,
@@ -214,6 +221,7 @@ async function fetchTikTokLatest(token: TokenLike): Promise<PublishedVideo | nul
     return {
       platform:    'tiktok',
       fileName:    null,
+      fileId:      null,
       platformId:  v.id,
       platformUrl: v.share_url
                 || (openId ? `https://www.tiktok.com/@${openId}/video/${v.id}` : null),
@@ -259,11 +267,16 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
           : await fetchInstagramLatest(token);
       }
 
-      if (card) card.fileName = resolveLocalFileName(platform, card.platformId);
+      if (card) {
+        const local = resolveLocalFile(platform, card.platformId);
+        card.fileName = local?.fileName ?? null;
+        card.fileId   = local?.fileId ?? null;
+      }
 
       result.push(card ?? {
         platform,
         fileName: null,
+        fileId: null,
         platformId: null,
         platformUrl: null,
         publishedAt: null,

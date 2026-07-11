@@ -311,3 +311,20 @@ function formatDuration(s: number): string {
   const m = Math.floor(s / 60);
   return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
+
+// ── POST /api/videos/resolve-by-name — resuelve file_name → id local ──────────
+// La central (Mongo) espeja el catálogo con SU PROPIO _id (ObjectId), distinto
+// del id numérico de SQLite acá. El único campo en común es file_name, así que
+// cualquier feature que necesite mostrar miniatura/reproductor a partir de un
+// resultado de la central (ej. el panel de emparejar plataformas) pasa por acá.
+export const resolveFilesByName = (req: Request, res: Response): void => {
+  const names = (req.body?.names ?? []) as string[];
+  if (!Array.isArray(names)) { res.status(400).json({ message: 'names[] requerido' }); return; }
+
+  const result: Record<string, string | null> = {};
+  for (const name of names) {
+    const file = fileRepo.findByName(name);
+    result[name] = file ? String(file.id) : null;
+  }
+  res.json(result);
+};
