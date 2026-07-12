@@ -145,8 +145,15 @@ export async function publishReelToFacebookPage(
 const fbAppId     = () => process.env.META_APP_ID!;
 const fbAppSecret = () => process.env.META_APP_SECRET!;
 
-// Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup)
-function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173') {
+// Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup).
+// Si `client` es "android", en vez de la página HTML (pensada para popup de
+// navegador — no hay window.opener en una Custom Tab) redirige directo a un
+// deep link que la app registra, sin necesidad de polling.
+function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173', client?: string) {
+  if (client === 'android') {
+    res.redirect(302, `essenalytics://oauth-callback?platform=instagram&status=${encodeURIComponent(status)}`);
+    return;
+  }
   res.set('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="font-family:sans-serif;background:#0c0c14;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
 <p>Conectando con Instagram… puedes cerrar esta ventana.</p>
@@ -186,7 +193,8 @@ export const getToken = async (req: AuthRequest, res: Response) => {
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
-  const state = encodeState(req.user!.id, origin);
+  const client = req.query.client as string | undefined;
+  const state = encodeState(req.user!.id, origin, client);
   const configId = process.env.META_LOGIN_CONFIG_ID;
   const params = new URLSearchParams({
     client_id:     fbAppId(),
@@ -216,8 +224,8 @@ export const handleCallback = async (req: Request, res: Response) => {
   console.log('[Instagram] Callback recibido, code:', !!code, 'state:', !!state);
   if (!code || !state) return popupResult(res, 'error');
 
-  const { userId, origin } = decodeState(state);
-  if (!userId) return popupResult(res, 'error', origin);
+  const { userId, origin, client } = decodeState(state);
+  if (!userId) return popupResult(res, 'error', origin, client);
 
   try {
     // 1. Exchange code → short-lived User Access Token
@@ -251,7 +259,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     if (pagesJson.error) throw new Error(pagesJson.error.message ?? JSON.stringify(pagesJson.error));
     const pages: Array<{ id: string; name: string; access_token: string }> = pagesJson.data ?? [];
     console.log(`[Instagram] Páginas de Facebook encontradas: ${pages.length}${pages.length ? ' (' + pages.map(p => p.name).join(', ') + ')' : ''}`);
-    if (!pages.length) return popupResult(res, 'no_ig_account', origin);
+    if (!pages.length) return popupResult(res, 'no_ig_account', origin, client);
 
     // 4. Primera Página con una Cuenta de Instagram Business vinculada.
     let pageId = '';
@@ -271,7 +279,7 @@ export const handleCallback = async (req: Request, res: Response) => {
         console.log(`[Instagram] Página "${page.name}" (${page.id}) sin Cuenta de Instagram Business vinculada`);
       }
     }
-    if (!igBusinessAccountId) return popupResult(res, 'no_ig_account', origin);
+    if (!igBusinessAccountId) return popupResult(res, 'no_ig_account', origin, client);
 
     await saveTokens(userId, {
       access_token:      pageAccessToken,
@@ -279,10 +287,10 @@ export const handleCallback = async (req: Request, res: Response) => {
       page_id:           pageId,
       authType:          'facebook_login_business',
     });
-    popupResult(res, 'success', origin);
+    popupResult(res, 'success', origin, client);
   } catch (err: any) {
     console.error('Instagram OAuth error:', err.message);
-    popupResult(res, 'error', origin);
+    popupResult(res, 'error', origin, client);
   }
 };
 

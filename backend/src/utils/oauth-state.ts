@@ -7,22 +7,24 @@ const DEFAULT_ORIGIN = process.env.FRONTEND_URL || 'http://localhost:5173';
 interface StatePayload {
   u: string;   // userId
   o?: string;  // origin del frontend
+  c?: string;  // client ("android") — si viene, el callback redirige a un deep link en vez del popup HTML
 }
 
-// Codifica userId + origin en un state opaco (base64url de JSON).
-export function encodeState(userId: string, origin?: string): string {
+// Codifica userId + origin (+ client opcional) en un state opaco (base64url de JSON).
+export function encodeState(userId: string, origin?: string, client?: string): string {
   const payload: StatePayload = { u: userId };
   if (origin) payload.o = origin;
+  if (client) payload.c = client;
   return Buffer.from(JSON.stringify(payload)).toString('base64url');
 }
 
 // Decodifica el state. Soporta el formato viejo (solo userId en base64url).
-export function decodeState(state: string): { userId: string; origin: string } {
+export function decodeState(state: string): { userId: string; origin: string; client?: string } {
   try {
     const raw = Buffer.from(state, 'base64url').toString();
     const parsed = JSON.parse(raw) as StatePayload;
     if (parsed && typeof parsed.u === 'string') {
-      return { userId: parsed.u, origin: safeOrigin(parsed.o) };
+      return { userId: parsed.u, origin: safeOrigin(parsed.o), client: parsed.c };
     }
   } catch {
     // No es JSON → formato legacy (el state ERA el userId crudo)

@@ -67,7 +67,8 @@ async function getAuthorizedClient(userId: string) {
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const oauth2 = getOAuth2Client();
   const origin = req.query.origin as string | undefined;
-  const state = encodeState(req.user!.id, origin);
+  const client = req.query.client as string | undefined;
+  const state = encodeState(req.user!.id, origin, client);
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -87,16 +88,21 @@ export const handleCallback = async (req: Request, res: Response) => {
     return res.redirect(`${fallback}?youtube_auth=error`);
   }
 
-  const { userId, origin } = decodeState(state);
+  const { userId, origin, client } = decodeState(state);
+  // Android no tiene una página web en `origin` que lea el query param — vuelve
+  // por deep link directo en vez del redirect a `origin` de siempre.
+  const redirectTo = (status: string) => client === 'android'
+    ? `essenalytics://oauth-callback?platform=youtube&status=${encodeURIComponent(status)}`
+    : `${origin}?youtube_auth=${status}`;
 
   try {
     const oauth2 = getOAuth2Client();
     const { tokens } = await oauth2.getToken(code);
     await saveTokens(userId, tokens);
-    res.redirect(`${origin}?youtube_auth=success`);
+    res.redirect(redirectTo('success'));
   } catch (err: any) {
     console.error('YouTube OAuth callback error:', err.message);
-    res.redirect(`${origin}?youtube_auth=error`);
+    res.redirect(redirectTo('error'));
   }
 };
 
