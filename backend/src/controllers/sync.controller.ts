@@ -312,6 +312,18 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
     const likes    = s.likes    ?? s.like_count     ?? 0;
     const comments = s.comments ?? s.comments_count ?? 0;
 
+    // Re-matchear (ej. un link que quedó apuntando a un video borrado/privado)
+    // dejaba el doc VIEJO todavía linkeado a este archivo, con otro platformId
+    // — group-stats terminaba con 2 registros "youtube" para el mismo archivo
+    // compitiendo por el mismo slot, y cuál ganaba dependía del orden en que
+    // Mongo los devolviera (el bug de "a veces sí, a veces no"). Se desvincula
+    // cualquier otro doc de esta plataforma que ya apuntara acá antes de crear
+    // el nuevo link, para que quede uno solo.
+    await PlatformVideoModel.updateMany(
+      { userId, platform, linkedFileId: new Types.ObjectId(fileId), platformId: { $ne: platformId } },
+      { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
+    );
+
     await PlatformVideoModel.findOneAndUpdate(
       { userId, platform, platformId },
       {
