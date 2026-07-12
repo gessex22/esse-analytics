@@ -3,12 +3,80 @@ import { Eye, Heart, MessageCircle, Loader2, RefreshCw, BarChart2 } from "lucide
 import { syncService, videoService, GroupStatsItem } from "../services/api";
 import { YoutubeLogo, InstagramLogo, TiktokLogo, PlatformKey } from "./icons/PlatformLogos";
 
-const PLATFORM_CFG: Record<PlatformKey, { label: string; Logo: (p: { className?: string }) => JSX.Element; light: string; text: string }> = {
-  youtube:   { label: "YouTube",   Logo: YoutubeLogo,   light: "bg-red-500/10",    text: "text-red-500"    },
-  instagram: { label: "Instagram", Logo: InstagramLogo, light: "bg-purple-500/10", text: "text-purple-500" },
-  tiktok:    { label: "TikTok",    Logo: TiktokLogo,    light: "bg-pink-500/10",   text: "text-pink-500"   },
+// Mismos colores de marca que ya se usan en toda la app (VideosView, SyncPanel)
+// para YouTube/Instagram/TikTok — se reusan acá como identidad categórica del
+// donut en vez de una paleta genérica, para que el color siga significando lo
+// mismo en cualquier pantalla.
+const PLATFORM_CFG: Record<PlatformKey, { label: string; Logo: (p: { className?: string }) => JSX.Element; light: string; text: string; hex: string }> = {
+  youtube:   { label: "YouTube",   Logo: YoutubeLogo,   light: "bg-red-500/10",    text: "text-red-500",    hex: "#ef4444" },
+  instagram: { label: "Instagram", Logo: InstagramLogo, light: "bg-purple-500/10", text: "text-purple-500", hex: "#a855f7" },
+  tiktok:    { label: "TikTok",    Logo: TiktokLogo,    light: "bg-pink-500/10",   text: "text-pink-500",   hex: "#ec4899" },
 };
 const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
+
+// ── Donut de alcance (views) ────────────────────────────────────────────────
+// Solo views (no likes/comments) — responde "qué plataforma tuvo mayor
+// alcance". Anillo fino con separador de 2px entre segmentos (mismo criterio
+// que el resto de la app: la barra de progreso ya usa espaciadores, no bordes).
+// El centro muestra el logo + % de la plataforma líder — la identidad nunca
+// depende solo del color: cada segmento ya comparte tinte con su fila de abajo
+// (mismo hex, mismo logo), así que esa lista actúa como leyenda.
+function ViewsDonut({ platforms }: { platforms: GroupStatsItem["platforms"] }) {
+  const values = PLATFORMS.map(p => ({ p, v: platforms[p]?.views ?? 0 }));
+  const total = values.reduce((sum, x) => sum + x.v, 0);
+
+  if (total === 0) {
+    return (
+      <div className="w-14 h-14 rounded-full border-2 border-dashed border-border flex items-center justify-center flex-shrink-0" title="Todavía sin vistas">
+        <Eye className="w-4 h-4 text-muted-foreground/50" />
+      </div>
+    );
+  }
+
+  const R = 26, CENTER = 32, STROKE = 8;
+  const circumference = 2 * Math.PI * R;
+  const GAP = 3; // separador entre segmentos, en px de arco
+
+  let cursor = 0;
+  const segments = values
+    .filter(x => x.v > 0)
+    .map(({ p, v }) => {
+      const frac = v / total;
+      const raw  = frac * circumference;
+      const dash = Math.max(raw - GAP, 1);
+      const seg  = { p, dash, offset: -cursor };
+      cursor += raw;
+      return seg;
+    });
+
+  const leader = values.reduce((a, b) => (b.v > a.v ? b : a));
+  const LeaderLogo = PLATFORM_CFG[leader.p].Logo;
+  const leaderPct = Math.round((leader.v / total) * 100);
+
+  return (
+    <div className="relative w-14 h-14 flex-shrink-0" title={`${PLATFORM_CFG[leader.p].label} lidera con ${leaderPct}% de las vistas`}>
+      <svg viewBox="0 0 64 64" className="w-14 h-14 -rotate-90">
+        <circle cx={CENTER} cy={CENTER} r={R} fill="none" stroke="var(--border)" strokeWidth={STROKE} />
+        {segments.map(seg => (
+          <circle
+            key={seg.p}
+            cx={CENTER} cy={CENTER} r={R}
+            fill="none"
+            stroke={PLATFORM_CFG[seg.p].hex}
+            strokeWidth={STROKE}
+            strokeLinecap="butt"
+            strokeDasharray={`${seg.dash} ${circumference - seg.dash}`}
+            strokeDashoffset={seg.offset}
+          />
+        ))}
+      </svg>
+      <div className={`absolute inset-0 flex flex-col items-center justify-center gap-0.5 ${PLATFORM_CFG[leader.p].text}`}>
+        <LeaderLogo className="w-3.5 h-3.5" />
+        <span className="text-[9px] font-semibold text-foreground leading-none">{leaderPct}%</span>
+      </div>
+    </div>
+  );
+}
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
@@ -64,6 +132,7 @@ function GroupStatsCard({ item, localFileId, onOpenVideo }: {
             </span>
           </div>
         </div>
+        <ViewsDonut platforms={item.platforms} />
       </div>
 
       <div className="flex flex-col gap-2">
