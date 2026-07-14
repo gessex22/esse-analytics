@@ -1,4 +1,5 @@
 import { PlatformVideoModel } from '../models/platform-video.model';
+import type { PlatformRecentItem, PlatformRecentPage } from './instagram.service';
 
 const BASE = 'https://www.googleapis.com/youtube/v3';
 const apiKey    = () => process.env.YOUTUBE_API_KEY    || '';
@@ -131,6 +132,49 @@ export async function getVideoStats(ids: string[]): Promise<Record<string, { vie
     };
   }
   return result;
+}
+
+// Página EN VIVO directo del canal (para el buscador de "Emparejar entre
+// plataformas") — a diferencia de getYouTubeVideos, no depende de que
+// syncYouTubeChannel se haya corrido antes: si el video ya está publicado en
+// YouTube, aparece acá aunque nunca se haya hecho un "Re-sincronizar" completo.
+// `cursor` es el pageToken nativo de la API (igual que el `after` de Instagram).
+export async function getRecentYouTubeVideosLive(limit: number, cursor?: string): Promise<PlatformRecentPage> {
+  const playlistId = await getUploadsPlaylistId();
+  const url = `${BASE}/playlistItems?playlistId=${playlistId}&maxResults=${limit}`
+    + (cursor ? `&pageToken=${cursor}` : '')
+    + `&part=contentDetails,snippet&key=${apiKey()}`;
+  const data = await fetchJson<any>(url);
+
+  const ids = (data.items ?? [])
+    .map((it: any) => it.contentDetails?.videoId)
+    .filter(Boolean) as string[];
+  const details = await getVideoDetails(ids);
+  const statsById = new Map(details.map(d => [d.id, d.statistics ?? {}]));
+
+  const items: PlatformRecentItem[] = (data.items ?? [])
+    .filter((it: any) => it.contentDetails?.videoId)
+    .map((it: any) => {
+      const id = it.contentDetails.videoId;
+      const stats = statsById.get(id) ?? {};
+      return {
+        platformId:  id,
+        title:       it.snippet?.title ?? '',
+        thumbnail:   it.snippet?.thumbnails?.high?.url
+                  ?? it.snippet?.thumbnails?.medium?.url
+                  ?? it.snippet?.thumbnails?.default?.url
+                  ?? '',
+        publishedAt: it.contentDetails?.videoPublishedAt ?? it.snippet?.publishedAt ?? '',
+        platformUrl: `https://www.youtube.com/shorts/${id}`,
+        stats: {
+          views:    parseInt(stats.viewCount    ?? '0'),
+          likes:    parseInt(stats.likeCount    ?? '0'),
+          comments: parseInt(stats.commentCount ?? '0'),
+        },
+      };
+    });
+
+  return { items, nextCursor: data.nextPageToken ?? null };
 }
 
 // Obtener los videos de YouTube ya guardados en BD

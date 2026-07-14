@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { randomUUID } from 'crypto';
 import { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware';
-import { syncYouTubeChannel, getYouTubeVideos, getVideoStats as getYoutubeVideoStats } from '../services/youtube.service';
+import { syncYouTubeChannel, getYouTubeVideos, getRecentYouTubeVideosLive, getVideoStats as getYoutubeVideoStats } from '../services/youtube.service';
 import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../services/instagram.service';
 import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats } from '../services/tiktok.service';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
@@ -138,18 +138,11 @@ export const getPlatformRecent = async (req: AuthRequest, res: Response): Promis
     let items: PlatformRecentItem[];
     let nextCursor: string | null;
     if (platform === 'youtube') {
-      // getYouTubeVideos pagina por número de página — el cursor acá ES esa página.
-      const page = cursor ? parseInt(cursor) : 1;
-      const yt = await getYouTubeVideos(userId, page, limit);
-      items = yt.items.map((v: any) => ({
-        platformId:  v.platformId,
-        title:       v.title,
-        thumbnail:   v.thumbnail,
-        publishedAt: new Date(v.publishedAt).toISOString(),
-        platformUrl: v.platformUrl,
-        stats: { views: v.views, likes: v.likes, comments: v.comments },
-      }));
-      nextCursor = page * limit < yt.total ? String(page + 1) : null;
+      // En vivo directo del canal — no depende de que "Re-sincronizar" se haya
+      // corrido antes (ver getRecentYouTubeVideosLive).
+      const yt = await getRecentYouTubeVideosLive(limit, cursor);
+      items = yt.items;
+      nextCursor = yt.nextCursor;
     } else if (platform === 'instagram') {
       const page = await getRecentInstagramMedia(userId, limit, cursor);
       items = page.items;
