@@ -13,53 +13,9 @@ export const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
-// Migrations
-try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
-try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
-try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
-try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
-
-// Backfill platforms[] desde platform_videos (DISTINCT via subquery — SQLite no soporta json_group_array(DISTINCT)).
-try {
-  db.exec(`
-    UPDATE files
-    SET platforms = (
-      SELECT json_group_array(p) FROM (
-        SELECT DISTINCT pv.platform AS p
-        FROM platform_videos pv
-        WHERE pv.linked_file_id = files.id
-          AND pv.platform IS NOT NULL
-      )
-    )
-    WHERE json_array_length(platforms) = 0
-      AND EXISTS (
-        SELECT 1 FROM platform_videos pv WHERE pv.linked_file_id = files.id
-      );
-  `);
-} catch (e) { console.warn('Backfill platform_videos→files.platforms falló:', e); }
-
-// Backfill desde publishing_status (campo legado: youtube_published, instagram_published, tiktok_published).
-try {
-  db.exec(`
-    UPDATE files
-    SET platforms = (
-      SELECT json_group_array(p) FROM (
-        SELECT 'youtube'   AS p WHERE (SELECT youtube_published   FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
-        UNION ALL
-        SELECT 'instagram' AS p WHERE (SELECT instagram_published FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
-        UNION ALL
-        SELECT 'tiktok'    AS p WHERE (SELECT tiktok_published    FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
-      )
-    )
-    WHERE json_array_length(platforms) = 0
-      AND EXISTS (
-        SELECT 1 FROM publishing_status ps
-        WHERE ps.file_id = files.id
-          AND (ps.youtube_published = 1 OR ps.instagram_published = 1 OR ps.tiktok_published = 1)
-      );
-  `);
-} catch (e) { console.warn('Backfill publishing_status→files.platforms falló:', e); }
-
+// Esquema — va ANTES de las migraciones/backfills de abajo: en una instalación
+// nueva (sin esse_local.db previo) esas migraciones necesitan que las tablas ya
+// existan, si no fallan con "no such table" hasta el próximo reinicio.
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,3 +110,50 @@ db.exec(`
     UNIQUE(idea_id, file_id)
   );
 `);
+
+// Migrations
+try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
+try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
+try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
+try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
+
+// Backfill platforms[] desde platform_videos (DISTINCT via subquery — SQLite no soporta json_group_array(DISTINCT)).
+try {
+  db.exec(`
+    UPDATE files
+    SET platforms = (
+      SELECT json_group_array(p) FROM (
+        SELECT DISTINCT pv.platform AS p
+        FROM platform_videos pv
+        WHERE pv.linked_file_id = files.id
+          AND pv.platform IS NOT NULL
+      )
+    )
+    WHERE json_array_length(platforms) = 0
+      AND EXISTS (
+        SELECT 1 FROM platform_videos pv WHERE pv.linked_file_id = files.id
+      );
+  `);
+} catch (e) { console.warn('Backfill platform_videos→files.platforms falló:', e); }
+
+// Backfill desde publishing_status (campo legado: youtube_published, instagram_published, tiktok_published).
+try {
+  db.exec(`
+    UPDATE files
+    SET platforms = (
+      SELECT json_group_array(p) FROM (
+        SELECT 'youtube'   AS p WHERE (SELECT youtube_published   FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+        UNION ALL
+        SELECT 'instagram' AS p WHERE (SELECT instagram_published FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+        UNION ALL
+        SELECT 'tiktok'    AS p WHERE (SELECT tiktok_published    FROM publishing_status ps WHERE ps.file_id = files.id LIMIT 1) = 1
+      )
+    )
+    WHERE json_array_length(platforms) = 0
+      AND EXISTS (
+        SELECT 1 FROM publishing_status ps
+        WHERE ps.file_id = files.id
+          AND (ps.youtube_published = 1 OR ps.instagram_published = 1 OR ps.tiktok_published = 1)
+      );
+  `);
+} catch (e) { console.warn('Backfill publishing_status→files.platforms falló:', e); }

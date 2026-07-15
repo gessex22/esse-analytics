@@ -719,6 +719,18 @@ export const syncService = {
   getPublishedVideos: (): Promise<{ platform: string; fileName: string | null; fileId: string | null; platformId: string | null; platformUrl: string | null; publishedAt: string | null; title?: string | null; status?: string | null; stats?: Record<string, any> }[]> =>
     requestJson('/api/sync/published-videos'),
 
+  // Registro cronológico de todas las subidas hechas desde la app.
+  getHistory: (opts: { limit?: number; offset?: number; platform?: string } = {}): Promise<{
+    items: { id: number; platform: string; platformId: string; platformUrl: string | null; publishedAt: string; title: string | null; fileName: string | null; linkedFileId: number | null; matchStatus: string }[];
+    total: number;
+  }> => {
+    const params = new URLSearchParams();
+    params.set('limit', String(opts.limit ?? 30));
+    params.set('offset', String(opts.offset ?? 0));
+    if (opts.platform) params.set('platform', opts.platform);
+    return requestJson(`/api/sync/history?${params.toString()}`);
+  },
+
   updateCalendarConfig: (platform: string, data: { lastPublishedDate?: string; lastPublishedTitle?: string; intervalDays?: number; nextVideoId?: string }): Promise<void> =>
     requestJson(`/api/sync/calendar-config/${platform}`, {
       method: 'PATCH',

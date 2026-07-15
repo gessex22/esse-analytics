@@ -20,6 +20,7 @@ import { useAutoBackup } from "./hooks/useAutoBackup";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
+import { HistoryView } from "./components/HistoryView";
 import { Sidebar, MobileNav, navItems, SETTINGS_SECTIONS } from "./components/Sidebar";
 import { usePluginActivity, phaseLabel } from "./hooks/usePluginActivity";
 import logoImg from "./assets/esseAnalytics.png";
@@ -27,8 +28,8 @@ import { backupService } from "./services/api";
 import { API_BASE } from "./config";
 
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
-// En remoto se ocultan: Videos, Subir, Taller, Gemas.
-const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8]);
+// En remoto se ocultan: Videos, Subir, Taller, Gemas, Historial.
+const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8, 9]);
 
 function ProximamenteView({ label }: { label: string }) {
   return (
@@ -470,6 +471,7 @@ export default function App() {
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
                   : effectiveNav === 4 ? <StatsView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
+                  : effectiveNav === 9 ? <HistoryView onOpenVideo={openVideoPlayer} />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }
               </main>

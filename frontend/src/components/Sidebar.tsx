@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench, Palette,
   ShieldCheck, Tv2, ChevronDown, CalendarDays, FolderOpen, Gem, Database, Cloud,
+  History,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
 
@@ -25,16 +26,18 @@ export const navItems = [
   { icon: Settings,     label: "Ajustes"       },
   { icon: CalendarDays, label: "Calendario"    },
   { icon: Gem,          label: "Gemas"         },
+  { icon: History,      label: "Historial"    },
 ];
 
-export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
+export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 export const MOBILE_NAV   = [1, 2, 7, 5, 6];
 
 // Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
 // la navegación sigue siendo por índice, así que esto NO cambia la lógica, solo el
 // orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
-// Estadísticas (4) va justo debajo de Dashboard (0).
-export const NAV_ORDER = [0, 4, 1, 2, 7, 5, 8, 3, 6];
+// Estadísticas (4) va justo debajo de Dashboard (0). Historial (9) junto a Calendario (7),
+// ambos sobre el registro de publicaciones.
+export const NAV_ORDER = [0, 4, 1, 2, 7, 9, 5, 8, 3, 6];
 
 interface SidebarProps {
   effectiveNav: number;

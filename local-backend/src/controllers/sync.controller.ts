@@ -75,6 +75,36 @@ export const getPublishedVideos = (_req: Request, res: Response): void => {
   }
 };
 
+// GET /api/sync/history?limit=&offset=&platform=
+// Registro cronológico de todas las subidas hechas desde la app (platform_videos
+// se llena solo en cada upload: youtube/tiktok/instagram/facebook-upload.controller.ts).
+export const getUploadHistory = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const limit  = Math.min(parseInt(req.query.limit as string) || 30, 100);
+    const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+    const platform = ['youtube', 'tiktok', 'instagram', 'facebook'].includes(req.query.platform as string)
+      ? (req.query.platform as string)
+      : undefined;
+
+    const items = platformVideoRepo.findHistory({ limit, offset, platform }).map((pv) => ({
+      id:          pv.id,
+      platform:    pv.platform,
+      platformId:  pv.platform_id,
+      platformUrl: pv.platform_url ?? null,
+      publishedAt: pv.published_at ?? pv.created_at,
+      title:       pv.title ?? null,
+      fileName:    pv.file_name ?? null,
+      linkedFileId: pv.linked_file_id ?? null,
+      matchStatus: pv.match_status,
+    }));
+    const total = platformVideoRepo.countHistory(platform);
+
+    res.json({ items, total });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // PATCH /api/sync/calendar-config/:platform
 export const updateCalendarConfig = (req: Request, res: Response): void => {
   const { platform } = req.params;

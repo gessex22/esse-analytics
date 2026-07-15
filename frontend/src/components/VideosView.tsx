@@ -198,6 +198,19 @@ function VideoListSkeleton({ rows = 10 }: { rows?: number }) {
   );
 }
 
+// ── Cache en memoria (sobrevive a montar/desmontar la vista, no a recargar la
+// página) — mismo patrón que PublishingQueue: sin esto, cada vez que se cambia
+// a esta pestaña se remonta el componente y se pierde todo, mostrando el
+// spinner y esperando ~3s a la respuesta aunque la lista no haya cambiado.
+type VideosCache = {
+  page: number;
+  tipo: TipoFilter;
+  status: PubFilter | "";
+  videos: DashboardVideo[];
+  info: PaginationInfo | null;
+};
+let videosCache: VideosCache | null = null;
+
 // ── Componente principal ──────────────────────────────────────────────────────
 export function VideosView({
   role = "todopoderoso",
@@ -208,13 +221,13 @@ export function VideosView({
   autoOpenVideo?: { fileId: string; title: string } | null;
   onAutoOpenConsumed?: () => void;
 }) {
-  const [videos, setVideos]           = useState<DashboardVideo[]>([]);
-  const [info, setInfo]               = useState<PaginationInfo | null>(null);
+  const [videos, setVideos]           = useState<DashboardVideo[]>(videosCache?.videos ?? []);
+  const [info, setInfo]               = useState<PaginationInfo | null>(videosCache?.info ?? null);
   const [videosDir, setVideosDir]     = useState<string | null | undefined>(undefined); // undefined = cargando
   const [catalog, setCatalog]         = useState<any[] | null>(null);
   const [restoring, setRestoring]     = useState(false); // reintentando antes de asumir "otra máquina"
-  const [currentPage, setCurrentPage] = useState(1);
-  const [loading, setLoading]         = useState(true);
+  const [currentPage, setCurrentPage] = useState(videosCache?.page ?? 1);
+  const [loading, setLoading]         = useState(!videosCache);
   const [error, setError]             = useState<string | null>(null);
 
   const [showFilterPanel, setShowFilterPanel]     = useState(false);
@@ -266,7 +279,13 @@ export function VideosView({
   // ── Carga ──────────────────────────────────────────────────────────────────
   const loadPage = useCallback(
     async (page: number, tipo?: TipoFilter, status?: PubFilter | "") => {
-      setLoading(true);
+      const tipoKey   = tipo   ?? "";
+      const statusKey = status ?? "";
+      // Si ya hay cache para esta misma página/filtros, se refresca en segundo
+      // plano sin mostrar el spinner — la lista se actualiza sola si cambió algo.
+      const hasMatchingCache = !!videosCache
+        && videosCache.page === page && videosCache.tipo === tipoKey && videosCache.status === statusKey;
+      if (!hasMatchingCache) setLoading(true);
       setError(null);
       try {
         const filters: { tipo?: string; content_status?: string } = {};
@@ -276,6 +295,7 @@ export function VideosView({
         setVideos(result.videos);
         setInfo(result.info);
         setCurrentPage(page);
+        videosCache = { page, tipo: tipoKey, status: statusKey, videos: result.videos, info: result.info };
       } catch (err: any) {
         setError(err.message || "No se pudo conectar con el servidor.");
       } finally {

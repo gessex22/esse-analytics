@@ -123,4 +123,32 @@ export const platformVideoRepo = {
   findAll(): DbPlatformVideo[] {
     return (db.prepare('SELECT * FROM platform_videos').all() as RawRow[]).map(parse);
   },
+
+  // Registro cronológico de subidas (todas las plataformas, o filtrado a una),
+  // con el nombre del archivo local vinculado. Ordenado por fecha de publicación
+  // (que es el momento real de la subida para lo hecho desde la app) con
+  // created_at como respaldo para filas sin published_at.
+  findHistory(opts: { limit: number; offset: number; platform?: string }): (DbPlatformVideo & { file_name?: string })[] {
+    const where = opts.platform ? 'WHERE pv.platform = ?' : '';
+    const params = opts.platform ? [opts.platform, opts.limit, opts.offset] : [opts.limit, opts.offset];
+    const rows = db.prepare(`
+      SELECT pv.*, f.file_name AS file_name
+      FROM platform_videos pv
+      LEFT JOIN files f ON f.id = pv.linked_file_id
+      ${where}
+      ORDER BY COALESCE(pv.published_at, pv.created_at) DESC
+      LIMIT ? OFFSET ?
+    `).all(...params) as (RawRow & { file_name: string | null })[];
+    return rows.map((row) => {
+      const { file_name, ...raw } = row;
+      return { ...parse(raw), file_name: file_name ?? undefined };
+    });
+  },
+
+  countHistory(platform?: string): number {
+    const where = platform ? 'WHERE platform = ?' : '';
+    const row = db.prepare(`SELECT COUNT(*) AS c FROM platform_videos ${where}`)
+      .get(...(platform ? [platform] : [])) as { c: number };
+    return row.c;
+  },
 };
