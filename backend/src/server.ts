@@ -15,6 +15,7 @@ import tiktokUploadRouter    from './routes/tiktok-upload.routes';
 import scanRouter            from './routes/scan.routes';
 import componentsRouter      from './routes/components.routes';
 import backupRouter          from './routes/backup.routes';
+import remoteLibraryRouter   from './routes/remote-library.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
 
 const app = express();
@@ -67,6 +68,7 @@ app.use(tiktokUploadRouter);
 app.use(scanRouter);
 app.use(componentsRouter);
 app.use(backupRouter);
+app.use(remoteLibraryRouter);
 
 mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 })
   .then(() => {

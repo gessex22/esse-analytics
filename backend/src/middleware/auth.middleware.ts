@@ -14,7 +14,7 @@ export function isOwner(username?: string): boolean {
 }
 
 export interface AuthRequest extends Request {
-  user?: { id: string; username: string; role: UserRole; tier: UserTier };
+  user?: { id: string; username: string; role: UserRole; tier: UserTier; hasCloudStorage?: boolean };
 }
 
 export function verifyToken(req: AuthRequest, res: Response, next: NextFunction): void {
@@ -78,4 +78,15 @@ export function requirePremium(req: AuthRequest, res: Response, next: NextFuncti
     return;
   }
   res.status(403).json({ message: 'Esta función requiere plan Premium.' });
+}
+
+// Storage real (bytes de video) es un plan APARTE de tier==='premium' --
+// cuesta plata, a diferencia del mirror de metadata gratis de backup-sync.
+// El owner siempre pasa, igual que requirePremium.
+export function requireCloudStorage(req: AuthRequest, res: Response, next: NextFunction): void {
+  if (isOwner(req.user?.username) || (req.user?.tier === 'premium' && req.user?.hasCloudStorage)) {
+    next();
+    return;
+  }
+  res.status(403).json({ message: 'Esta función requiere el plan de almacenamiento en la nube.' });
 }

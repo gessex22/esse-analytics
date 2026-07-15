@@ -28,6 +28,11 @@ export interface IUser extends Document {
   // Preferencia de tema (se sincroniza con la cuenta para tenerla en cualquier dispositivo).
   theme?: string;
   video_folder?: string;
+  // Plan APARTE de tier==='premium' -- aloja bytes de video reales en la
+  // central (ver RemoteLibraryVideoModel), a diferencia del mirror de
+  // metadata gratis de backup-sync. Sin billing todavía: el owner lo activa
+  // a mano desde Usuarios, igual que tier (ver requireCloudStorage).
+  hasCloudStorage: boolean;
   createdAt: Date;
 }
 
@@ -48,6 +53,7 @@ const userSchema = new Schema<IUser>({
   installId:          { type: String },
   theme:              { type: String },
   video_folder:       { type: String },
+  hasCloudStorage:    { type: Boolean, default: false },
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 export const UserModel = model<IUser>('User', userSchema);

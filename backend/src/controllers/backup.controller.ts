@@ -9,13 +9,21 @@ import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 
 // GET /api/backup/files
+// Mismo filtro por defecto que la vista principal de Videos del escritorio
+// (local-backend/src/db/file.repo.ts, findAll con content_status='no_completo'):
+// oculta lo que ya está resuelto (publicado o descartado) en las 3 plataformas.
+// Ahí es un WHERE sobre json_array_length(platforms/platforms_discarded); acá se
+// replica en memoria sobre el mismo par de arrays que ya viaja en BackupFileModel
+// -- sin este filtro, el catálogo de Android mostraba videos que la vista por
+// defecto del escritorio no muestra (confirmado por el owner).
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const [files, user] = await Promise.all([
+    const [allFiles, user] = await Promise.all([
       BackupFileModel.find({ userId }).lean(),
       UserModel.findById(userId, { video_folder: 1 }).lean(),
     ]);
+    const files = allFiles.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
     res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -153,6 +161,14 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
         { $set: { status: 'ELIMINADO_DISCO' } },
       );
       archived = r.modifiedCount ?? 0;
+
+      // Mismo criterio para BackupFileModel -- a diferencia de FileModel, acá SÍ
+      // se borra físico: nada referencia su _id (sin transcripts/platformvideos
+      // enlazados, es solo el catálogo de solo-lectura que consume GET /api/
+      // backup/files, ver LibraryListItem.BackupCatalog en Android), así que no
+      // hay nada que preservar con un soft-delete. Sin esto, un video borrado en
+      // el escritorio quedaba como fantasma para siempre en ese catálogo.
+      await BackupFileModel.deleteMany({ userId, file_name: { $nin: fileNames } });
     }
 
     const { video_folder } = req.body;

@@ -76,14 +76,20 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     });
 
     const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
+      {
+        id: user._id, username: user.username, role: user.role, tier: user.tier,
+        isOwner: isOwner(user.username), hasCloudStorage: user.hasCloudStorage,
+      },
       JWT_SECRET,
       { expiresIn: '7d' },
     );
 
     res.status(201).json({
       token,
-      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
+      user: {
+        username: user.username, role: user.role, tier: user.tier,
+        isOwner: isOwner(user.username), hasCloudStorage: user.hasCloudStorage,
+      },
     });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al registrar.', error: err.message });
@@ -126,14 +132,20 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     await LoginLogModel.create({ username: user.username, success: true, ip, ...ua });
 
     const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username) },
+      {
+        id: user._id, username: user.username, role: user.role, tier: user.tier,
+        isOwner: isOwner(user.username), hasCloudStorage: user.hasCloudStorage,
+      },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
     res.json({
       token,
-      user: { username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username), theme: user.theme },
+      user: {
+        username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username),
+        hasCloudStorage: user.hasCloudStorage, theme: user.theme,
+      },
     });
   } catch (err: any) {
     await LoginLogModel.create({
@@ -152,7 +164,12 @@ export const me = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const user = await UserModel.findById(req.user!.id).select('-password').lean();
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
-    res.json({ user: { id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username), theme: user.theme } });
+    res.json({
+      user: {
+        id: user._id, username: user.username, role: user.role, tier: user.tier, isOwner: isOwner(user.username),
+        hasCloudStorage: user.hasCloudStorage, theme: user.theme,
+      },
+    });
   } catch {
     res.json({ user: req.user });
   }
@@ -218,6 +235,7 @@ export const getUsers = async (req: AuthRequest, res: Response): Promise<void> =
         username:          u.username,
         role:              u.role,
         tier:              u.tier,
+        hasCloudStorage:   (u as any).hasCloudStorage ?? false,
         status:            (u as any).status ?? 'active',
         email:             u.email,
         linkedPlatforms:   (u as any).linkedPlatforms ?? [],
@@ -377,5 +395,24 @@ export const setUserTier = async (req: AuthRequest, res: Response): Promise<void
     res.json({ id: user._id, username: user.username, role: user.role, tier: user.tier });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al actualizar tier.', error: err.message });
+  }
+};
+
+// ── PATCH /api/auth/users/:id/cloud-storage ───────────────────────────────────
+export const setUserCloudStorage = async (req: AuthRequest, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const { hasCloudStorage } = req.body as { hasCloudStorage?: boolean };
+
+  if (typeof hasCloudStorage !== 'boolean') {
+    res.status(400).json({ message: 'hasCloudStorage debe ser boolean.' });
+    return;
+  }
+
+  try {
+    const user = await UserModel.findByIdAndUpdate(id, { hasCloudStorage }, { new: true }).select('-password');
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    res.json({ id: user._id, username: user.username, tier: user.tier, hasCloudStorage: user.hasCloudStorage });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al actualizar el plan de storage.', error: err.message });
   }
 };

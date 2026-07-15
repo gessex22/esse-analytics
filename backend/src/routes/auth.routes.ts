@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { register, login, me, getLoginLogs, clearLoginLogs, getUsers, setUserTier, deactivateMe, deactivateUser, localResetPassword, localDeactivate, linkInstall, setMyTheme } from '../controllers/auth.controller';
+import { register, login, me, getLoginLogs, clearLoginLogs, getUsers, setUserTier, setUserCloudStorage, deactivateMe, deactivateUser, localResetPassword, localDeactivate, linkInstall, setMyTheme } from '../controllers/auth.controller';
 import { verifyToken, requireOwner } from '../middleware/auth.middleware';
 import { loginRateLimit, registerRateLimit } from '../middleware/rate-limit.middleware';
 
@@ -15,6 +15,7 @@ router.get('/api/auth/logs',                verifyToken, requireOwner, getLoginL
 router.delete('/api/auth/logs',             verifyToken, requireOwner, clearLoginLogs);
 router.get('/api/auth/users',               verifyToken, requireOwner, getUsers);
 router.patch('/api/auth/users/:id/tier',       verifyToken, requireOwner, setUserTier);
+router.patch('/api/auth/users/:id/cloud-storage', verifyToken, requireOwner, setUserCloudStorage);
 router.patch('/api/auth/users/:id/deactivate', verifyToken, requireOwner, deactivateUser)
 router.post('/api/auth/local-reset',                                        localResetPassword);
 router.post('/api/auth/local-deactivate',                                   localDeactivate);
