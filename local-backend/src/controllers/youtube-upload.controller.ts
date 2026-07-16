@@ -159,3 +159,45 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: 'Error al subir el video', detail: err.message });
   }
 };
+
+// ── POST /api/youtube/thumbnail/:videoId ──────────────────────────────────────
+export const setThumbnail = async (req: AuthRequest, res: Response) => {
+  const { videoId } = req.params;
+  const { imageBase64 } = req.body;
+  if (!imageBase64) return res.status(400).json({ error: 'imageBase64 requerido' });
+
+  let accessToken: string;
+  try {
+    accessToken = await fetchAccessToken(req.headers.authorization!);
+  } catch {
+    return res.status(401).json({ error: 'NO_AUTH' });
+  }
+
+  const base64Data = (imageBase64 as string).replace(/^data:image\/\w+;base64,/, '');
+  const buffer = Buffer.from(base64Data, 'base64');
+
+  try {
+    const uploadRes = await fetch(
+      `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${videoId}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'image/jpeg',
+          'Content-Length': String(buffer.length),
+        },
+        body: buffer,
+      },
+    );
+
+    if (!uploadRes.ok) {
+      const err = await uploadRes.text();
+      throw new Error(err);
+    }
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    console.error('Error al subir miniatura (local):', err.message);
+    res.status(500).json({ error: 'Error al subir miniatura', detail: err.message });
+  }
+};

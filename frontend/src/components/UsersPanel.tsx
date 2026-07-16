@@ -85,6 +85,7 @@ interface AppUser {
   username: string;
   role: string;
   tier: "free" | "premium";
+  hasCloudStorage?: boolean;
   status: "active" | "deleted";
   email?: string;
   linkedPlatforms?: string[];
@@ -136,6 +137,7 @@ export function UsersPanel() {
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState(false);
   const [toggling, setToggling]     = useState<string | null>(null);
+  const [togglingStorage, setTogglingStorage] = useState<string | null>(null);
   const [deactivating, setDeact]    = useState<string | null>(null);
   const [confirmId, setConfirmId]   = useState<string | null>(null);
   const debounceRef                 = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -187,6 +189,23 @@ export function UsersPanel() {
       setUsers(prev => prev.map(u => u.id === user.id ? { ...u, tier: newTier } : u));
     } catch {/* best effort */}
     setToggling(null);
+  };
+
+  // Plan APARTE de tier -- ver requireCloudStorage en la central. Toggle
+  // independiente del de arriba, no condicionado a tier===premium: la
+  // central ya exige los dos juntos, no hace falta duplicar esa regla acá.
+  const toggleCloudStorage = async (user: AppUser) => {
+    const next = !user.hasCloudStorage;
+    setTogglingStorage(user.id);
+    try {
+      await fetch(`${API_BASE}/api/auth/users/${user.id}/cloud-storage`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getAuthHeader() } as HeadersInit,
+        body: JSON.stringify({ hasCloudStorage: next }),
+      });
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, hasCloudStorage: next } : u));
+    } catch {/* best effort */}
+    setTogglingStorage(null);
   };
 
   const deactivate = async (userId: string) => {
@@ -332,11 +351,28 @@ export function UsersPanel() {
 
                 {/* Toggle premium */}
                 {!showingDeleted && (
-                  <Toggle
-                    on={user.tier === "premium"}
-                    onChange={() => toggleTier(user)}
-                    loading={toggling === user.id}
-                  />
+                  <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                    <Toggle
+                      on={user.tier === "premium"}
+                      onChange={() => toggleTier(user)}
+                      loading={toggling === user.id}
+                    />
+                    <span className="text-[9px] text-muted-foreground">Premium</span>
+                  </div>
+                )}
+
+                {/* Toggle storage en la nube -- plan aparte de Premium, ver
+                    requireCloudStorage. Habilita la Biblioteca remota general
+                    (Parte D del plan) para este usuario. */}
+                {!showingDeleted && (
+                  <div className="flex flex-col items-center gap-1 flex-shrink-0">
+                    <Toggle
+                      on={!!user.hasCloudStorage}
+                      onChange={() => toggleCloudStorage(user)}
+                      loading={togglingStorage === user.id}
+                    />
+                    <span className="text-[9px] text-muted-foreground">Storage</span>
+                  </div>
                 )}
 
                 {/* Dar de baja */}

@@ -1381,6 +1381,9 @@ export function YoutubeUploadView() {
   const [thumbnailBlob,   setThumbnailBlob]   = useState<Blob | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState<string | null>(null);
   const [showScrubber,    setShowScrubber]    = useState(false);
+  const [thumbnailError,  setThumbnailError]  = useState<string | null>(null);
+  const [doneVideoId,     setDoneVideoId]     = useState<string | null>(null);
+  const [retryingThumb,   setRetryingThumb]   = useState(false);
   // En remoto (owner) publicamos desde el catálogo de la central por fileId, no por
   // archivo del dispositivo. El selector de fuente (línea ~1355) solo se ve en local.
   const [videoSource,     setVideoSource]     = useState<"library" | "device">("library");
@@ -1489,8 +1492,57 @@ export function YoutubeUploadView() {
     }
   };
 
+  // YouTube puede tardar unos segundos en terminar de procesar el video recién
+  // subido; si se intenta fijar la miniatura antes de eso la llamada falla, y
+  // como antes no se revisaba res.ok el error quedaba invisible: el usuario
+  // veía "publicado" pero YouTube terminaba mostrando un frame autoseleccionado
+  // random en vez de la miniatura elegida. Reintentamos brevemente y, si sigue
+  // fallando, lo avisamos en vez de tragarnos el error.
+  const uploadThumbnail = async (videoId: string, blob: Blob, authHeader: Record<string, string>) => {
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target?.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    let lastError = "Error desconocido";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+      try {
+        const res = await fetch(`${API}/api/youtube/thumbnail/${videoId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeader },
+          body: JSON.stringify({ imageBase64: base64 }),
+        });
+        if (res.ok) return;
+        const errData = await res.json().catch(() => ({}));
+        lastError = errData.detail || errData.error || `Error ${res.status}`;
+      } catch (err: any) {
+        lastError = err.message || "Error de red";
+      }
+    }
+    throw new Error(lastError);
+  };
+
+  const retryThumbnail = async () => {
+    if (!doneVideoId || !thumbnailBlob) return;
+    setRetryingThumb(true);
+    const token = localStorage.getItem("esse_auth_token");
+    const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
+    try {
+      await uploadThumbnail(doneVideoId, thumbnailBlob, authHeader);
+      setThumbnailError(null);
+    } catch (err: any) {
+      setThumbnailError(err.message);
+    } finally {
+      setRetryingThumb(false);
+    }
+  };
+
   const handleUpload = async () => {
     setUploadError(null);
+    setThumbnailError(null);
     setStep("uploading");
     const token = localStorage.getItem("esse_auth_token");
     const authHeader = token ? { Authorization: `Bearer ${token}` } : {};
@@ -1532,20 +1584,16 @@ export function YoutubeUploadView() {
         // Miniatura capturada (solo en modo biblioteca)
         if (thumbnailBlob && data.videoId) {
           try {
-            const base64 = await new Promise<string>(resolve => {
-              const reader = new FileReader();
-              reader.onload = e => resolve(e.target?.result as string);
-              reader.readAsDataURL(thumbnailBlob);
-            });
-            await fetch(`${API}/api/youtube/thumbnail/${data.videoId}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...authHeader },
-              body: JSON.stringify({ imageBase64: base64 }),
-            });
-          } catch { /* no bloquea el flujo */ }
+            await uploadThumbnail(data.videoId, thumbnailBlob, authHeader);
+          } catch (err: any) {
+            // No bloquea el flujo de publicación, pero se avisa en la pantalla
+            // final en vez de dejar la miniatura fallando en silencio.
+            setThumbnailError(err.message);
+          }
         }
       }
 
+      setDoneVideoId(data.videoId ?? null);
       setDoneUrl(data.videoUrl);
       setStep("done");
       refreshAfterUpload("youtube");
@@ -1562,8 +1610,8 @@ export function YoutubeUploadView() {
     setTitle(v ? v.title.replace(/\.[^.]+$/, "") : "");
     setDescription(""); setTags([]); setCategoryId("24");
     setAudience("not_kids"); setPrivacy("public"); setPublishAt("");
-    setUploadError(null); setDoneUrl(null);
-    setThumbnailBlob(null); setThumbnailPreview(null); setShowScrubber(false);
+    setUploadError(null); setDoneUrl(null); setDoneVideoId(null);
+    setThumbnailBlob(null); setThumbnailPreview(null); setShowScrubber(false); setThumbnailError(null);
     setLocalFile(null);
   };
 
@@ -1789,6 +1837,24 @@ export function YoutubeUploadView() {
                         className="flex items-center gap-1.5 text-sm text-primary hover:underline">
                         Ver en YouTube <ExternalLink className="w-3.5 h-3.5" />
                       </a>
+                    )}
+                    {thumbnailError && (
+                      <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 max-w-sm">
+                        <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs text-amber-300">
+                            No se pudo aplicar la miniatura personalizada. YouTube va a mostrar un frame propio en su lugar. Detalle: {thumbnailError}
+                          </p>
+                          <button
+                            onClick={retryThumbnail}
+                            disabled={retryingThumb}
+                            className="mt-1.5 flex items-center gap-1 text-xs text-amber-300 hover:underline disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${retryingThumb ? "animate-spin" : ""}`} />
+                            {retryingThumb ? "Reintentando..." : "Reintentar"}
+                          </button>
+                        </div>
+                      </div>
                     )}
                     <button onClick={reset} className="px-5 py-2 rounded-lg border border-border bg-secondary text-sm text-foreground hover:bg-secondary/80 transition-colors">
                       Publicar otro
