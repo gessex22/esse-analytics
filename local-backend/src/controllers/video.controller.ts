@@ -16,6 +16,8 @@ export const getVideos = (req: Request, res: Response) => {
   const { rows, total } = fileRepo.findAll({
     search:         search as string | undefined,
     status:         status as string | undefined,
+    // Sin status explícito → oculta los borrados del disco (huérfanos de un rename, etc.)
+    excludeStatus:  status ? undefined : 'ELIMINADO_DISCO',
     // Sin filtro explícito del frontend → oculta por defecto los completos en las 3 plataformas
     content_status: (content_status as string | undefined) || 'no_completo',
     tipo:           tipo as string | undefined,

@@ -75,6 +75,16 @@ function isVideo(filePath: string): boolean {
   return VIDEO_EXTS.has(path.extname(filePath).toLowerCase());
 }
 
+// Muchos editores (CapCut, Premiere, ffmpeg) escriben primero a un archivo
+// temporal (nombre random tipo UUID) y al terminar lo renombran al nombre
+// final. Para chokidar eso son dos eventos sueltos: unlink del temporal +
+// add del final. Sin esto, quedan dos filas para el mismo video (una
+// ELIMINADO_DISCO fantasma y otra nueva). Detectamos el rename emparejando
+// por tamaño de archivo dentro de una ventana corta.
+const RENAME_GRACE_MS = 4_000;
+const lastKnownSize = new Map<string, number>(); // absPath -> tamaño en bytes
+const pendingRemovals = new Map<string, { fileId: number; size: number; timer: NodeJS.Timeout }>();
+
 // Varios videos suelen llegar juntos (copia en lote): esperamos una pausa sin
 // archivos nuevos antes de disparar la transcripción, para procesarlos de una.
 const TRANSCRIP_DEBOUNCE_MS = 10_000;
@@ -93,11 +103,33 @@ function scheduleTranscription(): void {
 function onAdd(filePath: string): void {
   if (!isVideo(filePath)) return;
   const absPath = path.resolve(filePath);
+
+  let size: number | null = null;
+  let fechaCreacion: Date;
+  try {
+    const stat = fs.statSync(absPath);
+    size = stat.size;
+    fechaCreacion = stat.mtime;
+  } catch { fechaCreacion = new Date(); }
+  if (size !== null) lastKnownSize.set(absPath, size);
+
+  // ¿Es el destino de un rename que acabamos de ver como unlink? (mismo tamaño,
+  // borrado hace instantes). Si es así, actualizamos esa fila en vez de crear una nueva.
+  if (size !== null) {
+    for (const [oldPath, pending] of pendingRemovals) {
+      if (pending.size === size) {
+        clearTimeout(pending.timer);
+        pendingRemovals.delete(oldPath);
+        fileRepo.update(pending.fileId, { file_name: path.basename(absPath), file_path: absPath });
+        console.log(`[watcher] Rename detectado: ${path.basename(oldPath)} -> ${path.basename(absPath)}`);
+        return;
+      }
+    }
+  }
+
   const { rows } = fileRepo.findAll({ search: path.basename(absPath), limit: 10, offset: 0 });
   const existing = rows.find(r => path.resolve(r.file_path) === absPath);
   if (!existing) {
-    let fechaCreacion: Date;
-    try { fechaCreacion = fs.statSync(absPath).mtime; } catch { fechaCreacion = new Date(); }
     fileRepo.create({
       file_name: path.basename(absPath),
       file_path: absPath,
@@ -118,12 +150,28 @@ function onAdd(filePath: string): void {
 function onUnlink(filePath: string): void {
   if (!isVideo(filePath)) return;
   const absPath = path.resolve(filePath);
+  const size = lastKnownSize.get(absPath);
+  lastKnownSize.delete(absPath);
+
   const { rows } = fileRepo.findAll({ search: path.basename(absPath), limit: 10, offset: 0 });
   const existing = rows.find(r => path.resolve(r.file_path) === absPath);
-  if (existing && existing.status !== 'ELIMINADO_DISCO') {
+  if (!existing || existing.status === 'ELIMINADO_DISCO') return;
+
+  if (size === undefined) {
     fileRepo.update(existing.id, { status: 'ELIMINADO_DISCO' });
     console.log(`[watcher] Video eliminado del disco: ${path.basename(absPath)}`);
+    return;
   }
+
+  // No lo marcamos eliminado todavía: puede ser un rename (el add del nombre
+  // final puede llegar unos ms/segundos después). Si nadie lo reclama en
+  // RENAME_GRACE_MS, recién ahí se confirma como borrado real.
+  const timer = setTimeout(() => {
+    pendingRemovals.delete(absPath);
+    fileRepo.update(existing.id, { status: 'ELIMINADO_DISCO' });
+    console.log(`[watcher] Video eliminado del disco: ${path.basename(absPath)}`);
+  }, RENAME_GRACE_MS);
+  pendingRemovals.set(absPath, { fileId: existing.id, size, timer });
 }
 
 export function startWatcher(folder: string): void {
@@ -156,6 +204,10 @@ export function stopWatcher(): void {
     watcher = null;
     watchedDir = null;
   }
+  for (const pending of pendingRemovals.values()) clearTimeout(pending.timer);
+  pendingRemovals.clear();
+  lastKnownSize.clear();
+  if (transcripTimer) { clearTimeout(transcripTimer); transcripTimer = null; }
 }
 
 export function restartWatcher(newFolder: string): void {
