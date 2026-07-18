@@ -178,8 +178,13 @@ export function VideoPickerModal({ onSelect, onClose, platform }: { onSelect: (v
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={e => e.target === e.currentTarget && onClose()}>
+      {/* grid (no flex) para el layout general: un ScrollArea de Radix dentro de un
+          flex-col con flex-1 no siempre resuelve una altura definida (el viewport
+          interno terminaba alto = contenido completo, ignorando el recorte y
+          "saliéndose" del modal) — el row 1fr de grid sí le da una altura definida
+          a sus hijos de forma consistente entre navegadores. */}
       <motion.div initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
-        className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-lg flex flex-col" style={{ maxHeight: "80vh" }}>
+        className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-lg grid grid-rows-[auto_auto_1fr]" style={{ maxHeight: "80vh" }}>
         <div className="flex items-center gap-2 p-4 border-b border-border">
           <Search className="w-4 h-4 text-muted-foreground flex-shrink-0" />
           <input autoFocus value={search} onChange={e => setSearch(e.target.value)}
@@ -191,30 +196,35 @@ export function VideoPickerModal({ onSelect, onClose, platform }: { onSelect: (v
             Numerados = orden en que se van a publicar acá. El resto ya está resuelto para esta red.
           </p>
         )}
-        <ScrollArea className="flex-1 min-h-0">
-          {loading ? (
-            <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
-          ) : filtered.slice(0, 100).map(v => {
-            const num = queueNumber.get(v.fileId);
-            return (
-              <button key={v.fileId} onClick={() => { onSelect(v); onClose(); }}
-                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/50 text-left border-b border-border/50 last:border-0">
-                {platform && (
-                  <span className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-semibold ${
-                    num ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground/50"
-                  }`}>
-                    {num ?? "–"}
-                  </span>
-                )}
-                <div className="w-16 h-10 rounded bg-secondary flex items-center justify-center flex-shrink-0 relative">
-                  <Film className="w-3.5 h-3.5 text-muted-foreground/40" />
-                  {v.duration && <span className="absolute bottom-0.5 right-0.5 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{v.duration}</span>}
-                </div>
-                <span className={`flex-1 text-sm truncate ${num ? "text-foreground" : "text-muted-foreground"}`}>{v.title}</span>
-              </button>
-            );
-          })}
-          {!loading && filtered.length === 0 && <p className="text-center text-muted-foreground text-sm py-8">Sin resultados</p>}
+        <ScrollArea className="min-h-0" type="always">
+          {/* Radix exige un único hijo dentro del viewport para medir/recortar bien
+              el contenido — pasarle varios <button> sueltos como hermanos rompía el
+              recorte y la lista se salía del área con scroll. */}
+          <div>
+            {loading ? (
+              <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
+            ) : filtered.slice(0, 100).map(v => {
+              const num = queueNumber.get(v.fileId);
+              return (
+                <button key={v.fileId} onClick={() => { onSelect(v); onClose(); }}
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/50 text-left border-b border-border/50 last:border-0">
+                  {platform && (
+                    <span className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-semibold ${
+                      num ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground/50"
+                    }`}>
+                      {num ?? "–"}
+                    </span>
+                  )}
+                  <div className="w-16 h-10 rounded bg-secondary flex items-center justify-center flex-shrink-0 relative">
+                    <Film className="w-3.5 h-3.5 text-muted-foreground/40" />
+                    {v.duration && <span className="absolute bottom-0.5 right-0.5 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{v.duration}</span>}
+                  </div>
+                  <span className={`flex-1 text-sm truncate ${num ? "text-foreground" : "text-muted-foreground"}`}>{v.title}</span>
+                </button>
+              );
+            })}
+            {!loading && filtered.length === 0 && <p className="text-center text-muted-foreground text-sm py-8">Sin resultados</p>}
+          </div>
         </ScrollArea>
       </motion.div>
     </div>
