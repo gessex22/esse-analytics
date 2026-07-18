@@ -245,6 +245,14 @@ export const fileRepo = {
     }
   },
 
+  // Contraparte de addPlatform — se usa al borrar manualmente el link de una
+  // plataforma desde Videos (vuelve a "pendiente", no la marca como descartada).
+  removePlatform(id: number | string, platform: Platform): void {
+    const file = this.findById(id);
+    if (!file || !file.platforms.includes(platform)) return;
+    this.update(id, { platforms: file.platforms.filter(p => p !== platform) });
+  },
+
   /**
    * Flujo simple: al publicar de verdad en una plataforma, las demás que sigan
    * "pendientes" (nunca tocadas para este video) se resuelven como descartadas.

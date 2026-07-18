@@ -3,7 +3,7 @@ import {
   getVideos, getVideoSlimList, getVideoSlimPendingTranscript, getVideoPlayerData,
   updateVideoContentStatus, updateVideoPlatforms, updateVideosBulk,
   renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate, getVideoThumbnail,
-  resolveFilesByName,
+  resolveFilesByName, getPlatformLinks, setPlatformLink,
 } from '../controllers/video.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -22,6 +22,8 @@ router.get('/api/videos/:fileId/thumbnail',            getVideoThumbnail);
 router.patch('/api/videos/:fileId/rename',             verifyToken, renameVideo);
 router.patch('/api/videos/:fileId/status',             verifyToken, updateVideoContentStatus);
 router.patch('/api/videos/:fileId/platforms',          verifyToken, updateVideoPlatforms);
+router.get('/api/videos/:fileId/platform-links',       verifyToken, getPlatformLinks);
+router.patch('/api/videos/:fileId/platform-link/:platform', verifyToken, setPlatformLink);
 router.patch('/api/videos/bulk',                       verifyToken, updateVideosBulk);
 router.patch('/api/videos/:fileId/scheduled-date',     verifyToken, updateScheduledDate);
 router.delete('/api/videos/:fileId/delete-file',       verifyToken, deleteFileFromDisk);

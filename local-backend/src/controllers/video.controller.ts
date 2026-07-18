@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
-import { fileRepo, FileContentStatus } from '../db/file.repo';
+import { fileRepo, FileContentStatus, Platform } from '../db/file.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
+import { platformVideoRepo } from '../db/platform-video.repo';
+import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
@@ -159,6 +161,75 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
   const updated = fileRepo.update(fileId, data);
   if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
   res.json({ platforms, platforms_discarded });
+};
+
+// ── Extrae el ID nativo de un link pegado a mano — mejora los lookups/dedup,
+// pero si no matchea ningún patrón conocido (ej. link acortado vm.tiktok.com)
+// se usa la URL completa como platform_id: sigue siendo único y no bloquea al
+// usuario por un formato de link que no anticipamos.
+function extractPlatformId(platform: string, url: string): string {
+  const patterns: Record<string, RegExp> = {
+    youtube:   /(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{6,})/,
+    instagram: /instagram\.com\/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/,
+    tiktok:    /tiktok\.com\/@[^/]+\/video\/(\d+)/,
+  };
+  const match = url.match(patterns[platform]);
+  return match ? match[1] : url;
+}
+
+// ── GET /api/videos/:fileId/platform-links ─────────────────────────────────────
+export const getPlatformLinks = (req: Request, res: Response): void => {
+  const { fileId } = req.params;
+  const platforms: Platform[] = ['youtube', 'instagram', 'tiktok'];
+  const links: Record<string, string | null> = {};
+  for (const p of platforms) {
+    links[p] = platformVideoRepo.findByFileAndPlatform(fileId, p)?.platform_url ?? null;
+  }
+  res.json(links);
+};
+
+// ── PATCH /api/videos/:fileId/platform-link/:platform ──────────────────────────
+// Fija/corrige a mano el link de una plataforma puntual sin pasar por el flujo
+// de subida — pensado para arreglar un link roto o cargar uno publicado desde
+// afuera de la app, directamente desde la vista de Videos.
+export const setPlatformLink = (req: Request, res: Response): void => {
+  const { fileId, platform } = req.params;
+  const { url } = req.body as { url?: string | null };
+  const valid: Platform[] = ['youtube', 'instagram', 'tiktok'];
+  if (!valid.includes(platform as Platform)) {
+    res.status(400).json({ message: 'Plataforma inválida.' }); return;
+  }
+
+  const file = fileRepo.findById(fileId);
+  if (!file) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+  const trimmed = url?.trim();
+  if (!trimmed) {
+    platformVideoRepo.unlinkFromFile(fileId, platform);
+    fileRepo.removePlatform(fileId, platform as Platform);
+    pushFilesToCloudInBackground(req.headers.authorization);
+    res.json({ platform_url: null, platforms: fileRepo.findById(fileId)!.platforms });
+    return;
+  }
+
+  if (!/^https?:\/\//i.test(trimmed)) {
+    res.status(400).json({ message: 'El link debe empezar con http:// o https://' }); return;
+  }
+
+  const platformId = extractPlatformId(platform, trimmed);
+  platformVideoRepo.upsert({
+    platform,
+    platform_id: platformId,
+    platform_url: trimmed,
+    linked_file_id: Number(fileId),
+    match_status: 'manual',
+  });
+  fileRepo.addPlatform(fileId, platform as Platform);
+  // Deja la nube fresca al instante — mismo patrón que uploadToYoutube: un link
+  // corregido a mano es un cambio de estado real, no debería esperar al próximo
+  // push manual/automático para reflejarse en el mirror central.
+  pushFilesToCloudInBackground(req.headers.authorization);
+  res.json({ platform_url: trimmed, platforms: fileRepo.findById(fileId)!.platforms });
 };
 
 // ── PATCH /api/videos/bulk — edición masiva (plataformas y/o tipo de contenido) ─

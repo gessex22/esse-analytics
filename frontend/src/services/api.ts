@@ -484,6 +484,22 @@ export const videoService = {
     });
   },
 
+  // Links por plataforma de un video puntual — para editarlos inline desde
+  // Videos sin ir a la pantalla de Emparejar.
+  getPlatformLinks: (fileId: string): Promise<Record<"youtube" | "instagram" | "tiktok", string | null>> =>
+    requestJson(`/api/videos/${fileId}/platform-links`),
+
+  setPlatformLink: (
+    fileId: string,
+    platform: "youtube" | "instagram" | "tiktok",
+    url: string | null,
+  ): Promise<{ platform_url: string | null; platforms: ("youtube" | "instagram" | "tiktok")[] }> =>
+    requestJson(`/api/videos/${fileId}/platform-link/${platform}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }),
+
   updateVideosBulk: async (
     fileIds: string[],
     updates: {

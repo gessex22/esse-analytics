@@ -15,6 +15,7 @@ import {
   Loader2,
   MonitorOff,
   CalendarClock,
+  Link2,
 } from "lucide-react";
 import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
@@ -198,6 +199,122 @@ function VideoListSkeleton({ rows = 10 }: { rows?: number }) {
   );
 }
 
+// ── Editar links de plataforma inline (sin ir a Ajustes > Sync) ───────────────
+const LINK_CFG: Record<Platform, { label: string; Icon: (p: { active: boolean }) => JSX.Element; placeholder: string }> = {
+  youtube:   { label: "YouTube",   Icon: YoutubeIcon,   placeholder: "https://youtube.com/shorts/..." },
+  instagram: { label: "Instagram", Icon: InstagramIcon, placeholder: "https://instagram.com/reel/..." },
+  tiktok:    { label: "TikTok",    Icon: TiktokIcon,    placeholder: "https://tiktok.com/@usuario/video/..." },
+};
+
+function EditLinksModal({ fileId, title, onClose, onPlatformsChange }: {
+  fileId: string;
+  title: string;
+  onClose: () => void;
+  onPlatformsChange: (platforms: Platform[]) => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [links, setLinks] = useState<Record<Platform, string>>({ youtube: "", instagram: "", tiktok: "" });
+  const [savingPlatform, setSavingPlatform] = useState<Platform | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<Platform, string>>>({});
+  const [saved, setSaved] = useState<Partial<Record<Platform, boolean>>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    videoService.getPlatformLinks(fileId).then((data) => {
+      if (cancelled) return;
+      setLinks({ youtube: data.youtube ?? "", instagram: data.instagram ?? "", tiktok: data.tiktok ?? "" });
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [fileId]);
+
+  const handleSave = async (p: Platform) => {
+    setSavingPlatform(p);
+    setErrors((e) => ({ ...e, [p]: undefined }));
+    try {
+      const res = await videoService.setPlatformLink(fileId, p, links[p].trim() || null);
+      setLinks((prev) => ({ ...prev, [p]: res.platform_url ?? "" }));
+      onPlatformsChange(res.platforms);
+      setSaved((s) => ({ ...s, [p]: true }));
+      setTimeout(() => setSaved((s) => ({ ...s, [p]: false })), 2000);
+    } catch (err: any) {
+      setErrors((e) => ({ ...e, [p]: err.message || "Error al guardar" }));
+    } finally {
+      setSavingPlatform(null);
+    }
+  };
+
+  return (
+    <motion.div
+      key="links-dialog"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-foreground font-semibold text-sm">Editar links de plataforma</h3>
+            <p className="text-muted-foreground text-xs mt-1 truncate" title={title}>{title}</p>
+          </div>
+          <button onClick={onClose} className="p-1 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {ALL_PLATFORMS.map((p) => {
+              const cfg = LINK_CFG[p];
+              const Icon = cfg.Icon;
+              return (
+                <div key={p} className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Icon active={!!links[p]} />
+                    <span className="text-xs font-medium text-foreground">{cfg.label}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      value={links[p]}
+                      onChange={(e) => setLinks((prev) => ({ ...prev, [p]: e.target.value }))}
+                      placeholder={cfg.placeholder}
+                      disabled={savingPlatform === p}
+                      className="flex-1 bg-secondary border border-border rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:border-primary disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => handleSave(p)}
+                      disabled={savingPlatform !== null}
+                      className="flex items-center gap-1 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
+                    >
+                      {savingPlatform === p
+                        ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : saved[p] ? <Check className="w-3 h-3" /> : "Guardar"
+                      }
+                    </button>
+                  </div>
+                  {errors[p] && <p className="text-[11px] text-red-400">{errors[p]}</p>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── Cache en memoria (sobrevive a montar/desmontar la vista, no a recargar la
 // página) — mismo patrón que PublishingQueue: sin esto, cada vez que se cambia
 // a esta pestaña se remonta el componente y se pierde todo, mostrando el
@@ -265,6 +382,9 @@ export function VideosView({
 
   // Reproductor modal
   const [playerVideo, setPlayerVideo] = useState<{ fileId: string; title: string } | null>(null);
+
+  // Editar links de plataforma — inline, sin ir a Ajustes > Sync
+  const [linksTarget, setLinksTarget] = useState<{ fileId: string; title: string } | null>(null);
 
   // Abrir reproductor automáticamente cuando viene desde Calendario
   useEffect(() => {
@@ -960,6 +1080,14 @@ export function VideosView({
                               : <Trash2 className="w-3 h-3" />
                             }
                           </button>
+                          <button
+                            onClick={() => video.fileId && setLinksTarget({ fileId: video.fileId, title: video.title })}
+                            disabled={!video.fileId}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-primary transition-all flex-shrink-0 mt-px"
+                            title="Editar links de plataforma"
+                          >
+                            <Link2 className="w-3 h-3" />
+                          </button>
                         </>
                       )}
                     </div>
@@ -1086,6 +1214,22 @@ export function VideosView({
           onClose={() => setPlayerVideo(null)}
         />
       )}
+
+      {/* ── Editar links de plataforma ─────────────────────────────────────── */}
+      <AnimatePresence>
+      {linksTarget && (
+        <EditLinksModal
+          fileId={linksTarget.fileId}
+          title={linksTarget.title}
+          onClose={() => setLinksTarget(null)}
+          onPlatformsChange={(platforms) => {
+            setVideos((prev) => prev.map((v) =>
+              v.fileId === linksTarget.fileId ? { ...v, platforms } : v
+            ));
+          }}
+        />
+      )}
+      </AnimatePresence>
 
       {/* ── Diálogo confirmar eliminación ─────────────────────────────────── */}
       <AnimatePresence>

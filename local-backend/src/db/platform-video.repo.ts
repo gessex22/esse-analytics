@@ -57,6 +57,25 @@ export const platformVideoRepo = {
     return row ? parse(row) : undefined;
   },
 
+  // Link de UNA plataforma puntual para un archivo — a diferencia de findLinkedToFile
+  // (que trae cualquier fila sin filtrar plataforma), esto es lo que hace falta para
+  // editar el link de YouTube/Instagram/TikTok de un video de forma independiente.
+  findByFileAndPlatform(fileId: number | string, platform: string): DbPlatformVideo | undefined {
+    const row = db.prepare(
+      'SELECT * FROM platform_videos WHERE linked_file_id = ? AND platform = ?'
+    ).get(Number(fileId), platform) as RawRow | undefined;
+    return row ? parse(row) : undefined;
+  },
+
+  // Desvincula (sin borrar el registro) — se usa al limpiar manualmente un link
+  // desde la vista de Videos.
+  unlinkFromFile(fileId: number | string, platform: string): void {
+    db.prepare(
+      `UPDATE platform_videos SET linked_file_id = NULL, updated_at = datetime('now')
+       WHERE linked_file_id = ? AND platform = ?`
+    ).run(Number(fileId), platform);
+  },
+
   // For calendar: YouTube videos sorted by published_at DESC, with a linked file
   findByPlatformLinked(platform: string, limit: number): DbPlatformVideo[] {
     return (db.prepare(
