@@ -119,6 +119,34 @@ router.post('/api/local/setup/workflow-mode', verifyToken, (req: AuthRequest, re
   res.json({ ok: true, workflowMode: mode });
 });
 
+const ALL_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+
+// GET /api/local/setup/active-platforms — qué plataformas eligió usar el usuario
+// (para no mostrar pestañas/badges de redes que no le interesan). Sin elegir
+// todavía → las 3, mismo comportamiento que la app siempre tuvo.
+router.get('/api/local/setup/active-platforms', (_req, res) => {
+  const raw = configRepo.get('active_platforms');
+  let platforms: string[];
+  try {
+    platforms = raw ? JSON.parse(raw) : ALL_PLATFORMS;
+    if (!Array.isArray(platforms) || platforms.length === 0) platforms = ALL_PLATFORMS;
+  } catch {
+    platforms = ALL_PLATFORMS;
+  }
+  res.json({ activePlatforms: platforms.filter(p => ALL_PLATFORMS.includes(p)) });
+});
+
+// POST /api/local/setup/active-platforms
+router.post('/api/local/setup/active-platforms', verifyToken, (req: AuthRequest, res: Response) => {
+  const { platforms } = req.body as { platforms?: string[] };
+  if (!Array.isArray(platforms) || platforms.length === 0 || platforms.some(p => !ALL_PLATFORMS.includes(p))) {
+    res.status(400).json({ message: 'platforms inválido — necesita al menos una de youtube/instagram/tiktok.' });
+    return;
+  }
+  configRepo.set('active_platforms', JSON.stringify(platforms));
+  res.json({ ok: true, activePlatforms: platforms });
+});
+
 // DELETE /api/local/owner — libera la instancia
 router.delete('/api/local/owner', verifyToken, (req: AuthRequest, res: Response) => {
   try {

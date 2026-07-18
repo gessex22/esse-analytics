@@ -863,4 +863,61 @@ export const setupService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
     }),
+
+  // Qué plataformas eligió usar el usuario (Ajustes > Cuentas) — sin elegir
+  // todavía, el backend devuelve las 3 (comportamiento de siempre).
+  getActivePlatforms: (): Promise<{ activePlatforms: ConnectPlatform[] }> =>
+    requestJson('/api/local/setup/active-platforms'),
+
+  setActivePlatforms: (platforms: ConnectPlatform[]): Promise<{ ok: boolean; activePlatforms: ConnectPlatform[] }> =>
+    requestJson('/api/local/setup/active-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platforms }),
+    }),
+};
+
+// ==========================================
+// OAUTH SERVICE (conectar/desconectar cuentas — Ajustes > Cuentas)
+// ==========================================
+// Mismos endpoints que ya usan YoutubeUploadView/SimpleUploadView para el flujo
+// de subida (status/url/disconnect), acá centralizados para la pantalla de
+// Ajustes que solo necesita mostrar el estado de conexión, no subir nada.
+
+export type ConnectPlatform = "youtube" | "instagram" | "tiktok";
+
+export interface OAuthAccountInfo {
+  displayName: string;
+  handle?: string;
+  avatarUrl: string;
+}
+
+const ACCOUNT_INFO_PATH: Record<ConnectPlatform, string> = {
+  youtube:   "/api/youtube/channel-info",
+  instagram: "/api/instagram/account-info",
+  tiktok:    "/api/tiktok/creator-info",
+};
+
+export const oauthService = {
+  getStatus: (platform: ConnectPlatform): Promise<{ connected: boolean }> =>
+    requestJson(`/api/${platform}/auth/status`),
+
+  getAuthUrl: (platform: ConnectPlatform, origin: string): Promise<{ url: string }> =>
+    requestJson(`/api/${platform}/auth/url?origin=${encodeURIComponent(origin)}`),
+
+  disconnect: (platform: ConnectPlatform): Promise<void> =>
+    requestJson(`/api/${platform}/auth`, { method: "DELETE" }).then(() => undefined),
+
+  // Cada plataforma devuelve un shape distinto (name/nickname, customUrl/username) —
+  // se normaliza acá para que la UI no tenga que conocer esas diferencias.
+  getAccountInfo: async (platform: ConnectPlatform): Promise<OAuthAccountInfo> => {
+    const data = await requestJson<any>(ACCOUNT_INFO_PATH[platform]);
+    if (platform === "tiktok") {
+      return { displayName: data.nickname || data.username || "", handle: data.username, avatarUrl: data.avatarUrl || "" };
+    }
+    if (platform === "instagram") {
+      return { displayName: data.name || data.username || "", handle: data.username, avatarUrl: data.avatarUrl || "" };
+    }
+    return { displayName: data.name || "", handle: data.customUrl, avatarUrl: data.avatarUrl || "" };
+  },
 };

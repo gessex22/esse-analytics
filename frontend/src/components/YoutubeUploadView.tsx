@@ -11,10 +11,11 @@ const isRemote = () => {
   const h = window.location.hostname;
   return h !== "localhost" && h !== "127.0.0.1" && !h.startsWith("192.168.");
 };
-import { videoService, syncService } from "../services/api";
+import { videoService, syncService, setupService } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { API_BASE as API } from "../config";
 import { Skeleton } from "./ui/skeleton";
+import { ScrollArea } from "./ui/scroll-area";
 
 // El token va por query string porque <video src> no puede mandar headers custom
 // (necesario contra la central en modo remoto, que sí valida dueño del archivo).
@@ -137,16 +138,43 @@ export function TagInput({ tags, onChange }: { tags: string[]; onChange: (t: str
 }
 
 // ── Modal selector de video ───────────────────────────────────────────────────
-export function VideoPickerModal({ onSelect, onClose }: { onSelect: (v: SlimVideo) => void; onClose: () => void }) {
+// `platform`, si se pasa, habilita la numeración de "cuál sigue": se calcula la
+// misma cola que usa resolveNextForPlatform (pendientes para esa red, de más
+// viejo a más nuevo, con el nextVideoId fijado del calendario arrancando en 1)
+// y se listan primero, numerados — el resto (ya resueltos para esa plataforma)
+// quedan sin número más abajo. Sin `platform` se comporta como antes.
+export function VideoPickerModal({ onSelect, onClose, platform }: { onSelect: (v: SlimVideo) => void; onClose: () => void; platform?: Platform }) {
   const [videos,  setVideos]  = useState<SlimVideo[]>([]);
   const [search,  setSearch]  = useState("");
   const [loading, setLoading] = useState(true);
+  const [nextVideoId, setNextVideoId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     videoService.getSlimList().then(setVideos).finally(() => setLoading(false));
-  }, []);
+    if (platform) {
+      syncService.getCalendarConfig()
+        .then(configs => setNextVideoId(configs.find(c => c.platform === platform)?.nextVideoId))
+        .catch(() => {});
+    }
+  }, [platform]);
 
-  const filtered = videos.filter(v => v.title.toLowerCase().includes(search.toLowerCase()));
+  const queueNumber = new Map<string, number>();
+  if (platform) {
+    // videos viene de más nuevo a más viejo — la cola de publicación avanza al
+    // revés (el más viejo pendiente es el próximo), por eso se invierte acá.
+    const pending = videos
+      .filter(v => !(v.platforms ?? []).includes(platform) && !(v.platforms_discarded ?? []).includes(platform))
+      .reverse();
+    if (nextVideoId) {
+      const idx = pending.findIndex(v => v.fileId === nextVideoId || v.title === nextVideoId);
+      if (idx > 0) pending.unshift(...pending.splice(idx, 1));
+    }
+    pending.forEach((v, i) => queueNumber.set(v.fileId, i + 1));
+  }
+
+  const filtered = videos
+    .filter(v => v.title.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => (queueNumber.get(a.fileId) ?? Infinity) - (queueNumber.get(b.fileId) ?? Infinity));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -158,21 +186,36 @@ export function VideoPickerModal({ onSelect, onClose }: { onSelect: (v: SlimVide
             placeholder="Buscar video..." className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none" />
           <button onClick={onClose}><X className="w-4 h-4 text-muted-foreground hover:text-foreground" /></button>
         </div>
-        <div className="overflow-y-auto flex-1">
+        {platform && !loading && queueNumber.size > 0 && (
+          <p className="px-4 pt-2.5 text-[11px] text-muted-foreground">
+            Numerados = orden en que se van a publicar acá. El resto ya está resuelto para esta red.
+          </p>
+        )}
+        <ScrollArea className="flex-1 min-h-0">
           {loading ? (
             <div className="flex justify-center py-10"><Loader2 className="w-5 h-5 animate-spin text-muted-foreground" /></div>
-          ) : filtered.slice(0, 100).map(v => (
-            <button key={v.fileId} onClick={() => { onSelect(v); onClose(); }}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/50 text-left border-b border-border/50 last:border-0">
-              <div className="w-16 h-10 rounded bg-secondary flex items-center justify-center flex-shrink-0 relative">
-                <Film className="w-3.5 h-3.5 text-muted-foreground/40" />
-                {v.duration && <span className="absolute bottom-0.5 right-0.5 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{v.duration}</span>}
-              </div>
-              <span className="flex-1 text-sm text-foreground truncate">{v.title}</span>
-            </button>
-          ))}
+          ) : filtered.slice(0, 100).map(v => {
+            const num = queueNumber.get(v.fileId);
+            return (
+              <button key={v.fileId} onClick={() => { onSelect(v); onClose(); }}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/50 text-left border-b border-border/50 last:border-0">
+                {platform && (
+                  <span className={`flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-mono font-semibold ${
+                    num ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground/50"
+                  }`}>
+                    {num ?? "–"}
+                  </span>
+                )}
+                <div className="w-16 h-10 rounded bg-secondary flex items-center justify-center flex-shrink-0 relative">
+                  <Film className="w-3.5 h-3.5 text-muted-foreground/40" />
+                  {v.duration && <span className="absolute bottom-0.5 right-0.5 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{v.duration}</span>}
+                </div>
+                <span className={`flex-1 text-sm truncate ${num ? "text-foreground" : "text-muted-foreground"}`}>{v.title}</span>
+              </button>
+            );
+          })}
           {!loading && filtered.length === 0 && <p className="text-center text-muted-foreground text-sm py-8">Sin resultados</p>}
-        </div>
+        </ScrollArea>
       </motion.div>
     </div>
   );
@@ -1238,7 +1281,7 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
                 También publicar en Facebook
               </div>
               <span className="text-[11px] text-muted-foreground/70">
-                Solo funciona si tu cuenta de Instagram tiene habilitado "Compartir a Facebook"
+                Se publica aparte en tu Página de Facebook vinculada — no depende de ninguna config de Instagram
               </span>
             </div>
           </label>
@@ -1359,6 +1402,16 @@ function ThumbnailScrubber({ fileId, onCapture }: {
 // ── Componente principal ──────────────────────────────────────────────────────
 export function YoutubeUploadView() {
   const [activePlatform, setActivePlatform] = useState<Platform>("youtube");
+  // Plataformas que el usuario eligió usar (Ajustes > Cuentas) — las demás no
+  // aparecen como pestaña acá, aunque su formulario siga montado por dentro.
+  const [visiblePlatforms, setVisiblePlatforms] = useState<Platform[]>(["youtube", "instagram", "tiktok"]);
+  useEffect(() => {
+    setupService.getActivePlatforms().then(d => {
+      if (!d.activePlatforms.length) return;
+      setVisiblePlatforms(d.activePlatforms);
+      setActivePlatform(prev => d.activePlatforms.includes(prev) ? prev : d.activePlatforms[0]);
+    }).catch(() => {});
+  }, []);
   const [nextVideos, setNextVideos] = useState<Record<Platform, SlimVideo | null>>({ youtube: null, instagram: null, tiktok: null });
   const [selected,   setSelected]   = useState<SlimVideo | null>(null);
   const [showPicker, setShowPicker] = useState(false);
@@ -1622,7 +1675,7 @@ export function YoutubeUploadView() {
 
       {/* ── Tabs de plataforma ────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 bg-card border border-border rounded-xl p-1.5">
-        {PLATFORMS.map(p => {
+        {PLATFORMS.filter(p => visiblePlatforms.includes(p.key)).map(p => {
           const active = activePlatform === p.key;
           return (
             <button key={p.key} onClick={() => switchPlatform(p.key)}
@@ -2087,7 +2140,7 @@ export function YoutubeUploadView() {
 
       {/* Modal selector */}
       <AnimatePresence>
-        {showPicker && <VideoPickerModal onSelect={v => { setSelected(v); setTitle(v.title.replace(/\.[^.]+$/, "")); }} onClose={() => setShowPicker(false)} />}
+        {showPicker && <VideoPickerModal platform={activePlatform} onSelect={v => { setSelected(v); setTitle(v.title.replace(/\.[^.]+$/, "")); }} onClose={() => setShowPicker(false)} />}
       </AnimatePresence>
 
       {/* Preview del video */}

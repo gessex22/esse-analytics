@@ -112,6 +112,9 @@ export const configRepo = {
     // tiene el pull de la nube para recuperarlo) queda "reseteado" a avanzado
     // cada vez que vuelve a entrar. Se preserva a través del wipe.
     const preservedWorkflowMode = this.get('workflow_mode');
+    // Mismo criterio para qué plataformas eligió usar — no depende de qué cuenta
+    // esté logueada en esta PC.
+    const preservedActivePlatforms = this.get('active_platforms');
 
     // Varias tablas tienen file_id/video_principal_id REFERENCES files(id) y
     // foreign_keys está ON: deben borrarse ANTES que "files", si no el DELETE de
@@ -129,6 +132,7 @@ export const configRepo = {
     }
 
     if (preservedWorkflowMode) this.set('workflow_mode', preservedWorkflowMode);
+    if (preservedActivePlatforms) this.set('active_platforms', preservedActivePlatforms);
 
     // Las miniaturas son datos derivados de los archivos de ESTA cuenta — no
     // deben sobrevivir al wipe (logout/cambio de cuenta/reset), si no quedan

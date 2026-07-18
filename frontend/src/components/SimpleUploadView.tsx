@@ -4,7 +4,7 @@ import {
   Film, Play, Loader2, CheckCircle2, AlertCircle, ChevronDown, RefreshCw,
   ExternalLink, Globe, Users, Tag, Wrench,
 } from "lucide-react";
-import { videoService, syncService } from "../services/api";
+import { videoService, syncService, setupService } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import {
@@ -47,6 +47,14 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
   const [conn,    setConn]    = useState<Record<Platform, ConnStatus>>({ youtube: null, instagram: null, tiktok: null });
   const [checked, setChecked] = useState<Record<Platform, boolean>>({ youtube: false, instagram: false, tiktok: false });
   const [expanded, setExpanded] = useState<Record<Platform, boolean>>({ youtube: false, instagram: false, tiktok: false });
+  // Plataformas que el usuario eligió usar (Ajustes > Cuentas) — las demás no
+  // aparecen en esta lista aunque estén conectadas.
+  const [visiblePlatforms, setVisiblePlatforms] = useState<Platform[]>(["youtube", "instagram", "tiktok"]);
+  useEffect(() => {
+    setupService.getActivePlatforms().then(d => {
+      if (d.activePlatforms.length) setVisiblePlatforms(d.activePlatforms);
+    }).catch(() => {});
+  }, []);
 
   const [title, setTitle]             = useState("");
   const [description, setDescription] = useState("");
@@ -72,6 +80,9 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
   const [publishing, setPublishing] = useState(false);
   const [results, setResults]       = useState<Record<Platform, UploadResult>>(IDLE_RESULTS);
+  // Plataforma de referencia para numerar la cola en el buscador de video — en
+  // modo simple las 3 colas deberían coincidir, así que cualquiera sirve.
+  const [queuePlatform, setQueuePlatform] = useState<Platform>("youtube");
 
   const loadNextVideo = () => {
     setLoadingNext(true);
@@ -84,6 +95,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
           .filter(c => c.lastPublishedDate)
           .sort((a, b) => (b.lastPublishedDate || "").localeCompare(a.lastPublishedDate || ""))[0]?.platform as Platform | undefined;
         const platform = canonical ?? "youtube";
+        setQueuePlatform(platform);
         const cfg = configs.find(c => c.platform === platform);
         const next = resolveNextForPlatform(slim, cfg?.nextVideoId, platform);
         setVideo(next);
@@ -176,8 +188,12 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
     };
   };
 
-  const platformsToSubmit = (["youtube", "instagram", "tiktok"] as Platform[]).filter(p => checked[p] && conn[p]);
-  const missingTkPrivacy = checked.tiktok && conn.tiktok && !tkPrivacy;
+  // visiblePlatforms también filtra acá, no solo en el render: si el usuario
+  // desactivó una plataforma pero ya estaba conectada, checked[p] igual se
+  // había puesto en true en checkStatus — sin este filtro se publicaría ahí
+  // aunque la fila esté oculta.
+  const platformsToSubmit = (["youtube", "instagram", "tiktok"] as Platform[]).filter(p => checked[p] && conn[p] && visiblePlatforms.includes(p));
+  const missingTkPrivacy = visiblePlatforms.includes("tiktok") && checked.tiktok && conn.tiktok && !tkPrivacy;
 
   const uploadOne = async (p: Platform) => {
     setResults(prev => ({ ...prev, [p]: { status: "uploading" } }));
@@ -271,7 +287,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
       {/* ── Plataformas ────────────────────────────────────────────────────── */}
       <div className="space-y-2">
-        {PLATFORMS.map(({ key: p, label, color, Icon }) => {
+        {PLATFORMS.filter(({ key }) => visiblePlatforms.includes(key)).map(({ key: p, label, color, Icon }) => {
           const status = conn[p];
           const result = results[p];
           return (
@@ -375,7 +391,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
                             <span className="text-sm text-muted-foreground">
                               También publicar en Facebook
                               <span className="block text-[11px] text-muted-foreground/70">
-                                Solo funciona si tu cuenta de Instagram tiene habilitado "Compartir a Facebook"
+                                Se publica aparte en tu Página de Facebook vinculada — no depende de ninguna config de Instagram
                               </span>
                             </span>
                           </label>
@@ -460,6 +476,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
       {showPicker && (
         <VideoPickerModal
+          platform={queuePlatform}
           onSelect={v => { setVideo(v); setTitle(v.title.replace(/\.[^.]+$/, "")); }}
           onClose={() => setShowPicker(false)}
         />

@@ -360,6 +360,16 @@ export function VideosView({
   }, []);
   const isSimpleFlow = workflowMode === "simple";
 
+  // Plataformas que el usuario eligió usar (Ajustes > Cuentas) — las que
+  // desactivó no aparecen en los badges/filtros. Solo afecta qué se MUESTRA;
+  // el flujo simple sigue agregando las 3 (no redefine "publicado completo").
+  const [visiblePlatforms, setVisiblePlatforms] = useState<Platform[]>(ALL_PLATFORMS);
+  useEffect(() => {
+    setupService.getActivePlatforms()
+      .then(d => setVisiblePlatforms(d.activePlatforms.length ? d.activePlatforms : ALL_PLATFORMS))
+      .catch(() => {});
+  }, []);
+
   // Selección
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds]     = useState<string[]>([]);
@@ -843,7 +853,7 @@ export function VideosView({
                 {isSimpleFlow ? (
                   <SimpleStatusBadge state={simpleBulkState} onClick={applyBulkSimple} />
                 ) : (
-                  ALL_PLATFORMS.map((p) => (
+                  visiblePlatforms.map((p) => (
                     <PlatformBadge key={p} platform={p} state={bulkCycle[p]} onClick={() => applyBulkPlatform(p)} />
                   ))
                 )}
@@ -886,7 +896,7 @@ export function VideosView({
           <div className="space-y-1.5 sm:space-y-0 sm:flex sm:items-center sm:gap-4">
             <span className="block text-[10px] font-semibold text-muted-foreground uppercase tracking-wider sm:w-20 sm:flex-shrink-0">Plataforma</span>
             <div className="flex gap-2 flex-wrap">
-              {["youtube", "instagram", "tiktok"].map((p) => (
+              {visiblePlatforms.map((p) => (
                 <Chip key={p} active={selectedPlatforms.includes(p)} onClick={() => togglePlatform(p)}>{p.charAt(0).toUpperCase() + p.slice(1)}</Chip>
               ))}
             </div>
@@ -1132,7 +1142,7 @@ export function VideosView({
                       }}
                     />
                   ) : (
-                    ALL_PLATFORMS.map((p) => {
+                    visiblePlatforms.map((p) => {
                       const state: PlatformState = video.platforms.includes(p)
                         ? "publicado"
                         : video.platforms_discarded.includes(p)
