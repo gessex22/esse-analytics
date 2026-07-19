@@ -2,6 +2,32 @@
 @import './tailwind.css';
 @import './theme.css';
 
+/* Scrollbar propia para toda la app — en Windows/Electron, Chromium muestra por
+   defecto el scrollbar "clásico" del sistema (gris, grueso). Se reemplaza acá a
+   nivel global para no tener que envolver cada contenedor con scroll en el
+   ScrollArea de Radix; usa --muted-foreground para seguir el tema activo
+   (Rojo/Ámbar), igual que el thumb de ScrollArea (ver ui/scroll-area.tsx). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted-foreground) 40%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+}
+
 /* Glow pulsante de las gemas "en uso" — CSS puro (no motion) para que el color
    se vea nítido en vez de una sombra oscura difusa. El color lo define
    --gem-glow-rgb (formato "r, g, b"), seteado inline por componente. */

@@ -5,7 +5,7 @@ import { useUploadActivity, uploadPhaseLabel } from "./useUploadActivity";
 export interface NotificationItem {
   id: string;
   label: string;
-  status: "running" | "done";
+  status: "running" | "done" | "error";
   updatedAt: number;
 }
 
@@ -22,6 +22,7 @@ function transcriptionLabel(a: NonNullable<ReturnType<typeof usePluginActivity>>
 
 function uploadLabel(a: NonNullable<ReturnType<typeof useUploadActivity>>): string {
   const platform = PLATFORM_LABELS[a.platform] ?? a.platform;
+  if (a.phase === "error") return `Error al subir a ${platform}${a.message ? `: ${a.message}` : ""}`;
   const pct = a.percent != null ? ` ${a.percent}%` : "";
   return `${uploadPhaseLabel(a.phase)} a ${platform}${pct}`;
 }
@@ -52,7 +53,12 @@ export function useNotificationCenter(enabled: boolean) {
       }
 
       if (uploadActivity) {
-        next.upload = { id: "upload", label: uploadLabel(uploadActivity), status: "running", updatedAt: now };
+        next.upload = {
+          id: "upload",
+          label: uploadLabel(uploadActivity),
+          status: uploadActivity.phase === "error" ? "error" : "running",
+          updatedAt: now,
+        };
       } else if (next.upload?.status === "running") {
         next.upload = { ...next.upload, label: `${next.upload.label} — listo`, status: "done", updatedAt: now };
       }

@@ -4,13 +4,15 @@ import { API_BASE } from "../config";
 export interface UploadActivity {
   platform: "youtube" | "instagram" | "tiktok";
   title: string;
-  phase: "uploading" | "processing";
+  phase: "uploading" | "processing" | "error";
   percent?: number;
+  message?: string;
 }
 
 const UPLOAD_PHASE_LABELS: Record<string, string> = {
   uploading:  "Subiendo",
   processing: "Procesando",
+  error:      "Error",
 };
 
 export function uploadPhaseLabel(phase: string): string {

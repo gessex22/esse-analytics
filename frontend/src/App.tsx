@@ -315,41 +315,53 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <div className="relative">
+            <div className="relative h-9">
+              {/* Clon del círculo gris de la campana: se estira hacia la izquierda
+                  (mismo alto/centro que el botón) cuando llega una novedad, y vuelve
+                  a su tamaño original solo con el botón de campana encima tapando el
+                  extremo derecho. El punto de "no leído" recién reaparece cuando el
+                  clon terminó de encogerse. */}
+              <motion.div
+                className="absolute top-0 right-0 z-0 h-9 rounded-full bg-secondary/40 border overflow-hidden flex items-center justify-end whitespace-nowrap pointer-events-none"
+                initial={false}
+                animate={{
+                  width: cloudOpen && notifications.length > 0 ? 260 : 36,
+                  borderColor: cloudOpen && notifications.length > 0 ? "var(--primary)" : "transparent",
+                }}
+                transition={{ duration: 0.45, ease: [0.34, 1.56, 0.64, 1] }}
+              >
+                <AnimatePresence>
+                  {cloudOpen && notifications.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ delay: 0.15, duration: 0.15 }}
+                      className="flex items-center gap-1.5 pl-3 text-xs text-foreground"
+                      style={{ paddingRight: 44 }}
+                    >
+                      {notifications[0].status === "running" ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
+                      ) : notifications[0].status === "error" ? (
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-red-400" />
+                      ) : (
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                      )}
+                      <span className="truncate">{notifications[0].label}</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+
               <button
                 onClick={() => { setNotifOpen(v => !v); markRead(); }}
-                className="relative flex items-center justify-center w-9 h-9 rounded-full bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors"
+                className="relative z-10 flex items-center justify-center w-9 h-9 rounded-full bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors"
               >
                 <Bell className="w-4 h-4" />
-                {notifUnread && (
+                {notifUnread && !cloudOpen && (
                   <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
                 )}
               </button>
-
-              {/* Nube transitoria: aparece sola con cada novedad (transcripción/subida
-                  en curso) y se cierra a los 5s sin intervención del usuario. */}
-              <AnimatePresence>
-                {cloudOpen && !notifOpen && notifications.length > 0 && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -6, scale: 0.97 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -6, scale: 0.97 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden pointer-events-none"
-                  >
-                    <div className="px-4 py-3 space-y-2">
-                      {notifications.map(n => (
-                        <div key={n.id} className="flex items-center gap-2 text-xs text-foreground">
-                          {n.status === "running"
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
-                            : <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />}
-                          <span className="truncate">{n.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
 
               <AnimatePresence>
                 {notifOpen && (
@@ -375,10 +387,14 @@ export default function App() {
                         <div className="max-h-80 overflow-y-auto divide-y divide-border">
                           {notifications.map(n => (
                             <div key={n.id} className="flex items-center gap-2 px-4 py-3 text-xs">
-                              {n.status === "running"
-                                ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
-                                : <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />}
-                              <span className="truncate text-foreground">{n.label}</span>
+                              {n.status === "running" ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
+                              ) : n.status === "error" ? (
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 text-red-400" />
+                              ) : (
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                              )}
+                              <span className={`truncate ${n.status === "error" ? "text-red-300" : "text-foreground"}`}>{n.label}</span>
                             </div>
                           ))}
                         </div>

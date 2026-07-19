@@ -8,7 +8,7 @@ import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { normalizeForMeta, trimToMaxDuration, appendDebugLog } from '../services/video-normalize.service';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
-import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
+import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 // Facebook Login for Business: central entrega un Page Access Token (de una
 // Página con una Cuenta de Instagram Business vinculada), válido contra
@@ -336,13 +336,14 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     if (facebookUrl) fileRepo.addPlatform(fileId, 'facebook');
     pushFilesToCloudInBackground(req.headers.authorization);
 
+    clearUploadProgress(jobId);
     res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!facebookUrl, facebookUrl, facebookError, uploadStage: usedStage });
   } catch (err: any) {
     appendDebugLog(`[trace] FALLARON las 3 etapas: ${err.message} | stack: ${err.stack}`);
     console.error('Error al subir a Instagram:', err.message);
+    setUploadError(jobId, { platform: 'instagram', title: fullCaption, message: err.message });
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });
   } finally {
     for (const f of tempFiles) fs.unlink(f, () => {});
-    clearUploadProgress(jobId);
   }
 };

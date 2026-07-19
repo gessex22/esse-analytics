@@ -474,6 +474,7 @@ function ReviewCard({
 // ── Panel principal ────────────────────────────────────────────────────────────
 
 export function SyncPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title: string) => void } = {}) {
+  const [activeTab, setActiveTab] = useState<"cross" | "local">("cross");
   const [stats, setStats]       = useState<SyncStats | null>(null);
   const [items, setItems]       = useState<SyncReviewItem[]>([]);
   const [page, setPage]         = useState(1);
@@ -530,11 +531,32 @@ export function SyncPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
   };
 
   return (
-    <div className="space-y-8 max-w-3xl">
-      {/* Emparejado entre plataformas — independiente del match con archivo local */}
-      <CrossMatchPanel onOpenVideo={onOpenVideo} />
+    <div className="space-y-6 max-w-3xl">
+      {/* Sub-tabs: emparejado entre plataformas vs. match con archivo local — son
+          independientes entre sí, por eso se muestran de a uno. */}
+      <div className="flex gap-2 border-b border-border pb-3">
+        {([
+          { id: "cross", label: "Emparejar entre plataformas" },
+          { id: "local", label: "Vincular con archivo local" },
+        ] as const).map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => setActiveTab(id)}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              activeTab === id
+                ? "bg-primary/10 text-primary border-primary/40"
+                : "bg-card/40 text-muted-foreground border-border hover:text-foreground hover:bg-secondary/40"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-      <div className="border-t border-border pt-6 space-y-6 max-w-2xl">
+      {activeTab === "cross" && <CrossMatchPanel onOpenVideo={onOpenVideo} />}
+
+      {activeTab === "local" && (
+      <div className="space-y-6 max-w-2xl">
       <div>
         <h3 className="text-sm font-semibold text-foreground">Vincular con archivo local</h3>
         <p className="text-xs text-muted-foreground mt-0.5">
@@ -598,6 +620,7 @@ export function SyncPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         )}
       </div>
       </div>
+      )}
     </div>
   );
 }

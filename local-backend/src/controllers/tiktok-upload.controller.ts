@@ -5,7 +5,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
-import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
+import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 const TK_BASE    = 'https://open.tiktokapis.com/v2';
 const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -178,11 +178,11 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     });
     pushFilesToCloudInBackground(req.headers.authorization);
 
+    clearUploadProgress(jobId);
     res.json({ ok: true, publishId: publish_id, status: publishStatus, sentToInbox: publishStatus === 'SEND_TO_USER_INBOX' });
   } catch (err: any) {
     console.error('Error al subir a TikTok:', err.message);
+    setUploadError(jobId, { platform: 'tiktok', title, message: err.message });
     res.status(500).json({ error: 'Error al subir a TikTok', detail: err.message });
-  } finally {
-    clearUploadProgress(jobId);
   }
 };

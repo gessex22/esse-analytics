@@ -6,7 +6,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
-import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
+import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 const CENTRAL     = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 const CHUNK_SIZE  = 8 * 1024 * 1024; // 8 MiB, múltiplo de 256 KiB (requisito de YouTube resumable)
@@ -188,12 +188,12 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     });
     pushFilesToCloudInBackground(req.headers.authorization);
 
+    clearUploadProgress(jobId);
     res.json({ ok: true, ...result });
   } catch (err: any) {
     console.error('Error local YouTube upload:', err.message);
+    setUploadError(jobId, { platform: 'youtube', title, message: err.message });
     res.status(500).json({ error: 'Error al subir el video', detail: err.message });
-  } finally {
-    clearUploadProgress(jobId);
   }
 };
 
