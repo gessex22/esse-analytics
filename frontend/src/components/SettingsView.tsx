@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2 } from "lucide-react";
+import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, ChevronRight, ChevronLeft } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -10,13 +10,13 @@ import { useAuth } from "../hooks/useAuth";
 import { API_BASE } from "../config";
 
 const ALL_SECTIONS = [
-  { id: "colores",    label: "Colores",        icon: Palette,     roles: ["todopoderoso", "editor"], localOnly: false },
-  { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false },
-  { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true  },
-  { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false },
-  { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false },
-  { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true  },
-  { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true  },
+  { id: "colores",    label: "Colores",        icon: Palette,     roles: ["todopoderoso", "editor"], localOnly: false, description: "Elegí la paleta de color de la app" },
+  { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false, description: "Flujo de publicación y carpeta de videos" },
+  { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true,  description: "Cuentas conectadas de YouTube, Instagram y TikTok" },
+  { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false, description: "Seguridad de la cuenta" },
+  { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false, description: "Emparejar entre plataformas y vincular con archivo local" },
+  { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true,  description: "Acceso remoto y respaldo en la nube" },
+  { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true,  description: "Gestioná los datos guardados en esta instalación" },
 ];
 
 function ColoresPanel() {
@@ -175,6 +175,8 @@ interface SettingsViewProps {
 }
 
 export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }: SettingsViewProps) {
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+
   const visibleSections = ALL_SECTIONS.filter(s => {
     if (!s.roles.includes(role)) return false;
     // Seguridad: solo tiene sentido en la central (remoto) y para el dueño de la cuenta.
@@ -193,17 +195,43 @@ export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }:
     datos:      <DatosPanel />,
   };
 
-  return (
-    <div className="space-y-8">
-      {visibleSections.map(({ id, label, icon: Icon }, idx) => (
-        <div key={id} className="space-y-4">
-          {idx > 0 && <hr className="border-border" />}
-          <div className="flex items-center gap-2">
-            <Icon className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-foreground">{label}</h2>
-          </div>
-          {panels[id]}
+  // Ajustes es un menú (como en celular): cada sección es una fila que lleva a
+  // su propia pantalla, en vez de apilar todo el contenido en un solo scroll.
+  const active = visibleSections.find(s => s.id === activeSection);
+  if (active) {
+    return (
+      <div className="space-y-4">
+        <button
+          onClick={() => setActiveSection(null)}
+          className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronLeft className="w-3.5 h-3.5" />
+          Volver a Ajustes
+        </button>
+        <div className="flex items-center gap-2">
+          <active.icon className="w-4 h-4 text-muted-foreground" />
+          <h2 className="text-sm font-semibold text-foreground">{active.label}</h2>
         </div>
+        {panels[active.id]}
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-lg divide-y divide-border border border-border rounded-xl overflow-hidden">
+      {visibleSections.map(({ id, label, icon: Icon, description }) => (
+        <button
+          key={id}
+          onClick={() => setActiveSection(id)}
+          className="w-full flex items-center gap-3 text-left px-4 py-3 hover:bg-secondary/40 transition-colors"
+        >
+          <Icon className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-medium text-foreground">{label}</h2>
+            <p className="text-xs text-muted-foreground truncate">{description}</p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+        </button>
       ))}
     </div>
   );

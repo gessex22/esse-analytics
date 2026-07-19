@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Play, Camera, Music2, Share2, Loader2, History as HistoryIcon, ExternalLink } from "lucide-react";
+import { Play, Camera, Music2, Share2, Loader2, History as HistoryIcon, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { syncService, videoService } from "../services/api";
 
@@ -38,7 +38,7 @@ function formatDateTime(iso: string): string {
   return d.toLocaleString("es", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-const PAGE_SIZE = 30;
+const PAGE_SIZE = 10;
 
 // Miniatura real del archivo local (ffmpeg, vía videoService) si el upload quedó
 // vinculado; si no hay archivo o el thumbnail falla (video borrado del disco,
@@ -75,27 +75,29 @@ export function HistoryView({ onOpenVideo }: HistoryViewProps) {
   const [filter, setFilter]     = useState<HistoryPlatform | "all">("all");
   const [items, setItems]       = useState<HistoryItem[]>([]);
   const [total, setTotal]       = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading]   = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
-  const load = useCallback((platform: HistoryPlatform | "all", offset: number, append: boolean) => {
-    (append ? setLoadingMore : setLoading)(true);
+  const load = useCallback((platform: HistoryPlatform | "all", page: number) => {
+    setLoading(true);
     setError(null);
-    syncService.getHistory({ limit: PAGE_SIZE, offset, platform: platform === "all" ? undefined : platform })
+    syncService.getHistory({ limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE, platform: platform === "all" ? undefined : platform })
       .then((res) => {
-        setItems((prev) => (append ? [...prev, ...res.items] : res.items));
+        setItems(res.items);
         setTotal(res.total);
+        setCurrentPage(page);
       })
       .catch((err) => setError(err?.message || "No se pudo cargar el historial."))
-      .finally(() => (append ? setLoadingMore : setLoading)(false));
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    load(filter, 0, false);
-  }, [filter, load]);
+    load(filter, 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
-  const canLoadMore = items.length < total;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="flex flex-col gap-5 pb-8">
@@ -104,6 +106,11 @@ export function HistoryView({ onOpenVideo }: HistoryViewProps) {
         <p className="text-sm text-muted-foreground mt-0.5">
           Cada video que se sube desde la app queda registrado acá automáticamente.
         </p>
+        {!loading && total > 0 && (
+          <p className="text-xs text-muted-foreground mt-1">
+            {total} registros · página {currentPage}/{totalPages}
+          </p>
+        )}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -170,15 +177,53 @@ export function HistoryView({ onOpenVideo }: HistoryViewProps) {
             );
           })}
 
-          {canLoadMore && (
-            <button
-              onClick={() => load(filter, items.length, true)}
-              disabled={loadingMore}
-              className="mt-2 self-center px-4 py-2 rounded-lg text-sm bg-secondary/50 text-foreground hover:bg-secondary transition-colors disabled:opacity-50 flex items-center gap-2"
-            >
-              {loadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Cargar más
-            </button>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <button
+                onClick={() => load(filter, currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                Anterior
+              </button>
+
+              <div className="flex items-center gap-1">
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => Math.abs(p - currentPage) <= 2 || p === 1 || p === totalPages)
+                  .reduce<(number | "...")[]>((acc, p, i, arr) => {
+                    if (i > 0 && (p - (arr[i - 1] as number)) > 1) acc.push("...");
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((item, i) =>
+                    item === "..." ? (
+                      <span key={`e-${i}`} className="px-2 text-muted-foreground text-sm">…</span>
+                    ) : (
+                      <button
+                        key={item}
+                        onClick={() => load(filter, item as number)}
+                        className={`w-8 h-8 rounded-lg text-sm transition-colors ${
+                          item === currentPage
+                            ? "bg-primary text-primary-foreground"
+                            : "border border-border hover:bg-secondary text-muted-foreground"
+                        }`}
+                      >
+                        {item}
+                      </button>
+                    )
+                  )}
+              </div>
+
+              <button
+                onClick={() => load(filter, currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm border border-border hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                Siguiente
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
       )}
