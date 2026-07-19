@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2 } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
@@ -167,51 +167,44 @@ function DatosPanel() {
 }
 
 interface SettingsViewProps {
-  activeSection: string;
   role: string;
   isLocal?: boolean;
   isPremium?: boolean;
-  onSectionChange: (id: string) => void;
+  isOwner?: boolean;
   onOpenVideo?: (fileId: string, title: string) => void;
 }
 
-export function SettingsView({ activeSection, role, isLocal, isPremium, onSectionChange, onOpenVideo }: SettingsViewProps) {
-  const visibleSections = ALL_SECTIONS.filter(s =>
-    s.roles.includes(role) && (!s.localOnly || isLocal)
-  );
+export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }: SettingsViewProps) {
+  const visibleSections = ALL_SECTIONS.filter(s => {
+    if (!s.roles.includes(role)) return false;
+    // Seguridad: solo tiene sentido en la central (remoto) y para el dueño de la cuenta.
+    if (s.id === "seguridad") return !isLocal && !!isOwner;
+    if (s.localOnly) return isLocal;
+    return true;
+  });
+
+  const panels: Record<string, ReactNode> = {
+    colores:    <ColoresPanel />,
+    biblioteca: <LibraryPanel />,
+    cuentas:    <AccountsPanel />,
+    seguridad:  <SecurityPanel />,
+    sync:       <SyncPanel onOpenVideo={onOpenVideo} />,
+    frieden:    <FriedenPanel isPremium={!!isPremium} />,
+    datos:      <DatosPanel />,
+  };
 
   return (
-    <div className="space-y-5">
-      {/* Tabs — solo visibles en mobile, en desktop el sidebar ya tiene el acordeón */}
-      {visibleSections.length > 1 && (
-        <div className="sm:hidden -mx-3 px-3 flex gap-2 overflow-x-auto pb-0.5" style={{ scrollbarWidth: "none" }}>
-          {visibleSections.map(({ id, label, icon: Icon }) => {
-            const isActive = activeSection === id;
-            return (
-              <button
-                key={id}
-                onClick={() => onSectionChange(id)}
-                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium border transition-colors shrink-0 ${
-                  isActive
-                    ? "bg-primary/10 text-primary border-primary/40"
-                    : "bg-card/40 text-muted-foreground border-border hover:text-foreground hover:bg-secondary/40"
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {label}
-              </button>
-            );
-          })}
+    <div className="space-y-8">
+      {visibleSections.map(({ id, label, icon: Icon }, idx) => (
+        <div key={id} className="space-y-4">
+          {idx > 0 && <hr className="border-border" />}
+          <div className="flex items-center gap-2">
+            <Icon className="w-4 h-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-foreground">{label}</h2>
+          </div>
+          {panels[id]}
         </div>
-      )}
-
-      {activeSection === "colores"    && <ColoresPanel />}
-      {activeSection === "biblioteca" && <LibraryPanel />}
-      {activeSection === "cuentas"    && <AccountsPanel />}
-      {activeSection === "seguridad"  && <SecurityPanel />}
-      {activeSection === "sync"       && <SyncPanel onOpenVideo={onOpenVideo} />}
-      {activeSection === "frieden"    && <FriedenPanel isPremium={!!isPremium} />}
-      {activeSection === "datos"      && <DatosPanel />}
+      ))}
     </div>
   );
 }

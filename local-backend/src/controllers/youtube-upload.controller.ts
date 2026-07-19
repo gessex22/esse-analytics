@@ -6,8 +6,10 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL     = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CHUNK_SIZE  = 8 * 1024 * 1024; // 8 MiB, múltiplo de 256 KiB (requisito de YouTube resumable)
 
 async function fetchAccessToken(authHeader: string): Promise<string> {
   const res = await fetch(`${CENTRAL}/api/youtube/token`, {
@@ -16,6 +18,49 @@ async function fetchAccessToken(authHeader: string): Promise<string> {
   if (!res.ok) throw new Error('NO_AUTH');
   const data = await res.json() as { access_token: string };
   return data.access_token;
+}
+
+// Sube el archivo a la uploadUrl resumable en chunks de CHUNK_SIZE, reportando
+// el % de bytes enviados vía onProgress tras cada chunk aceptado.
+async function uploadChunks(
+  uploadUrl: string,
+  filePath: string,
+  fileSize: number,
+  onProgress: (percent: number) => void,
+): Promise<{ id: string; snippet?: { title?: string } }> {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let offset = 0;
+    while (offset < fileSize) {
+      const end  = Math.min(offset + CHUNK_SIZE, fileSize) - 1;
+      const size = end - offset + 1;
+      const buf  = Buffer.alloc(size);
+      fs.readSync(fd, buf, 0, size, offset);
+
+      const res = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type':   'video/*',
+          'Content-Length': String(size),
+          'Content-Range':  `bytes ${offset}-${end}/${fileSize}`,
+        },
+        body: buf,
+      });
+
+      offset = end + 1;
+      onProgress(Math.round((offset / fileSize) * 100));
+
+      if (res.status === 308) continue; // chunk aceptado, YouTube pide seguir
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`Error subiendo video (chunk): ${err}`);
+      }
+      return await res.json() as { id: string; snippet?: { title?: string } };
+    }
+    throw new Error('La subida terminó sin respuesta final de YouTube');
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 async function uploadVideoToYoutube(
@@ -31,6 +76,7 @@ async function uploadVideoToYoutube(
     ageRestricted: boolean;
     publishAt?: string;
   },
+  onProgress: (percent: number) => void,
 ): Promise<{ videoId: string; videoUrl: string; title: string }> {
   const fileSize = fs.statSync(filePath).size;
 
@@ -71,19 +117,7 @@ async function uploadVideoToYoutube(
   const uploadUrl = initRes.headers.get('location');
   if (!uploadUrl) throw new Error('No se recibió upload URL de YouTube');
 
-  const fileBuffer = fs.readFileSync(filePath);
-  const uploadRes = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'video/*', 'Content-Length': String(fileSize) },
-    body: fileBuffer,
-  });
-
-  if (!uploadRes.ok) {
-    const err = await uploadRes.text();
-    throw new Error(`Error subiendo video: ${err}`);
-  }
-
-  const data = await uploadRes.json() as { id: string; snippet?: { title?: string } };
+  const data = await uploadChunks(uploadUrl, filePath, fileSize, onProgress);
   return {
     videoId: data.id,
     videoUrl: `https://www.youtube.com/shorts/${data.id}`,
@@ -121,13 +155,14 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de YouTube primero' });
   }
 
+  const jobId = `youtube-${fileId}`;
   try {
     const result = await uploadVideoToYoutube(accessToken, filePath, {
       title, description, tags, categoryId, privacyStatus,
       madeForKids: Boolean(madeForKids),
       ageRestricted: Boolean(ageRestricted),
       publishAt,
-    });
+    }, (percent) => setUploadProgress(jobId, { platform: 'youtube', title, phase: 'uploading', percent }));
 
     platformVideoRepo.upsert({
       platform:      'youtube',
@@ -157,6 +192,8 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
   } catch (err: any) {
     console.error('Error local YouTube upload:', err.message);
     res.status(500).json({ error: 'Error al subir el video', detail: err.message });
+  } finally {
+    clearUploadProgress(jobId);
   }
 };
 

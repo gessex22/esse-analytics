@@ -5,6 +5,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
 
 const TK_BASE    = 'https://open.tiktokapis.com/v2';
 const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -22,7 +23,13 @@ async function fetchToken(authHeader: string): Promise<{ access_token: string; o
 }
 
 // Sube el archivo en chunks directamente a TikTok (FILE_UPLOAD) sin pasar por la central
-async function uploadChunks(uploadUrl: string, filePath: string, fileSize: number, chunkSize: number): Promise<void> {
+async function uploadChunks(
+  uploadUrl: string,
+  filePath: string,
+  fileSize: number,
+  chunkSize: number,
+  onProgress?: (percent: number) => void,
+): Promise<void> {
   // Mismo conteo que el init: TikTok espera que el ÚLTIMO chunk sea "oversized"
   // (absorbe el resto del archivo), por eso floor y no ceil.
   const totalChunks = Math.max(1, Math.floor(fileSize / chunkSize));
@@ -49,6 +56,7 @@ async function uploadChunks(uploadUrl: string, filePath: string, fileSize: numbe
         const txt = await res.text().catch(() => '');
         throw new Error(`Chunk ${i + 1}/${totalChunks} falló (${res.status}): ${txt.slice(0, 200)}`);
       }
+      onProgress?.(Math.round(((i + 1) / totalChunks) * 100));
     }
   } finally {
     fs.closeSync(fd);
@@ -80,6 +88,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
   }
 
   const fileSize = fs.statSync(fileDoc.file_path).size;
+  const jobId    = `tiktok-${fileId}`;
 
   try {
     // 1. Iniciar upload (FILE_UPLOAD — sin URL pública, directo desde local)
@@ -116,11 +125,13 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     const { publish_id, upload_url } = initData.data as { publish_id: string; upload_url: string };
 
     // 2. Subir chunks directo a TikTok desde esta máquina
-    await uploadChunks(upload_url, fileDoc.file_path, fileSize, CHUNK_SIZE);
+    await uploadChunks(upload_url, fileDoc.file_path, fileSize, CHUNK_SIZE,
+      (percent) => setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'uploading', percent }));
 
     // 3. Esperar procesamiento
     let publishStatus = 'PROCESSING_UPLOAD';
     for (let i = 0; i < 60 && !['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX', 'FAILED'].includes(publishStatus); i++) {
+      setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'processing', percent: Math.round((i / 60) * 100) });
       await new Promise(r => setTimeout(r, 5000));
       const statusRes = await fetch(`${TK_BASE}/post/publish/status/fetch/`, {
         method: 'POST',
@@ -171,5 +182,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
   } catch (err: any) {
     console.error('Error al subir a TikTok:', err.message);
     res.status(500).json({ error: 'Error al subir a TikTok', detail: err.message });
+  } finally {
+    clearUploadProgress(jobId);
   }
 };

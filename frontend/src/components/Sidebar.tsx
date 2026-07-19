@@ -1,21 +1,9 @@
-import { AnimatePresence, motion } from "motion/react";
+import { motion } from "motion/react";
 import {
-  Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench, Palette,
-  ShieldCheck, Tv2, ChevronDown, CalendarDays, FolderOpen, Gem, Database, Cloud,
-  History, Link2,
+  Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench,
+  CalendarDays, Gem, History,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
-
-// Sub-secciones de Ajustes
-export const SETTINGS_SECTIONS = [
-  { id: "colores",    label: "Colores",         icon: Palette,       roles: ["todopoderoso", "editor"], localOnly: false },
-  { id: "biblioteca", label: "Biblioteca",       icon: FolderOpen,    roles: ["todopoderoso"],           localOnly: false },
-  { id: "cuentas",    label: "Cuentas",          icon: Link2,         roles: ["todopoderoso"],           localOnly: true  },
-  { id: "seguridad",  label: "Seguridad",        icon: ShieldCheck,   roles: ["todopoderoso"],           localOnly: false },
-  { id: "sync",       label: "Sincronización",   icon: Tv2,           roles: ["todopoderoso"],           localOnly: false },
-  { id: "frieden",    label: "Remoto y Backup",  icon: Cloud,         roles: ["todopoderoso"],           localOnly: true  },
-  { id: "datos",      label: "Datos locales",    icon: Database,      roles: ["todopoderoso"],           localOnly: true  },
-];
 
 export const navItems = [
   { icon: BarChart2,    label: "Dashboard"     },
@@ -42,18 +30,11 @@ export const NAV_ORDER = [0, 4, 1, 2, 7, 9, 5, 8, 3, 6];
 
 interface SidebarProps {
   effectiveNav: number;
-  settingsOpen: boolean;
-  activeSection: string;
   isNavVisible: (i: number) => boolean;
-  visibleSettingsSections: typeof SETTINGS_SECTIONS;
   onNavClick: (i: number) => void;
-  onSectionClick: (id: string) => void;
 }
 
-export function Sidebar({
-  effectiveNav, settingsOpen, activeSection, isNavVisible,
-  visibleSettingsSections, onNavClick, onSectionClick,
-}: SidebarProps) {
+export function Sidebar({ effectiveNav, isNavVisible, onNavClick }: SidebarProps) {
   return (
     <aside className="hidden sm:flex relative w-52 flex-shrink-0 flex-col bg-background">
       {/* Logo */}
@@ -69,67 +50,26 @@ export function Sidebar({
         {NAV_ORDER.map((i) => {
           const { icon: Icon, label } = navItems[i];
           if (!isNavVisible(i)) return null;
-          const isSettings = i === 6;
-          const isActive   = effectiveNav === i;
+          const isActive = effectiveNav === i;
 
           return (
-            <div key={label}>
-              <button
-                onClick={() => onNavClick(i)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-full mb-0.5 text-sm transition-colors ${
-                  isActive
-                    ? "bg-secondary text-foreground font-medium"
-                    : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-                }`}
-              >
-                <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-primary" : ""}`} />
-                <span className="flex-1 text-left">{label}</span>
-                {!ACTIVE_VIEWS.has(i) && (
-                  <span className="text-[9px] border border-border rounded px-1 text-muted-foreground/50 leading-tight">
-                    PRONTO
-                  </span>
-                )}
-                {isSettings && (
-                  <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${settingsOpen ? "rotate-180" : ""}`} />
-                )}
-              </button>
-
-              {/* Sub-items de Ajustes */}
-              <AnimatePresence initial={false}>
-                {isSettings && settingsOpen && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: "auto", opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
-                    style={{ overflow: "hidden" }}
-                  >
-                    <div className="ml-3 mb-1 pl-3 space-y-0.5 pt-0.5">
-                      {visibleSettingsSections.map(({ id, label: subLabel, icon: SubIcon }, subIdx) => {
-                        const isSubActive = effectiveNav === 6 && activeSection === id;
-                        return (
-                          <motion.button
-                            key={id}
-                            initial={{ opacity: 0, x: -6 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: subIdx * 0.05, duration: 0.18 }}
-                            onClick={() => onSectionClick(id)}
-                            className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-full text-xs transition-colors ${
-                              isSubActive
-                                ? "bg-secondary text-foreground font-medium"
-                                : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-                            }`}
-                          >
-                            <SubIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSubActive ? "text-primary" : ""}`} />
-                            {subLabel}
-                          </motion.button>
-                        );
-                      })}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+            <button
+              key={label}
+              onClick={() => onNavClick(i)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-full mb-0.5 text-sm transition-colors ${
+                isActive
+                  ? "bg-secondary text-foreground font-medium"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+              }`}
+            >
+              <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-primary" : ""}`} />
+              <span className="flex-1 text-left">{label}</span>
+              {!ACTIVE_VIEWS.has(i) && (
+                <span className="text-[9px] border border-border rounded px-1 text-muted-foreground/50 leading-tight">
+                  PRONTO
+                </span>
+              )}
+            </button>
           );
         })}
       </nav>

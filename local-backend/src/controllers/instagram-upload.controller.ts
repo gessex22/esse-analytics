@@ -8,6 +8,7 @@ import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { normalizeForMeta, trimToMaxDuration, appendDebugLog } from '../services/video-normalize.service';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { setUploadProgress, clearUploadProgress } from '../state/upload-activity';
 
 // Facebook Login for Business: central entrega un Page Access Token (de una
 // Página con una Cuenta de Instagram Business vinculada), válido contra
@@ -87,6 +88,7 @@ function streamFileToMeta(uri: string, token: string, filePath: string): Promise
 async function createAndWaitContainer(
   filePath: string,
   ctx: { instagram_user_id: string; access_token: string; fullCaption: string; thumbOffset?: number },
+  onProgress?: (phase: 'uploading' | 'processing', percent?: number) => void,
 ): Promise<string> {
   const { instagram_user_id, access_token, fullCaption, thumbOffset } = ctx;
 
@@ -120,11 +122,16 @@ async function createAndWaitContainer(
   if (!uploadUri) throw new Error('No se obtuvo upload URI de Meta');
 
   appendDebugLog(`[trace] subiendo bytes a Meta: ${filePath}`);
+  // No se reporta % acá: streamFileToMeta manda el buffer completo de una — es
+  // el envío que Meta acepta (ver comentario de la función), tocarlo para medir
+  // bytes en tránsito arriesga romper una integración ya validada.
+  onProgress?.('uploading');
   await streamFileToMeta(uploadUri, access_token, filePath);
   appendDebugLog(`[trace] subida de bytes a Meta OK, esperando procesamiento`);
 
   let statusCode = 'IN_PROGRESS';
   for (let i = 0; i < 72 && statusCode === 'IN_PROGRESS'; i++) {
+    onProgress?.('processing', Math.round((i / 72) * 100));
     await new Promise(r => setTimeout(r, 5000));
     const statusData = await igGet(`/${containerId}?fields=status_code,status`, access_token);
     statusCode = (statusData.status_code as string | undefined) ?? 'IN_PROGRESS';
@@ -214,6 +221,9 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
   const hashtagLine = (tags as string[]).length ? '\n\n' + (tags as string[]).map(t => `#${t}`).join(' ') : '';
   const fullCaption = String(caption) + hashtagLine;
   const ctx = { instagram_user_id, access_token, fullCaption, thumbOffset };
+  const jobId = `instagram-${fileId}`;
+  const reportProgress = (phase: 'uploading' | 'processing', percent?: number) =>
+    setUploadProgress(jobId, { platform: 'instagram', title: fullCaption, phase, percent });
 
   // Meta rechaza (ProcessingFailedError genérico, sin decir la causa real) algunos videos
   // sin explicar por qué. Confirmado que la causa más común es la DURACIÓN — cuentas sin el
@@ -248,7 +258,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     try {
       const candidatePath = await stage.getPath();
       appendDebugLog(`[trace] intentando etapa "${stage.label}" con ${candidatePath}`);
-      containerId = await createAndWaitContainer(candidatePath, ctx);
+      containerId = await createAndWaitContainer(candidatePath, ctx, reportProgress);
       usedStage = stage.label;
       usedPath = candidatePath;
       break;
@@ -333,5 +343,6 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });
   } finally {
     for (const f of tempFiles) fs.unlink(f, () => {});
+    clearUploadProgress(jobId);
   }
 };

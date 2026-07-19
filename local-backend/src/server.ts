@@ -20,6 +20,7 @@ import gemsRoutes             from './routes/gems.routes';
 import backupSyncRoutes       from './routes/backup-sync.routes';
 import tiktokUploadRoutes     from './routes/tiktok-upload.routes';
 import instagramUploadRoutes  from './routes/instagram-upload.routes';
+import uploadStatusRoutes     from './routes/upload-status.routes';
 import { initWatcherFromConfig } from './watcher';
 import { startPlugin } from './plugins';
 
@@ -56,6 +57,7 @@ app.use(gemsRoutes);
 app.use(backupSyncRoutes);
 app.use(tiktokUploadRoutes);
 app.use(instagramUploadRoutes);
+app.use(uploadStatusRoutes);
 
 // Sirve el frontend estático si FRONTEND_DIST está configurado (modo empaquetado)
 const frontendDist = process.env.FRONTEND_DIST;

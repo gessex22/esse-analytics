@@ -21,8 +21,8 @@ import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
 import { HistoryView } from "./components/HistoryView";
-import { Sidebar, MobileNav, navItems, SETTINGS_SECTIONS } from "./components/Sidebar";
-import { usePluginActivity, phaseLabel } from "./hooks/usePluginActivity";
+import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
+import { useNotificationCenter } from "./hooks/useNotificationCenter";
 import logoImg from "./assets/esseAnalytics.png";
 import { backupService } from "./services/api";
 import { API_BASE } from "./config";
@@ -119,7 +119,7 @@ function LogoutDialog({
 export default function App() {
   const { user, token, logout, loading } = useAuth();
   const { isLocal } = useBackendType();
-  const pluginActivity = usePluginActivity(isLocal);
+  const { notifications, cloudOpen, unread: notifUnread, markRead } = useNotificationCenter(isLocal);
   const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
 
@@ -133,11 +133,8 @@ export default function App() {
   useAutoBackup(isLocal && isPremium);
   const [showLogin, setShowLogin] = useState(false);
   const [activeNav, setActiveNav]           = useState(1);
-  const [settingsOpen, setSettingsOpen]     = useState(false);
-  const [activeSection, setActiveSection]   = useState("colores");
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
-  const [notifUnread, setNotifUnread]       = useState(true);
   const [userMenuOpen, setUserMenuOpen]     = useState(false);
 
   // ── Logout con limpieza ─────────────────────────────────────────────────────
@@ -269,12 +266,6 @@ export default function App() {
 
   // Editor: navegar solo a Videos, Taller y Calendario
   const role = user.role;
-  const visibleSettingsSections = SETTINGS_SECTIONS.filter(s => {
-    if (!s.roles.includes(role)) return false;
-    if (s.id === "seguridad") return !isLocal && !!user.isOwner;
-    if (s.localOnly) return isLocal;
-    return true;
-  });
   const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
 
   // Visibilidad de cada item: rol + entorno (en remoto se ocultan las vistas locales).
@@ -296,19 +287,7 @@ export default function App() {
   const effectiveNav = isNavVisible(activeNav) ? activeNav : (isLocal ? 1 : 7);
 
   const handleNavClick = (i: number) => {
-    if (i === 6) {
-      // Ajustes: toggle el acordeón y navega a la vista
-      setSettingsOpen((v) => !v);
-      setActiveNav(6);
-    } else {
-      setSettingsOpen(false);
-      setActiveNav(i);
-    }
-  };
-
-  const handleSectionClick = (sectionId: string) => {
-    setActiveSection(sectionId);
-    setActiveNav(6);
+    setActiveNav(i);
   };
 
   return (
@@ -317,12 +296,8 @@ export default function App() {
 
       <Sidebar
         effectiveNav={effectiveNav}
-        settingsOpen={settingsOpen}
-        activeSection={activeSection}
         isNavVisible={isNavVisible}
-        visibleSettingsSections={visibleSettingsSections}
         onNavClick={handleNavClick}
-        onSectionClick={handleSectionClick}
       />
 
       {/* ── Área principal ─────────────────────────────────────────────────── */}
@@ -340,52 +315,79 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {pluginActivity && (
-              <div className="hidden sm:flex items-center gap-1.5 text-xs text-muted-foreground bg-secondary/40 pl-2.5 pr-3 py-1.5 rounded-full max-w-[240px]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
-                <span className="truncate">
-                  {phaseLabel(pluginActivity.phase)}
-                  {pluginActivity.title ? `: ${pluginActivity.title}` : ""}
-                  {pluginActivity.current && pluginActivity.total ? ` (${pluginActivity.current}/${pluginActivity.total})` : ""}
-                </span>
-              </div>
-            )}
-            {role === "todopoderoso" && (
-              <div className="relative">
-                <button
-                  onClick={() => { setNotifOpen(v => !v); setNotifUnread(false); }}
-                  className="relative flex items-center justify-center w-9 h-9 rounded-full bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors"
-                >
-                  <Bell className="w-4 h-4" />
-                  {notifUnread && (
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
-                  )}
-                </button>
-                <AnimatePresence>
-                  {notifOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
-                      <motion.div
-                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
-                        transition={{ duration: 0.15 }}
-                        className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
-                      >
-                        <div className="px-4 py-3 border-b border-border">
-                          <p className="text-xs font-semibold text-foreground uppercase tracking-wider">Notificaciones</p>
+            <div className="relative">
+              <button
+                onClick={() => { setNotifOpen(v => !v); markRead(); }}
+                className="relative flex items-center justify-center w-9 h-9 rounded-full bg-secondary/40 text-muted-foreground hover:text-foreground hover:bg-secondary/70 transition-colors"
+              >
+                <Bell className="w-4 h-4" />
+                {notifUnread && (
+                  <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-primary rounded-full" />
+                )}
+              </button>
+
+              {/* Nube transitoria: aparece sola con cada novedad (transcripción/subida
+                  en curso) y se cierra a los 5s sin intervención del usuario. */}
+              <AnimatePresence>
+                {cloudOpen && !notifOpen && notifications.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden pointer-events-none"
+                  >
+                    <div className="px-4 py-3 space-y-2">
+                      {notifications.map(n => (
+                        <div key={n.id} className="flex items-center gap-2 text-xs text-foreground">
+                          {n.status === "running"
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
+                            : <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />}
+                          <span className="truncate">{n.label}</span>
                         </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {notifOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                    <motion.div
+                      initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                      transition={{ duration: 0.15 }}
+                      className="absolute right-0 top-full mt-2 z-50 w-72 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
+                    >
+                      <div className="px-4 py-3 border-b border-border">
+                        <p className="text-xs font-semibold text-foreground uppercase tracking-wider">Notificaciones</p>
+                      </div>
+                      {notifications.length === 0 ? (
                         <div className="px-4 py-6 text-center space-y-1">
                           <Bell className="w-8 h-8 text-muted-foreground/30 mx-auto" />
                           <p className="text-sm text-muted-foreground">Sin notificaciones por ahora.</p>
                           <p className="text-xs text-muted-foreground/60">Próximamente: alertas del día de publicación.</p>
                         </div>
-                      </motion.div>
-                    </>
-                  )}
-                </AnimatePresence>
-              </div>
-            )}
+                      ) : (
+                        <div className="max-h-80 overflow-y-auto divide-y divide-border">
+                          {notifications.map(n => (
+                            <div key={n.id} className="flex items-center gap-2 px-4 py-3 text-xs">
+                              {n.status === "running"
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0 text-primary" />
+                                : <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0" />}
+                              <span className="truncate text-foreground">{n.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
+            </div>
 
             {/* Cuenta de usuario, como chip con menú */}
             <div className="hidden sm:block relative">
@@ -466,7 +468,7 @@ export default function App() {
               >
                 {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <UploadView />
-                  : effectiveNav === 6 ? <SettingsView activeSection={activeSection} role={role} isLocal={isLocal} isPremium={isPremium} onSectionChange={setActiveSection} onOpenVideo={openVideoPlayer} />
+                  : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
                   : effectiveNav === 4 ? <StatsView onOpenVideo={openVideoPlayer} />
