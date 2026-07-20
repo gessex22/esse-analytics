@@ -89,9 +89,9 @@ export const handleCallback = async (req: Request, res: Response) => {
   }
 
   const { userId, origin, client } = decodeState(state);
-  // Android no tiene una página web en `origin` que lea el query param — vuelve
-  // por deep link directo en vez del redirect a `origin` de siempre.
-  const redirectTo = (status: string) => client === 'android'
+  // Android/iOS no tienen una página web en `origin` que lea el query param —
+  // vuelven por deep link directo en vez del redirect a `origin` de siempre.
+  const redirectTo = (status: string) => client === 'android' || client === 'ios'
     ? `essenalytics://oauth-callback?platform=youtube&status=${encodeURIComponent(status)}`
     : `${origin}?youtube_auth=${status}`;
 

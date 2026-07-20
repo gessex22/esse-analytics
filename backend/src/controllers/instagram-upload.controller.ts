@@ -146,11 +146,11 @@ const fbAppId     = () => process.env.META_APP_ID!;
 const fbAppSecret = () => process.env.META_APP_SECRET!;
 
 // Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup).
-// Si `client` es "android", en vez de la página HTML (pensada para popup de
-// navegador — no hay window.opener en una Custom Tab) redirige directo a un
-// deep link que la app registra, sin necesidad de polling.
+// Si `client` es "android"/"ios", en vez de la página HTML (pensada para popup de
+// navegador — no hay window.opener en una Custom Tab / ASWebAuthenticationSession)
+// redirige directo a un deep link que la app registra, sin necesidad de polling.
 function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173', client?: string) {
-  if (client === 'android') {
+  if (client === 'android' || client === 'ios') {
     res.redirect(302, `essenalytics://oauth-callback?platform=instagram&status=${encodeURIComponent(status)}`);
     return;
   }

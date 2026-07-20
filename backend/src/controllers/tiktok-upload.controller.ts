@@ -64,10 +64,10 @@ export async function getValidToken(userId: string): Promise<{ access_token: str
   return { access_token: stored.access_token, open_id: stored.open_id };
 }
 
-// Popup que cierra y notifica al frontend — o deep link si es la app Android
-// (no hay window.opener en una Custom Tab, así que ahí no tiene sentido el HTML).
+// Popup que cierra y notifica al frontend — o deep link si es la app Android/iOS
+// (no hay window.opener en una Custom Tab / ASWebAuthenticationSession, así que ahí no tiene sentido el HTML).
 function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173', client?: string) {
-  if (client === 'android') {
+  if (client === 'android' || client === 'ios') {
     res.redirect(302, `essenalytics://oauth-callback?platform=tiktok&status=${encodeURIComponent(status)}`);
     return;
   }
