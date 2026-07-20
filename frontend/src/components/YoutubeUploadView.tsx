@@ -1343,19 +1343,33 @@ function ThumbnailScrubber({ fileId, onCapture }: {
     if (!video || !canvas || !ready) return;
     setCapturing(true);
     setCaptureErr(false);
-    canvas.width  = video.videoWidth  || 720;
-    canvas.height = video.videoHeight || 1280;
-    try {
-      canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob(blob => {
-        if (blob) {
-          onCapture(blob, canvas.toDataURL("image/jpeg", 0.85));
-        }
+
+    const draw = () => {
+      canvas.width  = video.videoWidth  || 720;
+      canvas.height = video.videoHeight || 1280;
+      try {
+        canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => {
+          if (blob) {
+            onCapture(blob, canvas.toDataURL("image/jpeg", 0.85));
+          }
+          setCapturing(false);
+        }, "image/jpeg", 0.85);
+      } catch {
+        setCaptureErr(true);
         setCapturing(false);
-      }, "image/jpeg", 0.85);
-    } catch {
-      setCaptureErr(true);
-      setCapturing(false);
+      }
+    };
+
+    // Justo después de un seek el frame puede no estar pintado todavía: dibujar
+    // en ese instante captura un cuadro gris a medio decodificar en vez del real.
+    // requestVideoFrameCallback espera a que el frame actual ya esté presentado;
+    // si el navegador no lo soporta, dos rAF cumplen función similar.
+    const win = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+    if (typeof win.requestVideoFrameCallback === "function") {
+      win.requestVideoFrameCallback(() => draw());
+    } else {
+      requestAnimationFrame(() => requestAnimationFrame(draw));
     }
   };
 
