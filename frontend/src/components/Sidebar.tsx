@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import {
   Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench,
-  CalendarDays, Gem, History,
+  CalendarDays, Gem, History, Cloud,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
 
@@ -16,17 +16,22 @@ export const navItems = [
   { icon: CalendarDays, label: "Calendario"    },
   { icon: Gem,          label: "Gemas"         },
   { icon: History,      label: "Historial"    },
+  // Biblioteca remota (Premium + storage en la nube) -- a diferencia del resto,
+  // NO es local-only: vive tanto en el cliente de Electron como en acceso remoto
+  // (ver LOCAL_ONLY_NAV / isNavVisible en App.tsx, que la deja afuera de ese set).
+  { icon: Cloud,         label: "Nube"          },
 ];
 
-export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
-export const MOBILE_NAV   = [1, 2, 7, 5, 6];
+export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+export const MOBILE_NAV   = [1, 2, 7, 5, 6, 10];
 
 // Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
 // la navegación sigue siendo por índice, así que esto NO cambia la lógica, solo el
 // orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
 // Estadísticas (4) va justo debajo de Dashboard (0). Historial (9) junto a Calendario (7),
-// ambos sobre el registro de publicaciones.
-export const NAV_ORDER = [0, 4, 1, 2, 7, 9, 5, 8, 3, 6];
+// ambos sobre el registro de publicaciones. Nube (10) al lado de Videos (1), mismo concepto
+// de biblioteca.
+export const NAV_ORDER = [0, 4, 1, 10, 2, 7, 9, 5, 8, 3, 6];
 
 interface SidebarProps {
   effectiveNav: number;

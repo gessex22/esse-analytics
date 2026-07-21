@@ -21,6 +21,7 @@ import backupSyncRoutes       from './routes/backup-sync.routes';
 import tiktokUploadRoutes     from './routes/tiktok-upload.routes';
 import instagramUploadRoutes  from './routes/instagram-upload.routes';
 import uploadStatusRoutes     from './routes/upload-status.routes';
+import { remoteLibraryProxy } from './routes/remote-library-proxy.routes';
 import { initWatcherFromConfig } from './watcher';
 import { startPlugin } from './plugins';
 
@@ -37,6 +38,12 @@ app.use(helmet({
 // actualice duración/ratio sin esperar a recargar la lista — sin esto,
 // fetch() no puede leer headers custom en respuestas cross-origin (dev server).
 app.use(cors({ exposedHeaders: ['X-Duration-Seconds', 'X-Resolution'] }));
+
+// Biblioteca remota: proxy de bytes crudo a la central, ANTES de express.json() --
+// ver remote-library-proxy.routes.ts. Si el body-parser corriera primero, la subida
+// TUS y el streaming de video llegarían con el body ya consumido/vacío.
+app.use('/api/remote-library', remoteLibraryProxy);
+
 app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/health', (_req, res) => {

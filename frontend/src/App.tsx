@@ -6,6 +6,7 @@ import {
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
 import { VideosView } from "./components/VideosView";
+import { RemoteLibraryView } from "./components/RemoteLibraryView";
 import { SettingsView } from "./components/SettingsView";
 import { LoginPage } from "./components/LoginPage";
 import { LandingPage } from "./components/LandingPage";
@@ -264,13 +265,17 @@ export default function App() {
     return <LandingPage onLogin={() => setShowLogin(true)} />;
   }
 
-  // Editor: navegar solo a Videos, Taller y Calendario
+  // Editor: navegar solo a Videos, Subir, Taller, Calendario y Nube
   const role = user.role;
-  const allowedNavForEditor = new Set([1, 2, 5, 7]); // Videos, Subir, Taller y Calendario
+  const allowedNavForEditor = new Set([1, 2, 5, 7, 10]);
 
   // Visibilidad de cada item: rol + entorno (en remoto se ocultan las vistas locales).
   const isNavVisible = (i: number) => {
     if (role === "editor" && !allowedNavForEditor.has(i)) return false;
+    // Nube (10) NO es local-only: vive tanto en el cliente de Electron como en
+    // acceso remoto (celular/navegador) -- el único gate real es tener el plan de
+    // storage en la nube, sin importar isLocal. Por eso queda afuera de LOCAL_ONLY_NAV.
+    if (i === 10) return !!user.hasCloudStorage;
     if (!isLocal && LOCAL_ONLY_NAV.has(i)) {
       // Excepción: el owner puede publicar en remoto desde el catálogo (la central
       // tiene sus archivos co-localizados y publica por fileId). Solo "Subir" (2);
@@ -283,8 +288,12 @@ export default function App() {
     return true;
   };
 
-  // Asegurar que activeNav sea válido para el rol/entorno; si no, caer en Calendario (remoto) o Videos.
-  const effectiveNav = isNavVisible(activeNav) ? activeNav : (isLocal ? 1 : 7);
+  // Asegurar que activeNav sea válido para el rol/entorno; si no, caer en Nube (remoto
+  // con storage en la nube), Calendario (remoto sin storage) o Videos (local).
+  const effectiveNav = isNavVisible(activeNav) ? activeNav
+    : isLocal ? 1
+    : user.hasCloudStorage ? 10
+    : 7;
 
   const handleNavClick = (i: number) => {
     setActiveNav(i);
@@ -460,7 +469,9 @@ export default function App() {
           <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-200/90 text-xs sm:text-sm">
             <Tv2 className="w-4 h-4 flex-shrink-0 text-amber-400" />
             <span>
-              Modo remoto — funciones limitadas. Para subir y gestionar videos usá la app en tu PC.
+              {user.hasCloudStorage
+                ? "Modo remoto — funciones limitadas, pero podés subir y gestionar tu Biblioteca en la nube desde la pestaña «Nube»."
+                : "Modo remoto — funciones limitadas. Para subir y gestionar videos usá la app en tu PC."}
             </span>
           </div>
         )}
@@ -490,6 +501,7 @@ export default function App() {
                   : effectiveNav === 4 ? <StatsView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
                   : effectiveNav === 9 ? <HistoryView onOpenVideo={openVideoPlayer} />
+                  : effectiveNav === 10 ? <RemoteLibraryView />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }
               </main>

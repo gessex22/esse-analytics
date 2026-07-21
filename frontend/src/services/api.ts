@@ -1,5 +1,6 @@
 
 import { API_BASE as API_BASE_URL } from "../config";
+import { Upload as TusUpload } from "tus-js-client";
 
 // ==========================================
 // INTERFACES GENERALES DEL COMPONENTE TALLER
@@ -919,5 +920,96 @@ export const oauthService = {
       return { displayName: data.name || data.username || "", handle: data.username, avatarUrl: data.avatarUrl || "" };
     }
     return { displayName: data.name || "", handle: data.customUrl, avatarUrl: data.avatarUrl || "" };
+  },
+};
+
+// ==========================================
+// BIBLIOTECA REMOTA (Premium + storage en la nube — ver requireCloudStorage)
+// ==========================================
+
+export type RemotePlatform = "youtube" | "instagram" | "tiktok";
+
+export interface RemoteLibraryVideo {
+  _id: string;
+  userId: string;
+  fileName: string;
+  storedFileName: string;
+  sizeBytes: number;
+  durationSeconds?: number;
+  resolution?: string;
+  formato?: string;
+  thumbnailStoredFileName?: string;
+  platforms: RemotePlatform[];
+  platformsDiscarded: RemotePlatform[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const remoteLibraryService = {
+  list: (): Promise<RemoteLibraryVideo[]> =>
+    requestJson<{ videos: RemoteLibraryVideo[] }>("/api/remote-library/videos").then(d => d.videos),
+
+  remove: (id: string): Promise<void> =>
+    requestJson(`/api/remote-library/videos/${id}`, { method: "DELETE" }).then(() => undefined),
+
+  updatePlatforms: (id: string, patch: { platforms?: RemotePlatform[]; platformsDiscarded?: RemotePlatform[] }): Promise<RemoteLibraryVideo> =>
+    requestJson<{ video: RemoteLibraryVideo }>(`/api/remote-library/videos/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }).then(d => d.video),
+
+  // El token va por query string por la misma razón que streamUrl en YoutubeUploadView:
+  // <video src>/<img src> no mandan headers custom.
+  streamUrl: (id: string): string => {
+    const token = localStorage.getItem("esse_auth_token");
+    return `${API_BASE_URL}/api/remote-library/videos/${id}/stream${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  },
+  thumbnailUrl: (id: string): string => {
+    const token = localStorage.getItem("esse_auth_token");
+    return `${API_BASE_URL}/api/remote-library/videos/${id}/thumbnail${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  },
+
+  uploadThumbnail: (id: string, file: File): Promise<RemoteLibraryVideo> => {
+    const form = new FormData();
+    form.append("thumbnail", file);
+    return requestJson<{ video: RemoteLibraryVideo }>(`/api/remote-library/videos/${id}/thumbnail`, {
+      method: "POST",
+      body: form,
+    }).then(d => d.video);
+  },
+
+  // Subida resumable (TUS) -- devuelve el Upload de tus-js-client para que el
+  // caller pueda cancelarlo (.abort()); arranca solo, no hace falta .start().
+  uploadVideo: (
+    file: File,
+    meta: { fileName?: string; durationSeconds?: number; resolution?: string; formato?: string },
+    callbacks: { onProgress?: (bytesSent: number, bytesTotal: number) => void; onSuccess: (video: RemoteLibraryVideo) => void; onError: (err: Error) => void },
+  ): TusUpload => {
+    const token = localStorage.getItem("esse_auth_token");
+    const upload = new TusUpload(file, {
+      endpoint: `${API_BASE_URL}/api/remote-library/tus`,
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      metadata: {
+        filename: file.name,
+        filetype: file.type,
+        fileName: meta.fileName || file.name,
+        ...(meta.durationSeconds !== undefined ? { durationSeconds: String(meta.durationSeconds) } : {}),
+        ...(meta.resolution ? { resolution: meta.resolution } : {}),
+        ...(meta.formato ? { formato: meta.formato } : {}),
+      },
+      onProgress: callbacks.onProgress,
+      onError: callbacks.onError,
+      onSuccess: (payload) => {
+        try {
+          const data = JSON.parse(payload.lastResponse.getBody());
+          callbacks.onSuccess(data.video as RemoteLibraryVideo);
+        } catch (err: any) {
+          callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      },
+    });
+    upload.start();
+    return upload;
   },
 };

@@ -10,6 +10,9 @@ interface AuthUser {
   tier: UserTier;
   isOwner?: boolean;
   theme?: string;
+  // Plan de storage en la nube, aparte de tier==='premium' -- ver
+  // requireCloudStorage en la central. Habilita la Biblioteca remota.
+  hasCloudStorage?: boolean;
 }
 
 // Aplica el tema guardado en la cuenta (si es válido) y lo deja en localStorage.
@@ -49,6 +52,7 @@ function decodeJwtUser(token: string): AuthUser | null {
       role: payload.role as UserRole,
       tier: (payload.tier as UserTier) ?? "free",
       isOwner: !!payload.isOwner,
+      hasCloudStorage: !!payload.hasCloudStorage,
     };
   } catch {
     return null;
