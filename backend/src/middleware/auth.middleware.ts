@@ -17,20 +17,30 @@ export interface AuthRequest extends Request {
   user?: { id: string; username: string; role: UserRole; tier: UserTier; hasCloudStorage?: boolean };
 }
 
+// Extraído para poder reverificar el mismo JWT fuera del ciclo request/response
+// de Express -- ver remote-library-storage.service.ts, donde @tus/server
+// envuelve el request original y no garantiza que `req.user` sobreviva.
+export function decodeAuthToken(token: string): AuthRequest['user'] | null {
+  try {
+    return jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
+  } catch {
+    return null;
+  }
+}
+
 export function verifyToken(req: AuthRequest, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ message: 'Token requerido.' });
     return;
   }
-  const token = header.slice(7);
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
-    req.user = payload;
-    next();
-  } catch {
+  const user = decodeAuthToken(header.slice(7));
+  if (!user) {
     res.status(401).json({ message: 'Token inválido o expirado.' });
+    return;
   }
+  req.user = user;
+  next();
 }
 
 // Igual que verifyToken, pero también acepta el token por ?token= en la query string.
@@ -43,13 +53,13 @@ export function verifyTokenFromHeaderOrQuery(req: AuthRequest, res: Response, ne
     res.status(401).json({ message: 'Token requerido.' });
     return;
   }
-  try {
-    const payload = jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
-    req.user = payload;
-    next();
-  } catch {
+  const user = decodeAuthToken(token);
+  if (!user) {
     res.status(401).json({ message: 'Token inválido o expirado.' });
+    return;
   }
+  req.user = user;
+  next();
 }
 
 export function requireRole(...roles: UserRole[]) {

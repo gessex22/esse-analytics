@@ -45,6 +45,10 @@ app.use(cors({
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error('Origen no permitido por CORS'));
   },
+  // Headers de respuesta del protocolo TUS (Biblioteca remota) -- sin esto el
+  // navegador los recibe pero el JS del cliente (tus-js-client) no puede
+  // leerlos cross-origin, y la subida resumable no encuentra dónde seguir.
+  exposedHeaders: ['Location', 'Upload-Offset', 'Upload-Length', 'Tus-Version', 'Tus-Resumable', 'Tus-Max-Size', 'Tus-Extension'],
 }));
 app.use(express.json({ limit: '10mb' }));
 
