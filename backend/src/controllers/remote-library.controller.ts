@@ -89,11 +89,21 @@ export const uploadRemoteLibraryThumbnail = async (req: AuthRequest, res: Respon
   }
 };
 
-// ── GET /api/remote-library/videos ────────────────────────────────────────────
+// ── GET /api/remote-library/videos?skip=&limit= ────────────────────────────────
+// Paginado -- sin esto, una cuenta con cientos/miles de videos (ej. después de
+// una migración masiva de biblioteca local a Nube) manda TODO el listado en
+// una sola respuesta, cada vez que se abre la pantalla.
 export const listRemoteLibraryVideos = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const videos = await RemoteLibraryVideoModel.find({ userId: req.user!.id }).sort({ createdAt: -1 }).lean();
-    res.json({ videos });
+    const userId = req.user!.id;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
+    const skip = Math.max(parseInt(req.query.skip as string) || 0, 0);
+
+    const [videos, total] = await Promise.all([
+      RemoteLibraryVideoModel.find({ userId }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      RemoteLibraryVideoModel.countDocuments({ userId }),
+    ]);
+    res.json({ videos, total, hasMore: skip + videos.length < total });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

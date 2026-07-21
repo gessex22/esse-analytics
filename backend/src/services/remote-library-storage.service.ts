@@ -131,11 +131,20 @@ export function buildRemoteLibraryTusServer(
     'https://esse-analytics.com,https://www.esse-analytics.com')
     .split(',').map(s => s.trim()).filter(Boolean);
 
+  // El Location que arma @tus/server por default sale de req.headers.host --
+  // detrás del túnel de Cloudflare eso es 'localhost:5001' (el host interno,
+  // no el público), así que el cliente terminaba mandando los PATCH de los
+  // fragmentos siguientes a una URL inalcanzable desde afuera de la Mac.
+  // Fijamos el origin público explícito en vez de depender de que Cloudflare
+  // reenvíe X-Forwarded-Host/Proto (respectForwardedHeaders) correctamente.
+  const publicOrigin = process.env.PUBLIC_API_ORIGIN || 'https://api.esse-analytics.com';
+
   const tusServer = new Server({
     path: '/api/remote-library/tus',
     datastore,
     maxSize: MAX_UPLOAD_SIZE,
     allowedOrigins,
+    generateUrl: (_req, { path, id }) => `${publicOrigin}${path}/${id}`,
 
     // Se re-verifica el JWT acá en vez de confiar en algo puesto por el
     // middleware de Express: @tus/server envuelve el request original en su
