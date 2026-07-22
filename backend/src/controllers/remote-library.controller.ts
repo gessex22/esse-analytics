@@ -140,19 +140,40 @@ export const uploadRemoteLibraryThumbnail = async (req: AuthRequest, res: Respon
   }
 };
 
-// ── GET /api/remote-library/videos?skip=&limit= ────────────────────────────────
+// ── GET /api/remote-library/videos?skip=&limit=&sort=&pendingOnly= ───────────
 // Paginado -- sin esto, una cuenta con cientos/miles de videos (ej. después de
 // una migración masiva de biblioteca local a Nube) manda TODO el listado en
 // una sola respuesta, cada vez que se abre la pantalla.
+// sort=asc + pendingOnly=true + limit=1 es lo que usa el iPhone para resolver
+// "el siguiente video de la cola" cuando no queda nada pendiente en local --
+// el más viejo (createdAt ascendente) que todavía no está resuelto en las 3
+// plataformas, mismo criterio que resolveNextForPlatform en el desktop.
 export const listRemoteLibraryVideos = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 30, 1), 100);
     const skip = Math.max(parseInt(req.query.skip as string) || 0, 0);
+    const sortOrder: 1 | -1 = req.query.sort === 'asc' ? 1 : -1;
+    const pendingOnly = req.query.pendingOnly === 'true';
+
+    const filter: Record<string, unknown> = { userId };
+    if (pendingOnly) {
+      filter.$expr = {
+        $lt: [
+          {
+            $add: [
+              { $size: { $ifNull: ['$platforms', []] } },
+              { $size: { $ifNull: ['$platformsDiscarded', []] } },
+            ],
+          },
+          3,
+        ],
+      };
+    }
 
     const [videos, total] = await Promise.all([
-      RemoteLibraryVideoModel.find({ userId }).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-      RemoteLibraryVideoModel.countDocuments({ userId }),
+      RemoteLibraryVideoModel.find(filter).sort({ createdAt: sortOrder }).skip(skip).limit(limit).lean(),
+      RemoteLibraryVideoModel.countDocuments(filter),
     ]);
     res.json({ videos, total, hasMore: skip + videos.length < total });
   } catch (err: any) {
