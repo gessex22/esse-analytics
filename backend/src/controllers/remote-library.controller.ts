@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import fs from 'fs';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
+import { Readable } from 'stream';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import {
@@ -11,6 +12,56 @@ import {
   optimizeThumbnail,
   FinishedRemoteLibraryUpload,
 } from '../services/remote-library-storage.service';
+
+// ── Failover LAN entre los 2 backends redundantes (Mac + PC Windows, cada uno
+// con su propio conector de Cloudflare Tunnel para el mismo hostname) ─────────
+// Los bytes de Nube están repartidos entre las 2 máquinas (según dónde se subió
+// o migró cada video) -- si la request de Cloudflare cae en la máquina que NO
+// tiene ese archivo, antes tiraba 404 directo. Con PEER_BACKEND_URL configurado
+// (ej. http://192.168.1.50:5001, IP fija en la LAN), se intenta 1 vez pedirle
+// el archivo al otro backend directo por LAN antes de rendirse.
+// - Timeout corto (no cuelga el request si la otra máquina está apagada).
+// - x-internal-proxy evita que el peer vuelva a reintentar CONTRA nosotros
+//   (looping) si algún día ambos lados quedan configurados simétricamente.
+const PEER_BACKEND_URL = process.env.PEER_BACKEND_URL;
+const PEER_PROXY_TIMEOUT_MS = 3000;
+
+async function tryProxyFromPeer(req: AuthRequest, res: Response, path: string): Promise<boolean> {
+  if (!PEER_BACKEND_URL || req.headers['x-internal-proxy']) return false;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PEER_PROXY_TIMEOUT_MS);
+  try {
+    const headers: Record<string, string> = { 'x-internal-proxy': '1' };
+    if (req.headers.authorization) headers.authorization = req.headers.authorization;
+    if (req.headers.range) headers.range = req.headers.range as string;
+
+    const upstream = await fetch(`${PEER_BACKEND_URL}${path}`, { headers, signal: controller.signal });
+    if (!upstream.ok && upstream.status !== 206) return false;
+
+    res.status(upstream.status);
+    const relayHeaders = ['content-type', 'content-length', 'content-range', 'accept-ranges'];
+    for (const h of relayHeaders) {
+      const v = upstream.headers.get(h);
+      if (v) res.setHeader(h, v);
+    }
+
+    if (!upstream.body) { res.end(); return true; }
+    await new Promise<void>((resolve, reject) => {
+      const stream = Readable.fromWeb(upstream.body as any);
+      stream.pipe(res);
+      stream.on('error', reject);
+      res.on('finish', () => resolve());
+    });
+    return true;
+  } catch {
+    // Peer caído, sin ese archivo tampoco, timeout, lo que sea -- se
+    // devuelve false y el caller sigue con el 404 normal.
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 // ── Subida del video (TUS, resumable) ─────────────────────────────────────────
 // Portado de server-multimedia-wyrruz (probado ahí en producción) -- reemplaza
@@ -118,7 +169,12 @@ export const streamRemoteLibraryVideo = async (req: AuthRequest, res: Response):
     if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
 
     const filePath = resolveRemoteLibraryFilePath(doc.userId, doc.storedFileName);
-    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'Archivo no encontrado en disco' }); return; }
+    if (!fs.existsSync(filePath)) {
+      const path = `/api/remote-library/videos/${req.params.id}/stream`;
+      if (await tryProxyFromPeer(req, res, path)) return;
+      res.status(404).json({ error: 'Archivo no encontrado en disco' });
+      return;
+    }
 
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
@@ -151,7 +207,12 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
     if (!doc?.thumbnailStoredFileName) { res.status(404).json({ error: 'Sin miniatura' }); return; }
 
     const filePath = resolveRemoteLibraryFilePath(doc.userId, doc.thumbnailStoredFileName);
-    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'Miniatura no encontrada en disco' }); return; }
+    if (!fs.existsSync(filePath)) {
+      const path = `/api/remote-library/videos/${req.params.id}/thumbnail`;
+      if (await tryProxyFromPeer(req, res, path)) return;
+      res.status(404).json({ error: 'Miniatura no encontrada en disco' });
+      return;
+    }
 
     res.writeHead(200, { 'Content-Type': 'image/jpeg' });
     fs.createReadStream(filePath).pipe(res);
