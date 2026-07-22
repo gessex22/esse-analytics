@@ -75,6 +75,7 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
   async (info: FinishedRemoteLibraryUpload) => {
     return RemoteLibraryVideoModel.create({
       userId: info.userId,
+      contentId: info.contentId,
       fileName: info.fileName,
       storedFileName: info.storedFileName,
       sizeBytes: info.sizeBytes,

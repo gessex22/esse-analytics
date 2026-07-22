@@ -2,6 +2,7 @@ import { Schema, model, Document } from 'mongoose';
 
 export interface IBackupFile extends Document {
   userId: string;
+  content_id?: string;
   file_name: string;
   platforms: string[];
   platforms_discarded: string[];
@@ -17,6 +18,7 @@ export interface IBackupFile extends Document {
 
 const BackupFileSchema = new Schema<IBackupFile>({
   userId:              { type: String, required: true },
+  content_id:          { type: String },
   file_name:           { type: String, required: true },
   platforms:           { type: [String], default: [] },
   platforms_discarded: { type: [String], default: [] },
@@ -31,5 +33,6 @@ const BackupFileSchema = new Schema<IBackupFile>({
 }, { timestamps: true });
 
 BackupFileSchema.index({ userId: 1, file_name: 1 }, { unique: true });
+BackupFileSchema.index({ userId: 1, content_id: 1 });
 
 export const BackupFileModel = model<IBackupFile>('BackupFile', BackupFileSchema, 'backup_files');

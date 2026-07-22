@@ -21,6 +21,7 @@ export interface IRemoteLibraryPlatformLink {
 
 export interface IRemoteLibraryVideo extends Document {
   userId: string;
+  contentId?: string;         // vincula con files.content_id (SQLite local) del mismo video — opcional, no todos los clientes lo mandan (ver Android)
   fileName: string;           // nombre original, solo para mostrar
   storedFileName: string;     // uuid + extensión real en disco — evita colisiones
   sizeBytes: number;
@@ -42,6 +43,7 @@ const platformLinkSchema = new Schema<IRemoteLibraryPlatformLink>({
 
 const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   userId:                   { type: String, required: true, index: true },
+  contentId:                { type: String, index: true },
   fileName:                 { type: String, required: true },
   storedFileName:           { type: String, required: true },
   sizeBytes:                { type: Number, required: true },

@@ -3,7 +3,7 @@ import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
-  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats,
+  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getStatsByIds,
   getCalendarConfig, updateCalendarConfig, recordPublish,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -25,7 +25,11 @@ router.get ('/api/sync/platform-recent/:platform', verifyToken, requireRole('tod
 router.post('/api/sync/cross-match',               verifyToken, requireRole('todopoderoso'), confirmCrossMatch);
 router.get ('/api/sync/cross-match/candidates',     verifyToken, requireRole('todopoderoso'), getCrossMatchCandidates);
 router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('todopoderoso'), resolveCrossMatchSlot);
-router.get ('/api/sync/group-stats',                verifyToken, requireRole('todopoderoso'), getGroupStats);
+// Estadísticas: liberado a cualquier usuario logueado (antes solo el dueño) --
+// ya viene scoped por userId en el controller, el requireRole era una
+// restricción extra sin motivo real de seguridad.
+router.get ('/api/sync/group-stats',                verifyToken, getGroupStats);
+router.post('/api/sync/stats-by-ids',               verifyToken, getStatsByIds);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
 // La usan los clientes que publican DIRECTO a la plataforma (iOS/Android) para

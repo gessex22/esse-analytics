@@ -435,6 +435,32 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
   }
 };
 
+// POST /api/sync/stats-by-ids — stats en vivo para un set de platformId sueltos,
+// sin pasar por PlatformVideoModel/cross-match. Lo usa local-backend para armar
+// Estadísticas de instalaciones que solo tienen el catálogo en SQLite local (no
+// respaldado en la nube): arma los ids desde platform_videos local y pide acá
+// las stats reales, usando igual los tokens OAuth que viven en esta central.
+export const getStatsByIds = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const body = req.body ?? {};
+    const clamp = (arr: unknown): string[] => (Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []).slice(0, 60);
+    const youtube   = clamp(body.youtube);
+    const instagram = clamp(body.instagram);
+    const tiktok    = clamp(body.tiktok);
+
+    const [ytStats, igStats, tkStats] = await Promise.all([
+      getYoutubeVideoStats(youtube).catch(() => ({} as Record<string, any>)),
+      getMediaStats(userId, instagram).catch(() => ({} as Record<string, any>)),
+      getTiktokVideoStats(userId, tiktok).catch(() => ({} as Record<string, any>)),
+    ]);
+
+    res.json({ youtube: ytStats, instagram: igStats, tiktok: tkStats });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // GET /api/sync/calendar-config — configuración real del calendario por plataforma
 export const getCalendarConfig = async (req: AuthRequest, res: Response): Promise<void> => {
   try {

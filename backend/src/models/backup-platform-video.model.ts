@@ -11,6 +11,7 @@ export interface IBackupPlatformVideo extends Document {
   platform_url?: string;
   published_at?: Date;
   file_name?: string;      // resuelto desde linked_file_id (los IDs locales no son portables)
+  content_id?: string;     // igual que file_name, pero estable ante renombres (ver BackupFile.content_id)
   match_status: string;
   title?: string;
   description?: string;
@@ -24,6 +25,7 @@ const BackupPlatformVideoSchema = new Schema<IBackupPlatformVideo>({
   platform_url:     { type: String },
   published_at:     { type: Date },
   file_name:        { type: String },
+  content_id:       { type: String },
   match_status:     { type: String, default: 'sin_match' },
   title:            { type: String },
   description:      { type: String },

@@ -54,6 +54,7 @@ export interface FinishedRemoteLibraryUpload {
   durationSeconds?: number;
   resolution?: string;
   formato?: string;
+  contentId?: string;
 }
 
 const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB, mismo límite que la subida single-shot anterior
@@ -181,6 +182,7 @@ export function buildRemoteLibraryTusServer(
         durationSeconds: meta.durationSeconds ? Number(meta.durationSeconds) : undefined,
         resolution: meta.resolution || undefined,
         formato: meta.formato || undefined,
+        contentId: meta.contentId || undefined,
       });
 
       // 204 (el default de PATCH) es un "null body status" para la Response

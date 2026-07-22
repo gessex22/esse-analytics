@@ -28,13 +28,32 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
   try {
     const userId = req.user!.id;
     const includeResolved = req.query.includeResolved === 'true';
-    const [allFiles, user] = await Promise.all([
+    const [allFiles, user, centralFiles] = await Promise.all([
       BackupFileModel.find({ userId }).lean(),
       UserModel.findById(userId, { video_folder: 1 }).lean(),
+      // BackupFileModel solo tiene lo que ALGUNA instalación local llegó a pushear.
+      // Lo que se resolvió por el flujo de Sincronizar/cross-match (central, dueño)
+      // nunca pasa por ahí — vive solo en FileModel ('files'). Sin este merge, un
+      // wipe de logout + pull no recupera esos videos (bug real, ver incidente de
+      // julio 2026 / fix-local-files-platforms.js): el pull queda tan incompleto
+      // como el propio push, aunque en la nube exista el dato correcto en otro lado.
+      FileModel.find({ userId }).select('file_name platforms platforms_discarded').lean(),
     ]);
+
+    const centralByName = new Map(centralFiles.map(f => [f.file_name, f]));
+    const merged = allFiles.map(f => {
+      const current = (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
+      if (current >= 3) return f;
+      const central = centralByName.get(f.file_name);
+      if (!central) return f;
+      const centralCount = (central.platforms?.length ?? 0) + (central.platforms_discarded?.length ?? 0);
+      if (centralCount <= current) return f;
+      return { ...f, platforms: central.platforms ?? f.platforms, platforms_discarded: central.platforms_discarded ?? f.platforms_discarded };
+    });
+
     const files = includeResolved
-      ? allFiles
-      : allFiles.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
+      ? merged
+      : merged.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
     res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -59,11 +78,23 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     }
 
     const fileNames = incoming.map(f => f.file_name);
+    const contentIds = incoming.map(f => f.content_id).filter(Boolean);
+    // Matchea por content_id (estable ante renombres) o por file_name (registros
+    // viejos / clientes que todavía no mandan content_id) — lo que exista primero.
     const existing = await BackupFileModel.find(
-      { userId, file_name: { $in: fileNames } },
-      { file_name: 1, local_updated_at: 1, platforms: 1, platforms_discarded: 1 },
+      {
+        userId,
+        $or: [
+          { file_name: { $in: fileNames } },
+          ...(contentIds.length ? [{ content_id: { $in: contentIds } }] : []),
+        ],
+      },
+      { file_name: 1, content_id: 1, local_updated_at: 1, platforms: 1, platforms_discarded: 1 },
     ).lean();
-    const existingMap = new Map(existing.map(e => [e.file_name, e]));
+    const existingByFileName  = new Map(existing.map(e => [e.file_name, e]));
+    const existingByContentId = new Map(existing.filter(e => e.content_id).map(e => [e.content_id as string, e]));
+    const resolveExisting = (f: any) =>
+      (f.content_id && existingByContentId.get(f.content_id)) || existingByFileName.get(f.file_name);
 
     // Para cada archivo entrante, decide si el valor de platforms que se aplica es
     // el que llegó (incoming) o el que ya había en la nube (protegido).
@@ -77,7 +108,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     }
 
     const toUpdate = incoming.filter(f => {
-      const ex = existingMap.get(f.file_name);
+      const ex = resolveExisting(f);
       const existingTs = ex?.local_updated_at?.getTime();
       const isNewer = !existingTs || existingTs < new Date(f.local_updated_at).getTime();
       // Si no es más nuevo, no hay nada que actualizar (comportamiento previo).
@@ -90,14 +121,19 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     if (toUpdate.length > 0) {
       await BackupFileModel.bulkWrite(
         toUpdate.map(f => {
-          const ex = existingMap.get(f.file_name);
+          const ex = resolveExisting(f);
           const { platforms, platforms_discarded } = resolvePlatforms(f, ex);
+          // Si matcheó por content_id, el filtro va por _id (permite que file_name
+          // haya cambiado); si no había match previo, upsert por file_name como antes.
+          const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
           return {
             updateOne: {
-              filter: { userId, file_name: f.file_name },
+              filter,
               update: {
                 $set: {
                   userId,
+                  content_id:          f.content_id          ?? ex?.content_id ?? null,
+                  file_name:           f.file_name,
                   platforms,
                   platforms_discarded,
                   content_status:      f.content_status      ?? 'borrador',
@@ -404,6 +440,7 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
                 platform_url:     v.platform_url    ?? null,
                 published_at:     v.published_at    ?? null,
                 file_name:        v.file_name       ?? null,
+                content_id:       v.content_id      ?? null,
                 match_status:     v.match_status    ?? 'sin_match',
                 title:            v.title           ?? null,
                 description:      v.description     ?? null,
@@ -416,6 +453,40 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
     );
 
     res.json({ ok: true, updated: incoming.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// GET /api/backup/sync-status?contentIds=a,b,c
+// Dado un set de content_id (identidad estable del video, ver files.content_id en
+// SQLite local), responde por cada uno si hay metadata respaldada (backup_files) y/o
+// bytes reales en la Biblioteca remota (remote_library_videos). Es el mínimo necesario
+// para que el frontend pueda mostrar "en la nube ✓ / solo local" sin cruzar todo a mano.
+export async function getSyncStatus(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const raw = typeof req.query.contentIds === 'string' ? req.query.contentIds : '';
+    const contentIds = raw.split(',').map(s => s.trim()).filter(Boolean);
+    if (contentIds.length === 0) {
+      res.status(400).json({ error: 'contentIds requerido (query string separada por comas)' });
+      return;
+    }
+
+    const [backedUp, inRemoteLibrary] = await Promise.all([
+      BackupFileModel.find({ userId, content_id: { $in: contentIds } }, { content_id: 1 }).lean(),
+      RemoteLibraryVideoModel.find({ userId, contentId: { $in: contentIds } }, { contentId: 1 }).lean(),
+    ]);
+    const backedUpSet = new Set(backedUp.map(f => f.content_id));
+    const remoteSet = new Set(inRemoteLibrary.map(v => v.contentId));
+
+    const status = contentIds.map(id => ({
+      contentId: id,
+      metadataBackedUp: backedUpSet.has(id),
+      inRemoteLibrary: remoteSet.has(id),
+    }));
+
+    res.json({ status });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
