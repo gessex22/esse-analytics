@@ -4,7 +4,7 @@ import {
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats,
-  getCalendarConfig, updateCalendarConfig,
+  getCalendarConfig, updateCalendarConfig, recordPublish,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
 import { verifyToken, requireRole } from '../middleware/auth.middleware';
@@ -28,6 +28,9 @@ router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('to
 router.get ('/api/sync/group-stats',                verifyToken, requireRole('todopoderoso'), getGroupStats);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
+// La usan los clientes que publican DIRECTO a la plataforma (iOS/Android) para
+// que Estadísticas los vea sin ningún paso manual -- ver recordPublish.
+router.post('/api/sync/record-publish',            verifyToken, requireRole('todopoderoso'), recordPublish);
 
 // router.post('/api/sync/instagram',   verifyToken, requireRole('todopoderoso'), triggerInstagramSync);
 // router.post('/api/sync/tiktok',      verifyToken, requireRole('todopoderoso'), triggerTikTokSync);

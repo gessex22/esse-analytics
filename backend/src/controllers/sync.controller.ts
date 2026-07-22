@@ -557,3 +557,55 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
     res.status(500).json({ message: err.message });
   }
 };
+
+// POST /api/sync/record-publish — un cliente que publica DIRECTO a la plataforma
+// (iOS/Android, sin pasar por youtube/instagram/tiktok-upload.controller.ts de
+// acá) no deja ningún rastro en FileModel/PlatformVideoModel, así que
+// getGroupStats (Estadísticas) nunca tiene de dónde sacar el platformId real y
+// el usuario tenía que ir a pegar el link a mano en Videos (escritorio). Esto
+// cierra ese hueco: upsert de ambas colecciones con lo que el cliente YA sabe
+// apenas termina de publicar, sin ningún paso manual.
+// matchStatus 'remote' (ver platform-video.model.ts) distingue este origen del
+// resto (auto_text/auto_duration = matching por sync, manual = el usuario lo
+// vinculó a mano en la vista de revisión).
+export const recordPublish = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { fileName, platform, platformId, platformUrl, title, publishedAt } = req.body as {
+      fileName?: string; platform?: SyncPlatform; platformId?: string; platformUrl?: string;
+      title?: string; publishedAt?: string;
+    };
+    if (!fileName || !platform || !platformId || !platformUrl) {
+      res.status(400).json({ message: 'fileName, platform, platformId y platformUrl son requeridos' });
+      return;
+    }
+
+    const file = await FileModel.findOneAndUpdate(
+      { userId, file_name: fileName },
+      { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+      { upsert: true, new: true },
+    );
+    if (platform !== 'facebook') {
+      await FileModel.updateOne({ _id: file._id }, { $addToSet: { platforms: platform } });
+    }
+
+    await PlatformVideoModel.findOneAndUpdate(
+      { userId, platform, platformId },
+      {
+        $set: {
+          platformUrl,
+          title: title ?? '',
+          publishedAt: publishedAt ? new Date(publishedAt) : new Date(),
+          linkedFileId: file._id,
+          matchStatus: 'remote',
+          lastSyncedAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};

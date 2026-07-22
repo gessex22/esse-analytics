@@ -4,6 +4,7 @@ import {
   remoteLibraryThumbnailUploadMiddleware,
   uploadRemoteLibraryThumbnail,
   listRemoteLibraryVideos,
+  getRemoteLibraryVideo,
   streamRemoteLibraryVideo,
   getRemoteLibraryThumbnail,
   updateRemoteLibraryVideoPlatforms,
@@ -27,6 +28,7 @@ router.all('/api/remote-library/tus/:id', verifyToken, requireCloudStorage, hand
 
 router.post('/api/remote-library/videos/:id/thumbnail', verifyToken, requireCloudStorage, remoteLibraryThumbnailUploadMiddleware, uploadRemoteLibraryThumbnail);
 router.get('/api/remote-library/videos', verifyToken, requireCloudStorage, listRemoteLibraryVideos);
+router.get('/api/remote-library/videos/:id', verifyToken, requireCloudStorage, getRemoteLibraryVideo);
 // verifyTokenFromHeaderOrQuery, no verifyToken a secas: para poder usarse
 // directo como URL de descarga/streaming (mismo criterio que stream.routes.ts).
 router.get('/api/remote-library/videos/:id/stream', verifyTokenFromHeaderOrQuery, requireCloudStorage, streamRemoteLibraryVideo);

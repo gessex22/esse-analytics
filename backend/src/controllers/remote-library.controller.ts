@@ -181,6 +181,21 @@ export const listRemoteLibraryVideos = async (req: AuthRequest, res: Response): 
   }
 };
 
+// ── GET /api/remote-library/videos/:id ────────────────────────────────────────
+// Un solo video -- lo usa el cliente para refrescar platforms/platformsDiscarded
+// de un archivo YA descargado antes de publicar (ver PublishFormView en iOS):
+// un archivo bajado antes de que la nube tuviera el dato correcto quedaba con
+// el estado viejo para siempre si nadie lo volvía a pedir.
+export const getRemoteLibraryVideo = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const doc = await RemoteLibraryVideoModel.findOne({ _id: req.params.id, userId: req.user!.id }).lean();
+    if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
+    res.json({ ok: true, video: doc });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 // ── GET /api/remote-library/videos/:id/stream ─────────────────────────────────
 // Range-requests portado de local-backend/src/routes/stream.routes.ts (acá no
 // existía ningún endpoint de streaming todavía).
