@@ -223,17 +223,33 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
 
 // ── PATCH /api/remote-library/videos/:id ──────────────────────────────────────
 // La central lleva el estado de "qué ya se publicó" de esta cola porque
-// Android publica DIRECTO a YouTube/Meta/TikTok (nunca pasa por acá) -- este
-// endpoint es lo único que deja ese resultado asentado del lado central.
+// Android/iOS publican DIRECTO a YouTube/Meta/TikTok (nunca pasa por acá) --
+// este endpoint es lo único que deja ese resultado asentado del lado central.
 export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: Response): Promise<void> => {
-  const { platforms, platformsDiscarded } = req.body;
+  const { platforms, platformsDiscarded, platformLinks } = req.body;
   try {
+    const update: Record<string, unknown> = {};
+    if (platforms !== undefined) update.platforms = platforms;
+    if (platformsDiscarded !== undefined) update.platformsDiscarded = platformsDiscarded;
+
+    // Merge por plataforma (reemplaza el link de ESA plataforma si ya
+    // existía, deja los demás intactos) -- nunca un reemplazo ciego del
+    // array entero, o publicar en una plataforma pisaría el link que ya
+    // había quedado registrado para otra.
+    if (Array.isArray(platformLinks) && platformLinks.length > 0) {
+      const existing = await RemoteLibraryVideoModel.findOne(
+        { _id: req.params.id, userId: req.user!.id },
+        { platformLinks: 1 },
+      ).lean();
+      if (!existing) { res.status(404).json({ error: 'Video no encontrado' }); return; }
+      const incomingPlatforms = new Set(platformLinks.map((l: any) => l.platform));
+      const kept = (existing.platformLinks ?? []).filter((l: any) => !incomingPlatforms.has(l.platform));
+      update.platformLinks = [...kept, ...platformLinks];
+    }
+
     const doc = await RemoteLibraryVideoModel.findOneAndUpdate(
       { _id: req.params.id, userId: req.user!.id },
-      {
-        ...(platforms !== undefined ? { platforms } : {}),
-        ...(platformsDiscarded !== undefined ? { platformsDiscarded } : {}),
-      },
+      update,
       { new: true },
     );
     if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }

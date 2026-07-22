@@ -929,6 +929,13 @@ export const oauthService = {
 
 export type RemotePlatform = "youtube" | "instagram" | "tiktok";
 
+export interface RemoteLibraryPlatformLink {
+  platform: RemotePlatform;
+  platformId: string;
+  platformUrl?: string;
+  publishedAt: string;
+}
+
 export interface RemoteLibraryVideo {
   _id: string;
   userId: string;
@@ -941,6 +948,7 @@ export interface RemoteLibraryVideo {
   thumbnailStoredFileName?: string;
   platforms: RemotePlatform[];
   platformsDiscarded: RemotePlatform[];
+  platformLinks?: RemoteLibraryPlatformLink[];
   createdAt: string;
   updatedAt: string;
 }
