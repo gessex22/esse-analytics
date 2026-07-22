@@ -179,7 +179,12 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
   if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
 
   try {
-    const upstream = await fetch(`${CENTRAL}/api/backup/files`, {
+    // includeResolved=true -- este pull es para reconstruir la SQLite local
+    // entera (instalación nueva, o recuperación de un wipe), no la vista
+    // filtrada de catálogo. Sin esto, un catálogo ya resuelto en las 3
+    // plataformas (el caso típico tras meses de uso) queda invisible acá y
+    // la recuperación queda incompleta en silencio.
+    const upstream = await fetch(`${CENTRAL}/api/backup/files?includeResolved=true`, {
       headers: { Authorization: authHeader },
     });
 

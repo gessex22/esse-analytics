@@ -16,14 +16,24 @@ import { BackupPlatformVideoModel } from '../models/backup-platform-video.model'
 // replica en memoria sobre el mismo par de arrays que ya viaja en BackupFileModel
 // -- sin este filtro, el catálogo de Android mostraba videos que la vista por
 // defecto del escritorio no muestra (confirmado por el owner).
+//
+// ?includeResolved=true salta ese filtro y devuelve TODO -- lo necesita
+// pullFromCloud (local-backend/backup-sync.controller.ts) para reconstruir la
+// SQLite local tras un wipe: sin esto, un catálogo ya resuelto en las 3
+// plataformas (el caso típico tras meses de uso) queda invisible para el pull
+// y la recuperación queda incompleta en silencio (bug real detectado en el
+// incidente del reset-all de julio 2026 -- ver fix-local-files-platforms.js).
 export async function getBackupFiles(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
+    const includeResolved = req.query.includeResolved === 'true';
     const [allFiles, user] = await Promise.all([
       BackupFileModel.find({ userId }).lean(),
       UserModel.findById(userId, { video_folder: 1 }).lean(),
     ]);
-    const files = allFiles.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
+    const files = includeResolved
+      ? allFiles
+      : allFiles.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
     res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
