@@ -40,12 +40,16 @@ interface UploadTask {
   error?: string;
 }
 
+const PAGE_SIZE = 10;
+
 export function RemoteLibraryView() {
   const [videos, setVideos]   = useState<RemoteLibraryVideo[] | null>(null);
   const [error, setError]     = useState<string | null>(null);
   const [uploads, setUploads] = useState<UploadTask[]>([]);
   const [preview, setPreview] = useState<RemoteLibraryVideo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
@@ -53,9 +57,24 @@ export function RemoteLibraryView() {
 
   const load = () => {
     setError(null);
-    remoteLibraryService.list()
-      .then(setVideos)
+    remoteLibraryService.list(0, PAGE_SIZE)
+      .then(page => {
+        setVideos(page.videos);
+        setHasMore(page.hasMore);
+      })
       .catch(e => setError(e.message || "Error al cargar la biblioteca"));
+  };
+
+  const loadMore = () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    remoteLibraryService.list(videos?.length ?? 0, PAGE_SIZE)
+      .then(page => {
+        setVideos(prev => [...(prev ?? []), ...page.videos]);
+        setHasMore(page.hasMore);
+      })
+      .catch(e => setError(e.message || "No se pudo cargar más videos"))
+      .finally(() => setLoadingMore(false));
   };
 
   useEffect(() => { load(); }, []);
@@ -253,6 +272,19 @@ export function RemoteLibraryView() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {videos !== null && hasMore && (
+        <div className="flex justify-center pt-2">
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium bg-secondary text-foreground hover:bg-secondary/70 transition-colors disabled:opacity-50"
+          >
+            {loadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {loadingMore ? "Cargando..." : "Cargar más"}
+          </button>
         </div>
       )}
 

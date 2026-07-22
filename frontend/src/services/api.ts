@@ -945,9 +945,18 @@ export interface RemoteLibraryVideo {
   updatedAt: string;
 }
 
+export interface RemoteLibraryPage {
+  videos: RemoteLibraryVideo[];
+  total: number;
+  hasMore: boolean;
+}
+
 export const remoteLibraryService = {
-  list: (): Promise<RemoteLibraryVideo[]> =>
-    requestJson<{ videos: RemoteLibraryVideo[] }>("/api/remote-library/videos").then(d => d.videos),
+  // Paginado -- una cuenta puede tener cientos/miles de videos (ej. después
+  // de migrar toda una biblioteca local a Nube), el backend ya no devuelve
+  // todo de una (default 30 si no se manda limit).
+  list: (skip = 0, limit = 30): Promise<RemoteLibraryPage> =>
+    requestJson<RemoteLibraryPage>(`/api/remote-library/videos?skip=${skip}&limit=${limit}`),
 
   remove: (id: string): Promise<void> =>
     requestJson(`/api/remote-library/videos/${id}`, { method: "DELETE" }).then(() => undefined),
