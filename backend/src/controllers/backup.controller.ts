@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { AuthRequest } from '../middleware/auth.middleware';
+import { AuthRequest, isOwner } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptBackupModel } from '../models/transcript-backup.model';
 import { FileModel } from '../models/file.model';
@@ -7,6 +7,7 @@ import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideacentral';
 import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
+import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -160,6 +161,53 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       { userId, file_name: { $in: fileNames }, status: 'ELIMINADO_DISCO' },
       { $set: { status: 'PENDIENTE' } },
     );
+
+    // ── Sincroniza a Nube (remote_library_videos) lo que se resolvió acá ──────
+    // Publicar desde el desktop (subida real o "Editar links de plataforma" en
+    // Videos) actualizaba `files`/`backup_files`, pero nunca tocaba Nube -- un
+    // video vinculado ahí (bajado alguna vez al celular) nunca se enteraba de
+    // que se publicó desde la PC. Solo para cuentas con storage en la nube
+    // (mismo gate que requireCloudStorage), y solo lo NUEVO respecto a lo que
+    // ya había en FileModel antes de este push (no todo lo que llegó).
+    const canUseCloudStorage = isOwner(req.user!.username)
+      || (req.user!.tier === 'premium' && req.user!.hasCloudStorage === true);
+    if (canUseCloudStorage) {
+      const newlyPublished = incoming
+        .map(f => {
+          const ex = fileModelExistingMap.get(f.file_name);
+          const { platforms } = resolvePlatforms(f, ex as any);
+          const previous = new Set(ex?.platforms ?? []);
+          const added = platforms.filter((p: string) => !previous.has(p));
+          return added.length > 0 ? { fileName: f.file_name, added } : null;
+        })
+        .filter((entry): entry is { fileName: string; added: string[] } => entry !== null);
+
+      if (newlyPublished.length > 0) {
+        const remoteVideos = await RemoteLibraryVideoModel.find(
+          { userId, fileName: { $in: newlyPublished.map(n => n.fileName) } },
+          { fileName: 1, platforms: 1, platformsDiscarded: 1 },
+        ).lean();
+        const remoteMap = new Map(remoteVideos.map(v => [v.fileName, v]));
+
+        const remoteOps = newlyPublished
+          .map(n => {
+            const remote = remoteMap.get(n.fileName);
+            if (!remote) return null; // este video nunca estuvo en Nube, nada que sincronizar
+            const platforms = new Set(remote.platforms ?? []);
+            n.added.forEach((p: string) => platforms.add(p));
+            const platformsDiscarded = (remote.platformsDiscarded ?? []).filter((p: string) => !platforms.has(p));
+            return {
+              updateOne: {
+                filter: { _id: remote._id },
+                update: { $set: { platforms: Array.from(platforms), platformsDiscarded } },
+              },
+            };
+          })
+          .filter((op): op is NonNullable<typeof op> => op !== null);
+
+        if (remoteOps.length > 0) await RemoteLibraryVideoModel.bulkWrite(remoteOps);
+      }
+    }
 
     // Reconciliación: si el push es completo (fullSync), lo que ya no está local
     // se marca ELIMINADO_DISCO en el central (los endpoints remotos lo excluyen).
