@@ -1,0 +1,36 @@
+# Permisos de SO declarados por plataforma. Verificado leyendo directamente:
+# - AndroidManifest.xml (essenalytics-android/app/src/main/AndroidManifest.xml)
+# - Info.plist (essenalytics-ios/Esse-Analytics/App/Info.plist)
+# Electron/desktop no tiene un manifest de permisos equivalente (acceso a
+# filesystem sin prompt del SO) -- se marca N/A.
+
+permissions:
+  - name: internet
+    electron: n/a
+    android: true   # android.permission.INTERNET
+    ios: n/a        # iOS no requiere permiso explícito para red
+
+  - name: network_state
+    electron: n/a
+    android: true   # android.permission.ACCESS_NETWORK_STATE
+    ios: n/a
+
+  - name: camera
+    electron: n/a
+    android: false  # no declarado
+    ios: false      # sin NSCameraUsageDescription en Info.plist
+    note: Ninguna de las dos apps pide cámara -- consistente, no graban video in-app.
+
+  - name: photo_library_storage
+    electron: n/a
+    android: false  # sin READ_MEDIA_VIDEO/READ_EXTERNAL_STORAGE -- usa el picker del sistema (SAF)
+    ios: false      # sin NSPhotoLibraryUsageDescription -- usa PHPicker/DocumentPicker del sistema
+    note: >
+      Ambas usan el selector de archivos/fotos nativo del SO en vez de pedir
+      acceso directo a todo el almacenamiento -- buena práctica, consistente
+      entre las dos.
+
+# No hay inconsistencias de permisos entre Android e iOS hoy: ambas dependen
+# del picker del sistema para importar video, ninguna pide cámara ni storage
+# amplio. Si en el futuro se agrega grabación in-app, ahí sí habría que declarar
+# camera+microphone en ambas y esta tabla dejaría de estar vacía de verdad.

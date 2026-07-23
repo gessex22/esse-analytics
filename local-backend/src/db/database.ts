@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 
 const DB_DIR = process.env.SQLITE_DIR || path.join(os.homedir(), '.esse-analytics');
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
@@ -19,6 +20,7 @@ db.pragma('foreign_keys = ON');
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    content_id        TEXT,
     file_name         TEXT    NOT NULL,
     file_path         TEXT    NOT NULL,
     status            TEXT    NOT NULL DEFAULT 'PENDIENTE',
@@ -114,8 +116,22 @@ db.exec(`
 // Migrations
 try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
+try { db.exec(`ALTER TABLE files ADD COLUMN content_id TEXT`); } catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_files_content_id ON files(content_id) WHERE content_id IS NOT NULL`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
+
+// Backfill content_id para filas creadas antes de este campo (SQLite no genera UUIDs nativos).
+try {
+  const rowsSinContentId = db.prepare(`SELECT id FROM files WHERE content_id IS NULL`).all() as { id: number }[];
+  if (rowsSinContentId.length > 0) {
+    const setContentId = db.prepare(`UPDATE files SET content_id = ? WHERE id = ?`);
+    const backfill = db.transaction((rows: { id: number }[]) => {
+      for (const row of rows) setContentId.run(randomUUID(), row.id);
+    });
+    backfill(rowsSinContentId);
+  }
+} catch (e) { console.warn('Backfill content_id falló:', e); }
 
 // Backfill platforms[] desde platform_videos (DISTINCT via subquery — SQLite no soporta json_group_array(DISTINCT)).
 try {

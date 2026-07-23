@@ -528,7 +528,10 @@ function PlatformCard({
 function PublishedCard({ data }: { data: PublishedVideo }) {
   const cfg  = PLATFORM_CFG[data.platform];
   const Icon = cfg.icon;
-  const empty = !data.platformId;
+  // Sin platformId (link/id exacto de la plataforma) igual se puede mostrar el
+  // archivo físico si se conoce -- pasa cuando platform_videos quedó desactualizado
+  // (wipe de logout) pero el archivo real y su badge sí sobrevivieron.
+  const empty = !data.platformId && !data.fileName;
 
   const getStatusBadgeColor = (status?: string): string => {
     if (!status) return "bg-gray-500/20 text-gray-400";

@@ -5,6 +5,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 const TK_BASE    = 'https://open.tiktokapis.com/v2';
@@ -163,6 +164,10 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
       linked_file_id: Number(fileId),
       match_status:   'manual',
       title:          String(title).slice(0, 300) || undefined,
+    });
+    reportUploadEvent(req.headers.authorization, {
+      platform: 'tiktok', platformId: publish_id, platformUrl,
+      fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: String(title),
     });
     fileRepo.update(fileId, { content_status: 'publicado' });
     fileRepo.addPlatform(fileId, 'tiktok');

@@ -197,6 +197,20 @@ export const getRemoteLibraryVideo = async (req: AuthRequest, res: Response): Pr
   }
 };
 
+// fs.existsSync dio un "no encontrado" puntual para un archivo que estaba ahí
+// -- reproducido en vivo (curl inmediatamente después: 200 OK) -- lo más
+// probable es contención de corto plazo en el filesystem de Windows (ej. el
+// antivirus escaneando el archivo en ese instante exacto). Un solo reintento
+// tras una pausa chica absorbe ese hipo sin esconder un 404 real (el archivo
+// sigue sin estar ahí en los reintentos si de verdad no existe).
+async function existsWithRetry(filePath: string, retries = 2, delayMs = 150): Promise<boolean> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (fs.existsSync(filePath)) return true;
+    if (attempt < retries) await new Promise(r => setTimeout(r, delayMs));
+  }
+  return false;
+}
+
 // ── GET /api/remote-library/videos/:id/stream ─────────────────────────────────
 // Range-requests portado de local-backend/src/routes/stream.routes.ts (acá no
 // existía ningún endpoint de streaming todavía).
@@ -206,7 +220,7 @@ export const streamRemoteLibraryVideo = async (req: AuthRequest, res: Response):
     if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
 
     const filePath = resolveRemoteLibraryFilePath(doc.userId, doc.storedFileName);
-    if (!fs.existsSync(filePath)) {
+    if (!(await existsWithRetry(filePath))) {
       const path = `/api/remote-library/videos/${req.params.id}/stream`;
       if (await tryProxyFromPeer(req, res, path)) return;
       res.status(404).json({ error: 'Archivo no encontrado en disco' });
@@ -244,7 +258,7 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
     if (!doc?.thumbnailStoredFileName) { res.status(404).json({ error: 'Sin miniatura' }); return; }
 
     const filePath = resolveRemoteLibraryFilePath(doc.userId, doc.thumbnailStoredFileName);
-    if (!fs.existsSync(filePath)) {
+    if (!(await existsWithRetry(filePath))) {
       const path = `/api/remote-library/videos/${req.params.id}/thumbnail`;
       if (await tryProxyFromPeer(req, res, path)) return;
       res.status(404).json({ error: 'Miniatura no encontrada en disco' });
@@ -253,6 +267,21 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
 
     res.writeHead(200, { 'Content-Type': 'image/jpeg' });
     fs.createReadStream(filePath).pipe(res);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ── GET /api/remote-library/videos/:id ────────────────────────────────────────
+// Un solo video -- lo usa PublishFormView en iOS para refrescar platforms/
+// platformsDiscarded de un archivo ya descargado antes de publicar (RemoteLibraryAPI.get
+// en el cliente). Faltaba del todo en el backend -- la app lo llamaba desde hacía
+// rato contra una ruta que nunca existió.
+export const getRemoteLibraryVideo = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const doc = await RemoteLibraryVideoModel.findOne({ _id: req.params.id, userId: req.user!.id });
+    if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
+    res.json({ ok: true, video: doc });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -53,12 +53,20 @@ async function fetchToken(
 // (linked_file_id) — el fileId es lo que permite agrupar el mismo video entre
 // plataformas sin depender de comparar títulos.
 function resolveLocalFile(platform: string, platformId: string | null): { fileId: string; fileName: string } | null {
-  if (!platformId) return null;
-  const pv = platformVideoRepo.findByPlatformAndId(platform, platformId);
-  if (!pv?.linked_file_id) return null;
-  const file = fileRepo.findById(pv.linked_file_id);
-  if (!file) return null;
-  return { fileId: String(pv.linked_file_id), fileName: file.file_name };
+  if (platformId) {
+    const pv = platformVideoRepo.findByPlatformAndId(platform, platformId);
+    if (pv?.linked_file_id) {
+      const file = fileRepo.findById(pv.linked_file_id);
+      if (file) return { fileId: String(pv.linked_file_id), fileName: file.file_name };
+    }
+  }
+  // Fallback: platform_videos se vacía en cada wipe de logout y solo se repuebla
+  // parcial (backup_platform_videos es un espejo más flaco que files.platforms),
+  // así que puede no tener el link exacto para el último video en vivo aunque el
+  // archivo SÍ exista localmente. El archivo más reciente con el badge de esta
+  // plataforma es, en la práctica, casi siempre el mismo video.
+  const file = fileRepo.findLatestPublished(platform as 'youtube' | 'instagram' | 'tiktok');
+  return file ? { fileId: String(file.id), fileName: file.file_name } : null;
 }
 
 async function fetchYouTubeLatest(token: TokenLike | null): Promise<PublishedVideo | null> {

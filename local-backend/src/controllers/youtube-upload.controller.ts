@@ -6,6 +6,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 const CENTRAL     = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -172,6 +173,10 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
       linked_file_id: Number(fileId),
       match_status:  'manual',
       title:         result.title?.slice(0, 300) || title?.slice(0, 300) || undefined,
+    });
+    reportUploadEvent(req.headers.authorization, {
+      platform: 'youtube', platformId: result.videoId, platformUrl: result.videoUrl,
+      fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: result.title || title,
     });
 
     fileRepo.update(fileId, { content_status: 'publicado' });

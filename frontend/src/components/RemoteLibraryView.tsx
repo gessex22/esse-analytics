@@ -57,23 +57,17 @@ export function RemoteLibraryView() {
 
   const load = () => {
     setError(null);
-    remoteLibraryService.list(0, PAGE_SIZE)
-      .then(page => {
-        setVideos(page.videos);
-        setHasMore(page.hasMore);
-      })
+    remoteLibraryService.list({ skip: 0, limit: PAGE_SIZE })
+      .then(d => { setVideos(d.videos); setHasMore(d.hasMore); })
       .catch(e => setError(e.message || "Error al cargar la biblioteca"));
   };
 
   const loadMore = () => {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
-    remoteLibraryService.list(videos?.length ?? 0, PAGE_SIZE)
-      .then(page => {
-        setVideos(prev => [...(prev ?? []), ...page.videos]);
-        setHasMore(page.hasMore);
-      })
-      .catch(e => setError(e.message || "No se pudo cargar más videos"))
+    remoteLibraryService.list({ skip: videos?.length ?? 0, limit: PAGE_SIZE })
+      .then(d => { setVideos(prev => [...(prev ?? []), ...d.videos]); setHasMore(d.hasMore); })
+      .catch(e => setError(e.message || "Error al cargar más videos"))
       .finally(() => setLoadingMore(false));
   };
 
@@ -275,7 +269,7 @@ export function RemoteLibraryView() {
         </div>
       )}
 
-      {videos !== null && hasMore && (
+      {videos !== null && videos.length > 0 && hasMore && (
         <div className="flex justify-center pt-2">
           <button
             onClick={loadMore}

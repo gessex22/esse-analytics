@@ -21,6 +21,7 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
   const { rows } = fileRepo.findAll({ excludeStatus: 'ELIMINADO_DISCO', limit: 50000, offset: 0 });
 
   const files = rows.map(f => ({
+    content_id:          f.content_id,
     file_name:           f.file_name,
     platforms:           f.platforms,
     platforms_discarded: f.platforms_discarded,
@@ -99,6 +100,7 @@ async function pushPlatformVideosToCloud(authHeader: string): Promise<void> {
     platform_url:     pv.platform_url    ?? null,
     published_at:     pv.published_at    ?? null,
     file_name:        pv.linked_file_id ? fileRepo.findById(pv.linked_file_id)?.file_name ?? null : null,
+    content_id:       pv.linked_file_id ? fileRepo.findById(pv.linked_file_id)?.content_id ?? null : null,
     match_status:     pv.match_status,
     title:            pv.title           ?? null,
     description:      pv.description     ?? null,
@@ -207,8 +209,13 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
     for (const cf of cloudFiles) {
       if (hasData(cf.platforms) || hasData(cf.platforms_discarded)) cloudWithPlatforms++;
 
-      const { rows } = fileRepo.findAll({ search: cf.file_name, limit: 5, offset: 0 });
-      const localFile = rows.find(r => r.file_name === cf.file_name);
+      // Preferimos matchear por content_id (estable ante renombres); si la nube
+      // todavía no tiene content_id (registro viejo) o no matchea, caemos a file_name.
+      let localFile = cf.content_id ? fileRepo.findByContentId(cf.content_id) : undefined;
+      if (!localFile) {
+        const { rows } = fileRepo.findAll({ search: cf.file_name, limit: 5, offset: 0 });
+        localFile = rows.find(r => r.file_name === cf.file_name);
+      }
 
       if (!localFile) {
         orphans++;
@@ -222,6 +229,17 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       // aplicamos sin importar el timestamp (máquina nueva / DB reescaneada).
       const localEmpty = !hasData(localFile.platforms) && !hasData(localFile.platforms_discarded);
       const cloudHas   = hasData(cf.platforms) || hasData(cf.platforms_discarded);
+
+      // tipo_contenido: si al local le falta y la nube lo tiene, lo recuperamos
+      // siempre, sin importar el estado de platforms. Antes esta recuperación
+      // estaba atada a las ramas de abajo (que solo disparan si hay platforms de
+      // por medio), así que un video sin publicar todavía en ninguna plataforma
+      // (el caso típico recién transcrito, previo al Taller) perdía la
+      // clasificación para siempre tras un wipe/reinstalación.
+      if (!localFile.tipo_contenido && cf.tipo_contenido) {
+        fileRepo.update(localFile.id, { tipo_contenido: cf.tipo_contenido });
+        localFile.tipo_contenido = cf.tipo_contenido;
+      }
 
       if (cloudTs > localTs) {
         fileRepo.update(localFile.id, {
@@ -285,7 +303,9 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
     const existing = platformVideoRepo.findByPlatformAndId(cv.platform, cv.platform_id);
     if (existing) { skipped++; continue; }
 
-    const file = cv.file_name ? fileRepo.findByName(cv.file_name) : undefined;
+    const file = cv.content_id
+      ? fileRepo.findByContentId(cv.content_id) ?? (cv.file_name ? fileRepo.findByName(cv.file_name) : undefined)
+      : (cv.file_name ? fileRepo.findByName(cv.file_name) : undefined);
     if (cv.file_name && !file) { orphans++; continue; }
 
     platformVideoRepo.upsert({

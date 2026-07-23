@@ -4,9 +4,10 @@ import {
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getStatsByIds,
-  getCalendarConfig, updateCalendarConfig, recordPublish,
+  getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
+import { getUploadHistory, recordUploadEvent } from '../controllers/backup.controller';
 import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -30,11 +31,14 @@ router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('to
 // restricción extra sin motivo real de seguridad.
 router.get ('/api/sync/group-stats',                verifyToken, getGroupStats);
 router.post('/api/sync/stats-by-ids',               verifyToken, getStatsByIds);
+router.get ('/api/sync/history',                    verifyToken, getUploadHistory);
+router.post('/api/sync/history',                    verifyToken, recordUploadEvent);
+// Alias: iOS (SyncAPI.recordPublish, ya escrito y con backfill retroactivo en
+// Settings) llama a este nombre -- mismo handler, evita tener que tocar/re-buildear
+// la app de iOS (no hay forma de compilarla/probarla desde esta máquina Windows).
+router.post('/api/sync/record-publish',             verifyToken, recordUploadEvent);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
-// La usan los clientes que publican DIRECTO a la plataforma (iOS/Android) para
-// que Estadísticas los vea sin ningún paso manual -- ver recordPublish.
-router.post('/api/sync/record-publish',            verifyToken, requireRole('todopoderoso'), recordPublish);
 
 // router.post('/api/sync/instagram',   verifyToken, requireRole('todopoderoso'), triggerInstagramSync);
 // router.post('/api/sync/tiktok',      verifyToken, requireRole('todopoderoso'), triggerTikTokSync);

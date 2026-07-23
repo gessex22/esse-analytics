@@ -29,8 +29,10 @@ import { backupService } from "./services/api";
 import { API_BASE } from "./config";
 
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
-// En remoto se ocultan: Videos, Subir, Taller, Gemas, Historial.
-const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8, 9]);
+// En remoto se ocultan: Videos, Subir, Taller, Gemas. Historial ya no está acá --
+// ahora tiene fuente central (GET /api/sync/history sobre BackupPlatformVideoModel)
+// para verse igual desde Android/iPhone/web que desde el escritorio.
+const LOCAL_ONLY_NAV = new Set([1, 2, 5, 8]);
 
 function ProximamenteView({ label }: { label: string }) {
   return (

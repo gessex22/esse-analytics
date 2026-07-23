@@ -92,6 +92,7 @@ export interface VideoPlayerData {
 export interface DashboardVideo {
   _id: string;
   fileId: string;          // _id del documento en la colección 'files' (para rename/status)
+  contentId?: string;      // identidad estable del video (files.content_id) — para cruzar con /api/backup/sync-status
   title: string;
   tipoLabel: string;       // Legible: "Guión Estructurado", "Clip Random", etc.
   formato: string;         // Raw del backend: "VERTICAL" | "HORIZONTAL"
@@ -180,6 +181,7 @@ interface ApiVideoItem {
   _id: string;
   file_id?: {
     _id: string;
+    content_id?: string;
     file_name: string;
     file_path: string;
     status: ApiVideoStatus;
@@ -280,6 +282,7 @@ function toDashboardVideo(item: ApiVideoItem): DashboardVideo {
   return {
     _id: item._id,
     fileId: (file as any)?._id ? String((file as any)._id) : "",
+    contentId: file?.content_id,
     title,
     tipoLabel: readableTipo(item.tipo_contenido),
     formato,
@@ -804,6 +807,12 @@ export interface BackupCloudStatus {
   lastSync: string | null;
 }
 
+export interface SyncStatusEntry {
+  contentId: string;
+  metadataBackedUp: boolean;
+  inRemoteLibrary: boolean;
+}
+
 export interface BackupSyncResult {
   ok: boolean;
   localCount?: number;
@@ -819,6 +828,12 @@ export const backupService = {
 
   getCloudStatus: (): Promise<BackupCloudStatus> =>
     requestJson('/api/backup/status'),
+
+  // Best-effort igual que getCloudStatus: solo responde cuando el frontend habla
+  // directo con la central (modo remoto/web); en Electron/LAN no hay proxy para
+  // esta ruta todavía, así que el caller debe tolerar el fallo (.catch(() => null)).
+  getSyncStatus: (contentIds: string[]): Promise<{ status: SyncStatusEntry[] }> =>
+    requestJson(`/api/backup/sync-status?contentIds=${contentIds.map(encodeURIComponent).join(',')}`),
 
   push: (): Promise<BackupSyncResult> =>
     requestJson('/api/local/backup/push', { method: 'POST' }),
@@ -963,8 +978,13 @@ export const remoteLibraryService = {
   // Paginado -- una cuenta puede tener cientos/miles de videos (ej. después
   // de migrar toda una biblioteca local a Nube), el backend ya no devuelve
   // todo de una (default 30 si no se manda limit).
-  list: (skip = 0, limit = 30): Promise<RemoteLibraryPage> =>
-    requestJson<RemoteLibraryPage>(`/api/remote-library/videos?skip=${skip}&limit=${limit}`),
+  list: (params?: { skip?: number; limit?: number }): Promise<RemoteLibraryPage> => {
+    const qs = new URLSearchParams();
+    if (params?.skip)  qs.set("skip", String(params.skip));
+    if (params?.limit) qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return requestJson<RemoteLibraryPage>(`/api/remote-library/videos${suffix}`);
+  },
 
   remove: (id: string): Promise<void> =>
     requestJson(`/api/remote-library/videos/${id}`, { method: "DELETE" }).then(() => undefined),
@@ -1000,7 +1020,7 @@ export const remoteLibraryService = {
   // caller pueda cancelarlo (.abort()); arranca solo, no hace falta .start().
   uploadVideo: (
     file: File,
-    meta: { fileName?: string; durationSeconds?: number; resolution?: string; formato?: string },
+    meta: { fileName?: string; durationSeconds?: number; resolution?: string; formato?: string; contentId?: string },
     callbacks: { onProgress?: (bytesSent: number, bytesTotal: number) => void; onSuccess: (video: RemoteLibraryVideo) => void; onError: (err: Error) => void },
   ): TusUpload => {
     const token = localStorage.getItem("esse_auth_token");
@@ -1014,6 +1034,9 @@ export const remoteLibraryService = {
         ...(meta.durationSeconds !== undefined ? { durationSeconds: String(meta.durationSeconds) } : {}),
         ...(meta.resolution ? { resolution: meta.resolution } : {}),
         ...(meta.formato ? { formato: meta.formato } : {}),
+        // Cuando el video que se sube ya existe en la biblioteca local (files.content_id
+        // en SQLite), viaja acá para que la Nube quede vinculada al mismo contenido.
+        ...(meta.contentId ? { contentId: meta.contentId } : {}),
       },
       onProgress: callbacks.onProgress,
       onError: callbacks.onError,

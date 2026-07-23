@@ -16,8 +16,9 @@ import {
   MonitorOff,
   CalendarClock,
   Link2,
+  Cloud,
 } from "lucide-react";
-import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode } from "../services/api";
+import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
@@ -346,6 +347,20 @@ export function VideosView({
   const [currentPage, setCurrentPage] = useState(videosCache?.page ?? 1);
   const [loading, setLoading]         = useState(!videosCache);
   const [error, setError]             = useState<string | null>(null);
+
+  // Badge "en la nube" — best-effort: en modo local (Electron/LAN) esta ruta
+  // todavía no tiene proxy y falla en silencio, igual que backupService.getCloudStatus.
+  const [syncStatus, setSyncStatus] = useState<Record<string, SyncStatusEntry>>({});
+  useEffect(() => {
+    const contentIds = videos.map(v => v.contentId).filter((id): id is string => !!id);
+    if (contentIds.length === 0) return;
+    backupService.getSyncStatus(contentIds)
+      .then(d => setSyncStatus(prev => ({
+        ...prev,
+        ...Object.fromEntries(d.status.map(s => [s.contentId, s])),
+      })))
+      .catch(() => {});
+  }, [videos]);
 
   const [showFilterPanel, setShowFilterPanel]     = useState(false);
   const [selectedTipo, setSelectedTipo]           = useState<TipoFilter>("");
@@ -1108,6 +1123,14 @@ export function VideosView({
                     <span className="text-[10px] border border-border rounded px-1 py-0.5 text-muted-foreground font-mono">
                       {video.ratio}
                     </span>
+                    {video.contentId && (syncStatus[video.contentId]?.metadataBackedUp || syncStatus[video.contentId]?.inRemoteLibrary) && (
+                      <span
+                        title={syncStatus[video.contentId]?.inRemoteLibrary ? "Video en la Biblioteca remota (Nube)" : "Metadata respaldada en la nube"}
+                        className="text-emerald-400/80"
+                      >
+                        <Cloud className="w-3 h-3" />
+                      </span>
+                    )}
                     {/* Fecha visible sólo en móvil aquí */}
                     <span className="sm:hidden text-muted-foreground text-[10px] font-mono">
                       {video.uploadedAt}

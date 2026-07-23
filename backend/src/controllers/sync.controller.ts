@@ -7,6 +7,7 @@ import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../s
 import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats } from '../services/tiktok.service';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
+import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -381,6 +382,35 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       byFile.set(key, [...(byFile.get(key) ?? []), pv]);
     }
 
+    // Biblioteca remota es otra colección (storage en la nube), sin id en común
+    // con FileModel — el único cruce posible hoy es por fileName. Ya viene
+    // scopeado por userId, así que no hay ambigüedad ENTRE cuentas. Pero DENTRO
+    // de la misma cuenta el nombre no es único (ej. nombres genéricos de cámara
+    // repetidos): si el mismo fileName aparece más de una vez en el catálogo o
+    // en Biblioteca remota, no hay forma de saber cuál es cuál — se deja sin
+    // asignar (null) antes que arriesgar mostrar la miniatura equivocada.
+    const fileNameCounts = new Map<string, number>();
+    for (const f of files) {
+      if (!f.file_name) continue;
+      fileNameCounts.set(f.file_name, (fileNameCounts.get(f.file_name) ?? 0) + 1);
+    }
+    const fileNames = [...fileNameCounts.keys()];
+    const remoteVideos = fileNames.length
+      ? await RemoteLibraryVideoModel.find({ userId, fileName: { $in: fileNames } })
+          .select('fileName thumbnailStoredFileName')
+          .lean()
+      : [];
+    const remoteByFileName = new Map<string, { id: string; thumbnailStoredFileName: string | null }>();
+    const remoteNameAmbiguous = new Set<string>();
+    for (const rv of remoteVideos) {
+      if (remoteByFileName.has(rv.fileName) || remoteNameAmbiguous.has(rv.fileName)) {
+        remoteByFileName.delete(rv.fileName);
+        remoteNameAmbiguous.add(rv.fileName);
+      } else {
+        remoteByFileName.set(rv.fileName, { id: String(rv._id), thumbnailStoredFileName: rv.thumbnailStoredFileName ?? null });
+      }
+    }
+
     const items: any[] = [];
     // Solo se piden en vivo los platformId que ya vencieron su ventana de
     // cache — el resto se sirve directo de lo guardado en Mongo.
@@ -389,7 +419,11 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     for (const f of files) {
       if (items.length >= limit) break;
       const pvs = byFile.get(String(f._id)) ?? [];
-      if (pvs.length < 3) continue; // solo videos con las 3 plataformas YA vinculadas
+      // Antes exigía las 3 ya cross-matcheadas en PlatformVideoModel (linkedFileId) --
+      // eso depende de la herramienta de Sincronizar/cross-match, que no corre sola
+      // y queda desactualizada. files.platforms (el query de arriba) ya es la señal
+      // confiable de "publicado ahí" -- se arma con lo que SÍ esté linkeado, aunque
+      // sea parcial, en vez de descartar el video entero por faltar el link exacto.
 
       const platforms: Record<string, any> = {};
       for (const pv of pvs) {
@@ -401,7 +435,19 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         const stale = Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt);
         if (stale) toRefresh[pv.platform as 'youtube' | 'instagram' | 'tiktok'].push(pv.platformId);
       }
-      items.push({ fileId: String(f._id), fileName: f.file_name, fecha_creacion: f.fecha_creacion, platforms });
+      // Si el nombre se repite entre los propios archivos del usuario, tampoco
+      // se puede saber a cuál de ellos corresponde el match — mismo criterio
+      // conservador que para duplicados del lado de Biblioteca remota.
+      const nameIsUnique = fileNameCounts.get(f.file_name) === 1;
+      const remoteMatch = nameIsUnique ? remoteByFileName.get(f.file_name) : undefined;
+      items.push({
+        fileId: String(f._id),
+        fileName: f.file_name,
+        remoteLibraryVideoId: remoteMatch?.id ?? null,
+        thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
+        fecha_creacion: f.fecha_creacion,
+        platforms,
+      });
     }
 
     // Refresco en vivo — acotado por la ventana de cache de arriba y, en el
@@ -584,54 +630,3 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
   }
 };
 
-// POST /api/sync/record-publish — un cliente que publica DIRECTO a la plataforma
-// (iOS/Android, sin pasar por youtube/instagram/tiktok-upload.controller.ts de
-// acá) no deja ningún rastro en FileModel/PlatformVideoModel, así que
-// getGroupStats (Estadísticas) nunca tiene de dónde sacar el platformId real y
-// el usuario tenía que ir a pegar el link a mano en Videos (escritorio). Esto
-// cierra ese hueco: upsert de ambas colecciones con lo que el cliente YA sabe
-// apenas termina de publicar, sin ningún paso manual.
-// matchStatus 'remote' (ver platform-video.model.ts) distingue este origen del
-// resto (auto_text/auto_duration = matching por sync, manual = el usuario lo
-// vinculó a mano en la vista de revisión).
-export const recordPublish = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const userId = req.user!.id;
-    const { fileName, platform, platformId, platformUrl, title, publishedAt } = req.body as {
-      fileName?: string; platform?: SyncPlatform; platformId?: string; platformUrl?: string;
-      title?: string; publishedAt?: string;
-    };
-    if (!fileName || !platform || !platformId || !platformUrl) {
-      res.status(400).json({ message: 'fileName, platform, platformId y platformUrl son requeridos' });
-      return;
-    }
-
-    const file = await FileModel.findOneAndUpdate(
-      { userId, file_name: fileName },
-      { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
-      { upsert: true, new: true },
-    );
-    if (platform !== 'facebook') {
-      await FileModel.updateOne({ _id: file._id }, { $addToSet: { platforms: platform } });
-    }
-
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId, platform, platformId },
-      {
-        $set: {
-          platformUrl,
-          title: title ?? '',
-          publishedAt: publishedAt ? new Date(publishedAt) : new Date(),
-          linkedFileId: file._id,
-          matchStatus: 'remote',
-          lastSyncedAt: new Date(),
-        },
-      },
-      { upsert: true },
-    );
-
-    res.json({ ok: true });
-  } catch (err: any) {
-    res.status(500).json({ message: err.message });
-  }
-};

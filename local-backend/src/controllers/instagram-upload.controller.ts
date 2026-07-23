@@ -8,6 +8,7 @@ import { configRepo } from '../db/config.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { normalizeForMeta, trimToMaxDuration, appendDebugLog } from '../services/video-normalize.service';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
 
 // Facebook Login for Business: central entrega un Page Access Token (de una
@@ -291,6 +292,10 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       match_status:   'manual',
       title:          fullCaption.slice(0, 300) || undefined,
     });
+    reportUploadEvent(req.headers.authorization, {
+      platform: 'instagram', platformId: publishData.id, platformUrl: postUrl,
+      fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: fullCaption,
+    });
     // Crossposting robusto: el mismo archivo que IG aceptó se publica como Reel
     // en la Página de Facebook. No-fatal: si falla, IG ya está publicado y se
     // devuelve el detalle para que el usuario sepa que Facebook NO salió.
@@ -311,6 +316,10 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
             linked_file_id: Number(fileId),
             match_status:   'manual',
             title:          fullCaption.slice(0, 300) || undefined,
+          });
+          reportUploadEvent(req.headers.authorization, {
+            platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url,
+            fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: fullCaption,
           });
         } catch (err: any) {
           facebookError = err.message;

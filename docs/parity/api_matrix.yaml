@@ -1,0 +1,315 @@
+# Matriz de contrato de API. Fuente de verdad = grep directo del código de cada
+# plataforma (no lo que "debería" ser). "true" = la plataforma llama a este
+# endpoint hoy. "broken" = la plataforma llama a un endpoint que NO EXISTE en el
+# backend (bug real, confirmado). Ver README.md.
+#
+# Nota: esta lista excluye a propósito todo /api/local/* (backup pull/push/wipe/
+# owner/health) -- son exclusivos de local-backend en la PC, ninguna app remota
+# debería llamarlos nunca.
+
+endpoints:
+  # ── Auth ──────────────────────────────────────────────────────────────────
+  - id: auth_login
+    method: POST
+    path: /api/auth/login
+    electron: true
+    android: true
+    ios: true
+
+  - id: auth_link_install
+    method: POST
+    path: /api/auth/link-install
+    electron: true
+    android: true
+    ios: true
+
+  - id: auth_me
+    method: GET
+    path: /api/auth/me
+    electron: true
+    android: true
+    ios: true
+
+  - id: auth_save_theme
+    method: POST
+    path: /api/auth/me/theme
+    electron: false
+    android: false
+    ios: true
+
+  - id: auth_list_users
+    method: GET
+    path: /api/auth/users
+    electron: true
+    android: true
+    ios: false
+
+  - id: auth_update_tier
+    method: PATCH
+    path: /api/auth/users/:id/tier
+    electron: true
+    android: true
+    ios: false
+
+  - id: auth_update_cloud_storage
+    method: PATCH
+    path: /api/auth/users/:id/cloud-storage
+    electron: true
+    android: true
+    ios: false
+
+  - id: auth_deactivate_user
+    method: PATCH
+    path: /api/auth/users/:id/deactivate
+    electron: true
+    android: true
+    ios: false
+
+  # ── Backup / catálogo espejo ─────────────────────────────────────────────
+  - id: backup_files_get
+    method: GET
+    path: /api/backup/files
+    electron: true
+    android: true
+    ios: true
+
+  # ── Sync: calendario, historial, estadísticas, cross-match ──────────────
+  - id: sync_calendar_config_get
+    method: GET
+    path: /api/sync/calendar-config
+    electron: true
+    android: true
+    ios: true
+
+  - id: sync_calendar_config_patch
+    method: PATCH
+    path: /api/sync/calendar-config/:platform
+    electron: true
+    android: true
+    ios: false
+    note: iOS nunca llama esto -- calendario de solo lectura ahí.
+
+  - id: sync_group_stats
+    method: GET
+    path: /api/sync/group-stats
+    electron: true
+    android: true
+    ios: true
+
+  - id: sync_stats
+    method: GET
+    path: /api/sync/stats
+    electron: true
+    android: false
+    ios: true
+    note: Contador simple de matcheos por plataforma (para el panel de Sincronizar).
+
+  - id: sync_history_get
+    method: GET
+    path: /api/sync/history
+    electron: true
+    android: false
+    ios: false
+    note: Endpoint nuevo (2026-07-23). Ninguna app móvil lo llama todavía.
+
+  - id: sync_history_post
+    method: POST
+    path: /api/sync/history
+    electron: true
+    android: false
+    ios: broken
+    note: >
+      iOS llama a POST /api/sync/record-publish (no existe) en vez de
+      /api/sync/history (el real). Confirmar con el equipo de iOS si el nombre
+      cambió o si nunca se conectó con el backend real.
+
+  - id: sync_review_get
+    method: GET
+    path: /api/sync/review
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_review_link
+    method: POST
+    path: /api/sync/review/:pvId/link
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_review_orphan
+    method: POST
+    path: /api/sync/review/:pvId/orphan
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_youtube_trigger
+    method: POST
+    path: /api/sync/youtube
+    electron: true
+    android: true
+    ios: true
+
+  - id: sync_platform_recent
+    method: GET
+    path: /api/sync/platform-recent/:platform
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_cross_match_candidates
+    method: GET
+    path: /api/sync/cross-match/candidates
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_cross_match_resolve
+    method: POST
+    path: /api/sync/cross-match/resolve
+    electron: true
+    android: true
+    ios: false
+
+  - id: sync_published_videos_get
+    method: GET
+    path: /api/sync/published-videos
+    electron: true
+    android: false
+    ios: false
+    note: Tarjetas "último publicado" -- hoy solo Electron/web.
+
+  # ── Tokens y conexión por plataforma ─────────────────────────────────────
+  - id: platform_token_youtube
+    method: GET
+    path: /api/youtube/token
+    electron: true
+    android: true
+    ios: true
+
+  - id: platform_token_instagram
+    method: GET
+    path: /api/instagram/token
+    electron: true
+    android: true
+    ios: true
+
+  - id: platform_token_tiktok
+    method: GET
+    path: /api/tiktok/token
+    electron: true
+    android: true
+    ios: true
+
+  - id: platform_auth_url
+    method: GET
+    path: /api/{platform}/auth/url
+    electron: true
+    android: true
+    ios: true
+
+  - id: platform_auth_status
+    method: GET
+    path: /api/{platform}/auth/status
+    electron: true
+    android: false
+    ios: true
+    note: >
+      No verificado a fondo si Android chequea status por otra vía (ej. lo
+      infiere del resultado de auth/url) -- marcar 🔄 pendiente de confirmar.
+
+  - id: platform_auth_disconnect
+    method: DELETE
+    path: /api/{platform}/auth
+    electron: true
+    android: false
+    ios: true
+    note: 🔄 pendiente de confirmar si Android tiene desconectar cuenta.
+
+  - id: youtube_set_thumbnail
+    method: POST
+    path: /api/youtube/thumbnail/:videoId
+    electron: true
+    android: true
+    ios: false
+
+  - id: tiktok_creator_info
+    method: GET
+    path: /api/tiktok/creator-info
+    electron: true
+    android: false
+    ios: true
+
+  # ── Nube / Biblioteca remota ──────────────────────────────────────────────
+  - id: remote_library_list
+    method: GET
+    path: /api/remote-library/videos
+    electron: true
+    android: true
+    ios: true
+
+  - id: remote_library_get
+    method: GET
+    path: /api/remote-library/videos/:id
+    electron: true
+    android: false
+    ios: broken
+    note: iOS llama esto pero la ruta no existe en el backend -- 404 seguro.
+
+  - id: remote_library_stream
+    method: GET
+    path: /api/remote-library/videos/:id/stream
+    electron: true
+    android: true
+    ios: true
+
+  - id: remote_library_thumbnail
+    method: GET
+    path: /api/remote-library/videos/:id/thumbnail
+    electron: true
+    android: false
+    ios: true
+
+  - id: remote_library_update_platforms
+    method: PATCH
+    path: /api/remote-library/videos/:id
+    electron: true
+    android: true
+    ios: true
+
+  - id: remote_library_delete
+    method: DELETE
+    path: /api/remote-library/videos/:id
+    electron: true
+    android: true
+    ios: true
+
+  - id: remote_library_tus
+    method: POST/PATCH
+    path: /api/remote-library/tus
+    electron: true
+    android: false
+    ios: true
+    note: >
+      Este es el mecanismo REAL de subida (resumable). Android no lo implementa
+      -- en su lugar llama a un endpoint multipart que no existe (ver
+      remote_library_upload_broken).
+
+  - id: remote_library_upload_broken
+    method: POST
+    path: /api/remote-library/videos
+    electron: false
+    android: broken
+    ios: false
+    note: >
+      Android llama a esto (@Multipart) para subir un video a Nube. Esta ruta NO
+      EXISTE -- el backend solo acepta subida por TUS. Bug real: subir a Nube
+      desde Android está roto.
+
+  - id: remote_library_upload_thumbnail
+    method: POST
+    path: /api/remote-library/videos/:id/thumbnail
+    electron: true
+    android: false
+    ios: true

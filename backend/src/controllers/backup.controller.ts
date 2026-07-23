@@ -8,6 +8,8 @@ import { IdeaCentral } from '../models/ideacentral';
 import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { UploadHistoryModel } from '../models/upload-history.model';
+import { PlatformVideoModel } from '../models/platform-video.model';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -455,6 +457,139 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
     res.json({ ok: true, updated: incoming.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+}
+
+// POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —
+// registra UN evento de subida confirmada, en el momento exacto en que pasa
+// (llamado desde cada upload controller local, y desde UploadCoordinator en iOS,
+// justo después de publicar). A diferencia del push de backup (que manda el
+// catálogo completo y puede tardar/fallar/quedar flaco tras un wipe), esto es un
+// insert puntual e inmediato -- por eso sobrevive cualquier wipe local sin
+// depender de él.
+//
+// Además de loguear el evento (UploadHistoryModel), actualiza FileModel.platforms
+// y hace upsert de PlatformVideoModel -- son las 2 colecciones de las que depende
+// Estadísticas/Sincronizar (ver getGroupStats, getCrossMatchCandidates), y sin
+// esto quedaban desactualizadas para todo lo publicado fuera del flujo viejo de
+// youtube/instagram/tiktok-upload.controller.ts (ej. subidas desde el celular).
+// deviceId es opcional: iOS todavía no lo manda en record-publish.
+export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const { deviceId, platform, platformId, platformUrl, fileName, contentId, title, publishedAt } = req.body ?? {};
+    if (!platform || !platformId) {
+      res.status(400).json({ message: 'platform y platformId son requeridos.' });
+      return;
+    }
+    const publishedAtDate = publishedAt ? new Date(publishedAt) : new Date();
+
+    await UploadHistoryModel.updateOne(
+      { userId, platform, platformId },
+      {
+        $set: {
+          userId, platform, platformId,
+          deviceId:    deviceId    ?? 'desconocido',
+          platformUrl: platformUrl ?? null,
+          fileName:    fileName    ?? null,
+          contentId:   contentId   ?? null,
+          title:       title       ?? null,
+          publishedAt: publishedAtDate,
+        },
+      },
+      { upsert: true },
+    );
+
+    let linkedFileId: any = null;
+    if (fileName) {
+      let file = contentId
+        ? await FileModel.findOne({ userId, content_id: contentId })
+        : await FileModel.findOne({ userId, file_name: fileName });
+      // Si no hay ningún archivo local con ese nombre (ej. video publicado
+      // directo desde el celular, sin pasar antes por el catálogo), se crea un
+      // registro mínimo -- si no, Estadísticas (getGroupStats) no tiene de
+      // dónde sacarlo y queda sin ver el video hasta que alguien lo vincule a
+      // mano en Videos (escritorio).
+      if (!file) {
+        file = await FileModel.findOneAndUpdate(
+          { userId, file_name: fileName },
+          { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+          { upsert: true, new: true },
+        );
+      }
+      linkedFileId = file._id;
+      if (!file.platforms.includes(platform)) {
+        await FileModel.updateOne(
+          { _id: file._id },
+          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
+        );
+      }
+    }
+
+    await PlatformVideoModel.updateOne(
+      { userId, platform, platformId },
+      {
+        $set: {
+          userId, platform, platformId,
+          platformUrl:  platformUrl ?? '',
+          title:        title ?? '',
+          publishedAt:  publishedAtDate,
+          linkedFileId,
+          matchStatus:  'manual',
+          lastSyncedAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
+// GET /api/sync/history?limit=&offset=&platform= — universal (mismo endpoint que
+// local-backend/src/controllers/sync.controller.ts::getUploadHistory), para que
+// Historial se vea igual desde Android/web remoto que desde el escritorio: ahí no
+// hay SQLite local, así que se sirve de UploadHistoryModel (el log de eventos que
+// escribe recordUploadEvent) en vez de la tabla platform_videos.
+export async function getUploadHistory(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const limit  = Math.min(parseInt(req.query.limit as string) || 30, 100);
+    const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+    const platform = ['youtube', 'tiktok', 'instagram', 'facebook'].includes(req.query.platform as string)
+      ? (req.query.platform as string)
+      : undefined;
+
+    const query: Record<string, unknown> = { userId };
+    if (platform) query.platform = platform;
+
+    const [total, docs] = await Promise.all([
+      UploadHistoryModel.countDocuments(query),
+      UploadHistoryModel.find(query)
+        .sort({ publishedAt: -1, createdAt: -1 })
+        .skip(offset)
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const items = docs.map((h: any) => ({
+      id:           String(h._id),
+      platform:     h.platform,
+      platformId:   h.platformId,
+      platformUrl:  h.platformUrl ?? null,
+      publishedAt:  h.publishedAt ?? h.createdAt,
+      title:        h.title ?? null,
+      fileName:     h.fileName ?? null,
+      deviceId:     h.deviceId ?? null,
+      linkedFileId: null, // concepto local (id de SQLite) -- no aplica en modo remoto
+      matchStatus:  'manual',
+    }));
+
+    res.json({ items, total });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
   }
 }
 

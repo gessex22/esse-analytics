@@ -1,0 +1,128 @@
+# Catálogo maestro de funcionalidades. Ver README.md para el proceso.
+# implemented: true | false | partial
+# Cada feature referencia sus endpoints por id en api_matrix.yaml (campo `endpoints`).
+
+features:
+  - id: auth_login
+    name: Login / sesión
+    electron: { implemented: true }
+    android:  { implemented: true }
+    ios:      { implemented: true }
+    endpoints: [auth_login, auth_link_install, auth_me]
+    notes: Paridad completa en los 3.
+
+  - id: stats
+    name: Estadísticas (últimos videos con las 3 plataformas)
+    electron: { implemented: true }
+    android:  { implemented: true }
+    ios:      { implemented: true }
+    endpoints: [sync_group_stats]
+    notes: >
+      Paridad completa a nivel de endpoint. Electron desde hoy tiene además una
+      fuente local (SQLite) para instalaciones sin backup a la nube -- Android/iOS
+      no tienen equivalente porque no manejan un catálogo local propio de la PC.
+
+  - id: remote_library
+    name: Nube (Biblioteca remota)
+    electron: { implemented: true }
+    android:  { implemented: partial }
+    ios:      { implemented: true }
+    endpoints: [remote_library_list, remote_library_get, remote_library_stream,
+                remote_library_thumbnail, remote_library_update_platforms,
+                remote_library_delete, remote_library_tus, remote_library_upload_thumbnail]
+    notes: >
+      Android: subir un video está ROTO -- llama a POST /api/remote-library/videos
+      (multipart) que no existe; el backend solo implementa TUS. iOS: GET de un
+      video puntual por id está ROTO -- esa ruta tampoco existe (solo hay list,
+      /stream, /thumbnail, PATCH, DELETE).
+
+  - id: publish_video
+    name: Publicar video (YouTube / Instagram / TikTok)
+    electron: { implemented: true }
+    android:  { implemented: true }
+    ios:      { implemented: true }
+    endpoints: [platform_token_youtube, platform_token_instagram, platform_token_tiktok,
+                platform_auth_url, platform_auth_status, platform_auth_disconnect,
+                youtube_set_thumbnail, tiktok_creator_info]
+    notes: >
+      Los 3 suben directo a la API de cada plataforma usando un token pedido a la
+      central (mismo patrón en los 3). Instagram: Electron y iOS hacen crosspost a
+      Facebook Page; falta confirmar si Android lo tiene (no verificado todavía).
+      YouTube: Electron e iOS exponen opciones avanzadas (privacidad, tags,
+      categoría, publishAt, made-for-kids); no verificado en detalle para Android.
+
+  - id: calendar
+    name: Calendario (próximo/último publicado por plataforma)
+    electron: { implemented: true }
+    android:  { implemented: true }
+    ios:      { implemented: partial }
+    endpoints: [sync_calendar_config_get, sync_calendar_config_patch]
+    notes: >
+      iOS solo tiene el GET (ver calendario) -- no llama nunca al PATCH, así que
+      no se puede fijar "próximo video" ni cambiar el intervalo desde iOS.
+
+  - id: upload_history
+    name: Historial (log de publicaciones confirmadas, con dispositivo de origen)
+    electron: { implemented: true }
+    android:  { implemented: false }
+    ios:      { implemented: false }
+    endpoints: [sync_history_get, sync_history_post]
+    notes: >
+      Feature nueva (2026-07-23): antes NINGUNA plataforma la tenía bien. Electron
+      ya reporta cada subida en tiempo real (POST) y la lee (GET). iOS tiene un
+      intento roto -- llama a POST /api/sync/record-publish, que nunca existió (el
+      endpoint real es /api/sync/history). Android no tiene ningún llamado, ni de
+      lectura ni de reporte.
+
+  - id: workshop_transcrip
+    name: Taller (esse-Transcrip / transcripción y componentes locales)
+    electron: { implemented: true }
+    android:  { implemented: false }
+    ios:      { implemented: false }
+    endpoints: []
+    notes: >
+      Local-only por diseño: depende de cómputo en la PC (Whisper local). No es
+      un gap real a menos que se decida ofrecer una versión "en la nube".
+
+  - id: gems_panel
+    name: Gemas (panel de plugins: backup online, acceso remoto, etc.)
+    electron: { implemented: true }
+    android:  { implemented: partial }
+    ios:      { implemented: false }
+    endpoints: []
+    notes: >
+      Android tiene el módulo feature/gems pero el hotspot "PlaceholderScreen" (6
+      usos en todo el repo) sugiere que varias pantallas, esta incluida, son
+      placeholders sin funcionalidad real -- no verificado a fondo, marcar como
+      🔄 pendiente de confirmar. iOS no tiene ni la carpeta.
+
+  - id: users_admin
+    name: Usuarios (gestión de usuarios, solo dueño/admin)
+    electron: { implemented: true }
+    android:  { implemented: true }
+    ios:      { implemented: false }
+    endpoints: [auth_list_users, auth_update_tier, auth_update_cloud_storage, auth_deactivate_user]
+    notes: iOS no tiene ni la carpeta de esta feature.
+
+  - id: local_catalog
+    name: Videos (catálogo local completo -- rename, borrar, programar, transcript)
+    electron: { implemented: true }
+    android:  { implemented: false, applicable: false }
+    ios:      { implemented: false, applicable: false }
+    endpoints: []
+    notes: >
+      No es un gap: Electron gestiona la SQLite física de la PC. Android/iOS
+      tienen su PROPIO catálogo local independiente (feature/library, Core/Database)
+      para videos importados al teléfono -- diseño distinto a propósito, no
+      "control remoto" del catálogo de la PC (para eso existe Acceso Remoto).
+
+  - id: settings_theme
+    name: Ajustes -- tema / modo de trabajo
+    electron: { implemented: true }
+    android:  { implemented: partial }
+    ios:      { implemented: true }
+    endpoints: [auth_save_theme]
+    notes: >
+      iOS sincroniza el tema al servidor (POST /api/auth/me/theme). Android
+      guarda tema/modo localmente (DataStore) pero no lo vi llamar a ningún
+      endpoint para sincronizarlo -- no verificado si es intencional.

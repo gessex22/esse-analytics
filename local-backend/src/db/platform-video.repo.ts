@@ -2,6 +2,13 @@ import { db } from './database';
 
 export type MatchStatus = 'auto' | 'manual' | 'remote' | 'sin_match';
 
+export interface GroupStatsCandidate {
+  fileId: number;
+  fileName: string;
+  fechaCreacion: string | null;
+  platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }>;
+}
+
 export interface DbPlatformVideo {
   id: number;
   platform: string;
@@ -169,5 +176,42 @@ export const platformVideoRepo = {
     const row = db.prepare(`SELECT COUNT(*) AS c FROM platform_videos ${where}`)
       .get(...(platform ? [platform] : [])) as { c: number };
     return row.c;
+  },
+
+  // Para Estadísticas: archivos con las 3 plataformas marcadas en files.platforms
+  // (la señal confiable — sobrevive wipes/pulls), más recientes primero. platform_videos
+  // solo se usa para enriquecer con el platform_id real de cada una (lo que hace falta
+  // para pedirle stats en vivo a la central) — se completa lo que haya, aunque falte
+  // el link de alguna: exigir las 3 YA linkeadas acá dejaba afuera todo lo publicado
+  // desde esta misma app sin pasar por el cross-match central (que no corre solo).
+  findGroupStatsCandidates(limit: number): GroupStatsCandidate[] {
+    const fileRows = db.prepare(`
+      SELECT id, file_name, fecha_creacion, platforms
+      FROM files
+      ORDER BY fecha_creacion DESC
+    `).all() as { id: number; file_name: string; fecha_creacion: string | null; platforms: string }[];
+
+    const pvRows = db.prepare(`
+      SELECT platform, platform_id, platform_url, title, linked_file_id
+      FROM platform_videos
+      WHERE linked_file_id IS NOT NULL AND platform IN ('youtube', 'instagram', 'tiktok')
+    `).all() as { platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number }[];
+    const pvByFile = new Map<number, typeof pvRows>();
+    for (const pv of pvRows) pvByFile.set(pv.linked_file_id, [...(pvByFile.get(pv.linked_file_id) ?? []), pv]);
+
+    const result: GroupStatsCandidate[] = [];
+    for (const f of fileRows) {
+      if (result.length >= limit) break;
+      let badges: string[];
+      try { badges = JSON.parse(f.platforms || '[]'); } catch { badges = []; }
+      if (!['youtube', 'instagram', 'tiktok'].every(p => badges.includes(p))) continue;
+
+      const platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }> = {};
+      for (const pv of pvByFile.get(f.id) ?? []) {
+        platforms[pv.platform] = { platformId: pv.platform_id, platformUrl: pv.platform_url, title: pv.title };
+      }
+      result.push({ fileId: f.id, fileName: f.file_name, fechaCreacion: f.fecha_creacion, platforms });
+    }
+    return result;
   },
 };

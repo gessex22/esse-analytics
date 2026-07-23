@@ -1,4 +1,5 @@
 import { db } from './database';
+import { randomUUID } from 'crypto';
 
 export type FileStatus = 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
 export type FileContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
@@ -6,6 +7,7 @@ export type Platform = 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 
 export interface DbFile {
   id: number;
+  content_id: string;
   file_name: string;
   file_path: string;
   status: FileStatus;
@@ -24,6 +26,7 @@ export interface DbFile {
 
 interface RawRow {
   id: number;
+  content_id: string | null;
   file_name: string;
   file_path: string;
   status: string;
@@ -67,6 +70,11 @@ export const fileRepo = {
 
   findByName(fileName: string): DbFile | undefined {
     const row = db.prepare('SELECT * FROM files WHERE file_name = ? LIMIT 1').get(fileName) as RawRow | undefined;
+    return row ? parse(row) : undefined;
+  },
+
+  findByContentId(contentId: string): DbFile | undefined {
+    const row = db.prepare('SELECT * FROM files WHERE content_id = ? LIMIT 1').get(contentId) as RawRow | undefined;
     return row ? parse(row) : undefined;
   },
 
@@ -151,14 +159,19 @@ export const fileRepo = {
     }));
   },
 
-  /** Igual que findSlim pero solo los que todavía no tienen transcripción — evita que
-   * el plugin de transcripción tenga que preguntar archivo por archivo (era N+1). */
+  /** Igual que findSlim pero solo los que todavía no están clasificados — evita que
+   * el plugin de transcripción tenga que preguntar archivo por archivo (era N+1).
+   * Se filtra por tipo_contenido (no por "tiene fila en transcripts"): un video
+   * puede tener una transcripción restaurada desde el backup en la nube (pull de
+   * transcripts o de ideas centrales, que nunca cargan tipo_contenido) sin haber
+   * sido clasificado nunca — si filtráramos por la fila de transcripts, ese video
+   * quedaba marcado "ya transcrito" y jamás se re-encolaba para clasificarlo,
+   * mostrando "Contenido" para siempre en vez de Guión/Random/Sin Voz. */
   findSlimPendingTranscript(limit: number): { id: number; file_name: string; file_path: string; duracion_segundos: number | null }[] {
     return db.prepare(
       `SELECT f.id, f.file_name, f.file_path, f.duracion_segundos
        FROM files f
-       LEFT JOIN transcripts t ON t.file_id = f.id
-       WHERE f.status != 'ELIMINADO_DISCO' AND t.file_id IS NULL
+       WHERE f.status != 'ELIMINADO_DISCO' AND f.tipo_contenido IS NULL
        ORDER BY COALESCE(f.fecha_creacion, f.created_at) DESC LIMIT ?`
     ).all(limit) as any[];
   },
@@ -177,9 +190,10 @@ export const fileRepo = {
   }): DbFile {
     const info = db.prepare(`
       INSERT INTO files
-        (file_name, file_path, status, content_status, platforms, platforms_discarded, duracion_segundos, resolucion, formato, fecha_creacion)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (content_id, file_name, file_path, status, content_status, platforms, platforms_discarded, duracion_segundos, resolucion, formato, fecha_creacion)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
+      randomUUID(),
       data.file_name,
       data.file_path,
       data.status ?? 'PENDIENTE',
@@ -285,6 +299,24 @@ export const fileRepo = {
       ORDER BY COALESCE(fecha_creacion, created_at) DESC, id DESC
       LIMIT 1
     `).get(platform, platform) as RawRow | undefined;
+    return row ? parse(row) : undefined;
+  },
+
+  // Contraparte de findNextUnpublished: el archivo más reciente que SÍ tiene el
+  // badge de esta plataforma. Se usa como respaldo del "último publicado" del
+  // calendario -- platform_videos (el que trae el platformId/url exactos) es un
+  // espejo que se vacía en cada wipe de logout y solo se repuebla parcial vía
+  // backup_platform_videos (mucho más flaco que files.platforms, que sí sobrevive
+  // completo el ciclo push/pull). Sin esto, el calendario perdía la referencia al
+  // video físico real apenas ese espejo quedaba desactualizado.
+  findLatestPublished(platform: Platform): DbFile | undefined {
+    const row = db.prepare(`
+      SELECT * FROM files
+      WHERE status != 'ELIMINADO_DISCO'
+        AND EXISTS (SELECT 1 FROM json_each(platforms) WHERE value = ?)
+      ORDER BY COALESCE(fecha_creacion, created_at) DESC, id DESC
+      LIMIT 1
+    `).get(platform) as RawRow | undefined;
     return row ? parse(row) : undefined;
   },
 

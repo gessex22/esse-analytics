@@ -42,6 +42,7 @@ export const getVideos = (req: Request, res: Response) => {
       _id: String(f.id),
       file_id: {
         _id: String(f.id),
+        content_id: f.content_id,
         file_name: f.file_name,
         file_path: f.file_path,
         status: f.status,
