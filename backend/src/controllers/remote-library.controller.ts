@@ -272,21 +272,6 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
   }
 };
 
-// ── GET /api/remote-library/videos/:id ────────────────────────────────────────
-// Un solo video -- lo usa PublishFormView en iOS para refrescar platforms/
-// platformsDiscarded de un archivo ya descargado antes de publicar (RemoteLibraryAPI.get
-// en el cliente). Faltaba del todo en el backend -- la app lo llamaba desde hacía
-// rato contra una ruta que nunca existió.
-export const getRemoteLibraryVideo = async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const doc = await RemoteLibraryVideoModel.findOne({ _id: req.params.id, userId: req.user!.id });
-    if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
-    res.json({ ok: true, video: doc });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-};
-
 // ── PATCH /api/remote-library/videos/:id ──────────────────────────────────────
 // La central lleva el estado de "qué ya se publicó" de esta cola porque
 // Android/iOS publican DIRECTO a YouTube/Meta/TikTok (nunca pasa por acá) --
