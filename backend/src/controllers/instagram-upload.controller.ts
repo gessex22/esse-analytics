@@ -5,6 +5,7 @@ import http from 'http';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
+import { mirrorPlatformVideoToBackup } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 
@@ -420,6 +421,9 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
       { userId: req.user!.id, platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
       { upsert: true },
     );
+    await mirrorPlatformVideoToBackup(req.user!.id, {
+      platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, fileName: fileDoc.file_name,
+    });
 
     // Crossposting robusto: el mismo archivo se publica como Reel en la Página
     // de Facebook. No-fatal: si falla, la subida a IG ya está hecha y se
@@ -438,6 +442,9 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
             { userId: req.user!.id, platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
             { upsert: true },
           );
+          await mirrorPlatformVideoToBackup(req.user!.id, {
+            platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, fileName: fileDoc.file_name,
+          });
         } catch (err: any) {
           facebookError = err.message;
           console.error('[Facebook] Cross-post falló:', err.message);

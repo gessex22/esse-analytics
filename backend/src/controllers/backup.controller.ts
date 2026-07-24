@@ -460,6 +460,42 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
   }
 }
 
+// Espeja un evento de publicación en BackupPlatformVideoModel -- la colección que
+// lee el pull del PC (pullPlatformVideosFromCloud en local-backend), distinta de
+// PlatformVideoModel (usada por Sincronizar/cross-match). Sin este upsert, publicar
+// desde cualquier lado que no sea el PC (celular, "modo remoto") actualizaba el
+// badge en FileModel.platforms (eso sí llega al PC vía pullFromCloud), pero el link
+// real nunca aparecía ahí: el PC solo consulta backup_platform_videos. Usado por
+// recordUploadEvent y por los uploadToX de youtube/instagram/tiktok-upload.controller.
+export async function mirrorPlatformVideoToBackup(userId: string, data: {
+  platform: string;
+  platformId: string | null | undefined;
+  platformUrl?: string | null;
+  publishedAt?: Date;
+  fileName?: string | null;
+  contentId?: string | null;
+  matchStatus?: string;
+  title?: string | null;
+}): Promise<void> {
+  if (!data.platformId) return;
+  await BackupPlatformVideoModel.updateOne(
+    { userId, platform: data.platform, platform_id: data.platformId },
+    {
+      $set: {
+        userId, platform: data.platform, platform_id: data.platformId,
+        platform_url:     data.platformUrl ?? null,
+        published_at:     data.publishedAt ?? new Date(),
+        file_name:        data.fileName  ?? null,
+        content_id:       data.contentId ?? null,
+        match_status:     data.matchStatus ?? 'manual',
+        title:            data.title ?? null,
+        local_updated_at: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+}
+
 // POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —
 // registra UN evento de subida confirmada, en el momento exacto en que pasa
 // (llamado desde cada upload controller local, y desde UploadCoordinator en iOS,
@@ -541,6 +577,11 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
       },
       { upsert: true },
     );
+
+    await mirrorPlatformVideoToBackup(userId, {
+      platform, platformId, platformUrl, fileName, contentId, title,
+      publishedAt: publishedAtDate, matchStatus: 'manual',
+    });
 
     res.json({ ok: true });
   } catch (err: any) {
