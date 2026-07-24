@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  UploadCloud, Film, Trash2, Camera, X, Loader2, AlertCircle, Play,
+  UploadCloud, Film, Trash2, Camera, X, Loader2, AlertCircle, Play, Link2, Check,
 } from "lucide-react";
-import { remoteLibraryService, RemoteLibraryVideo, RemotePlatform } from "../services/api";
+import { remoteLibraryService, RemoteLibraryVideo, RemoteLibraryPlatformLink, RemotePlatform } from "../services/api";
 
 const PLATFORMS: { key: RemotePlatform; label: string; color: string }[] = [
   { key: "youtube",   label: "YouTube",   color: "text-red-500" },
@@ -24,6 +24,129 @@ const STATE_STYLES: Record<PlatformState, string> = {
   descartado: "bg-secondary text-muted-foreground border-border line-through",
   pendiente:  "bg-secondary/60 text-muted-foreground border-border",
 };
+
+// Mismos patrones que extractPlatformId en local-backend/src/controllers/
+// video.controller.ts (Editar links de plataforma, Videos local) -- si no
+// matchea ningún patrón conocido (ej. link acortado vm.tiktok.com), se usa
+// la URL completa como platformId: sigue siendo único, solo que Estadísticas
+// no podrá pedirle stats a la API real con eso.
+function extractPlatformId(platform: RemotePlatform, url: string): string {
+  const patterns: Record<RemotePlatform, RegExp> = {
+    youtube:   /(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{6,})/,
+    instagram: /instagram\.com\/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/,
+    tiktok:    /tiktok\.com\/@[^/]+\/video\/(\d+)/,
+  };
+  const match = url.match(patterns[platform]);
+  return match ? match[1] : url;
+}
+
+// ── Editar links de plataforma de un video de Nube -- mirror de EditLinksModal
+// en VideosView.tsx (Videos local), pero contra remoteLibraryService.updatePlatforms
+// en vez de videoService.setPlatformLink. platformLinks arranca precargado del
+// propio video (ya viene en la respuesta de list()), no hace falta un GET aparte.
+function EditRemoteLinksModal({ video, onClose, onSaved }: {
+  video: RemoteLibraryVideo;
+  onClose: () => void;
+  onSaved: (video: RemoteLibraryVideo) => void;
+}) {
+  const initialLinks = (platform: RemotePlatform) =>
+    video.platformLinks?.find(l => l.platform === platform)?.platformUrl ?? "";
+  const [links, setLinks] = useState<Record<RemotePlatform, string>>({
+    youtube: initialLinks("youtube"),
+    instagram: initialLinks("instagram"),
+    tiktok: initialLinks("tiktok"),
+  });
+  const [savingPlatform, setSavingPlatform] = useState<RemotePlatform | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<RemotePlatform, string>>>({});
+  const [saved, setSaved] = useState<Partial<Record<RemotePlatform, boolean>>>({});
+
+  const handleSave = async (p: RemotePlatform) => {
+    const trimmed = links[p].trim();
+    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
+      setErrors(e => ({ ...e, [p]: "El link debe empezar con http:// o https://" }));
+      return;
+    }
+    setSavingPlatform(p);
+    setErrors(e => ({ ...e, [p]: undefined }));
+    try {
+      const existing = video.platformLinks?.find(l => l.platform === p);
+      const platforms = trimmed
+        ? Array.from(new Set([...video.platforms, p]))
+        : video.platforms.filter(x => x !== p);
+      const platformsDiscarded = video.platformsDiscarded.filter(x => x !== p);
+      const link: RemoteLibraryPlatformLink = {
+        platform: p,
+        platformId: trimmed ? extractPlatformId(p, trimmed) : (existing?.platformId ?? ""),
+        platformUrl: trimmed || undefined,
+        publishedAt: existing?.publishedAt ?? new Date().toISOString(),
+      };
+      const updated = await remoteLibraryService.updatePlatforms(video._id, {
+        platforms, platformsDiscarded, platformLinks: [link],
+      });
+      onSaved(updated);
+      setSaved(s => ({ ...s, [p]: true }));
+      setTimeout(() => setSaved(s => ({ ...s, [p]: false })), 2000);
+    } catch (err: any) {
+      setErrors(e => ({ ...e, [p]: err.message || "Error al guardar" }));
+    } finally {
+      setSavingPlatform(null);
+    }
+  };
+
+  return (
+    <motion.div
+      key="remote-links-dialog"
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ duration: 0.15 }}
+        className="bg-card border border-border rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-foreground font-semibold text-sm">Editar links de plataforma</h3>
+            <p className="text-muted-foreground text-xs mt-1 truncate" title={video.fileName}>{video.fileName}</p>
+          </div>
+          <button onClick={onClose} className="p-1 text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {PLATFORMS.map(({ key: p, label }) => (
+            <div key={p} className="space-y-1">
+              <span className="text-xs font-medium text-foreground">{label}</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={links[p]}
+                  onChange={(e) => setLinks(prev => ({ ...prev, [p]: e.target.value }))}
+                  placeholder="https://..."
+                  disabled={savingPlatform === p}
+                  className="flex-1 bg-secondary border border-border rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:border-primary disabled:opacity-50"
+                />
+                <button
+                  onClick={() => handleSave(p)}
+                  disabled={savingPlatform !== null}
+                  className="flex items-center gap-1 text-xs bg-primary/10 hover:bg-primary/20 text-primary px-2.5 py-1.5 rounded-lg transition-colors disabled:opacity-50 flex-shrink-0"
+                >
+                  {savingPlatform === p
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : saved[p] ? <Check className="w-3 h-3" /> : "Guardar"
+                  }
+                </button>
+              </div>
+              {errors[p] && <p className="text-[11px] text-red-400">{errors[p]}</p>}
+            </div>
+          ))}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -47,6 +170,7 @@ export function RemoteLibraryView() {
   const [error, setError]     = useState<string | null>(null);
   const [uploads, setUploads] = useState<UploadTask[]>([]);
   const [preview, setPreview] = useState<RemoteLibraryVideo | null>(null);
+  const [linksTarget, setLinksTarget] = useState<RemoteLibraryVideo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -255,6 +379,13 @@ export function RemoteLibraryView() {
                     <Camera className="w-3.5 h-3.5" />
                   </button>
                   <button
+                    onClick={() => setLinksTarget(v)}
+                    title="Editar links de plataforma"
+                    className="text-muted-foreground hover:text-primary transition-colors p-1"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
                     onClick={() => deleteVideo(v._id)}
                     disabled={deletingId === v._id}
                     title="Borrar"
@@ -303,6 +434,20 @@ export function RemoteLibraryView() {
               <video src={remoteLibraryService.streamUrl(preview._id)} controls autoPlay className="w-full max-h-[70vh] bg-black" />
             </motion.div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Editar links de plataforma */}
+      <AnimatePresence>
+        {linksTarget && (
+          <EditRemoteLinksModal
+            video={linksTarget}
+            onClose={() => setLinksTarget(null)}
+            onSaved={(updated) => {
+              setVideos(prev => prev?.map(v => v._id === updated._id ? updated : v) ?? null);
+              setLinksTarget(updated);
+            }}
+          />
         )}
       </AnimatePresence>
     </div>

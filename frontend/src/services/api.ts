@@ -989,7 +989,7 @@ export const remoteLibraryService = {
   remove: (id: string): Promise<void> =>
     requestJson(`/api/remote-library/videos/${id}`, { method: "DELETE" }).then(() => undefined),
 
-  updatePlatforms: (id: string, patch: { platforms?: RemotePlatform[]; platformsDiscarded?: RemotePlatform[] }): Promise<RemoteLibraryVideo> =>
+  updatePlatforms: (id: string, patch: { platforms?: RemotePlatform[]; platformsDiscarded?: RemotePlatform[]; platformLinks?: RemoteLibraryPlatformLink[] }): Promise<RemoteLibraryVideo> =>
     requestJson<{ video: RemoteLibraryVideo }>(`/api/remote-library/videos/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
