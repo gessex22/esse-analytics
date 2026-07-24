@@ -332,7 +332,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     // Flujo simple: la subida es un evento único — las demás plataformas que
     // sigan pendientes para este video se resuelven como descartadas.
     if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'instagram');
-    const nextIg = fileRepo.findNewerAdjacent(fileDoc);
+    const nextIg = fileRepo.findNewerAdjacent(fileDoc, 'instagram');
     configRepo.markPublished('instagram', fileDoc.file_name, fileId, nextIg ? String(nextIg.id) : null);
     syncNextVideoToCentral(req.headers.authorization, 'instagram', {
       lastPublishedDate:  new Date().toISOString().slice(0, 10),

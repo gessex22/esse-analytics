@@ -507,67 +507,95 @@ export const getStatsByIds = async (req: AuthRequest, res: Response): Promise<vo
   }
 };
 
+const DEFAULT_INTERVAL_DAYS: Record<string, number> = { youtube: 4, instagram: 3, tiktok: 3 };
+
+// Calcula "último publicado" a partir de PlatformVideoModel real (lo que suben
+// syncYouTubeChannel, una subida real, o recordUploadEvent) -- independiente
+// de que exista o no un override guardado en platform_config.
+async function computeLastPublishedDynamic(
+  userId: string,
+  platform: string,
+): Promise<{ lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number } | null> {
+  // Sin exigir linkedFileId -- el auto-sync de YouTube (syncYouTubeChannel)
+  // trae los videos reales del canal ANTES de que alguien los cruce a mano
+  // con su archivo local, así que los más recientes suelen llegar sin
+  // linkedFileId todavía. Antes este filtro los excluía del todo, dejando
+  // "último publicado" pegado en el último que SÍ estaba cruzado (días
+  // atrás) en vez de en la publicación real más reciente.
+  const videos = await PlatformVideoModel.find({ userId, platform: platform as SyncPlatform })
+    .sort({ publishedAt: -1 })
+    .limit(7)
+    .lean();
+  if (videos.length === 0) return null;
+
+  const diffs: number[] = [];
+  for (let i = 0; i < Math.min(6, videos.length - 1); i++) {
+    const diff = Math.round(
+      (new Date(videos[i].publishedAt).getTime() - new Date(videos[i + 1].publishedAt).getTime())
+      / (1000 * 60 * 60 * 24)
+    );
+    diffs.push(diff);
+  }
+  const intervalDays = diffs.length
+    ? Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length)
+    : DEFAULT_INTERVAL_DAYS[platform];
+
+  const linkedFile = videos[0].linkedFileId
+    ? await FileModel.findById(videos[0].linkedFileId).select('file_name').lean()
+    : null;
+  return {
+    lastPublishedTitle: linkedFile?.file_name ?? videos[0].title,
+    lastPublishedDate:  new Date(videos[0].publishedAt).toISOString().slice(0, 10),
+    intervalDays,
+  };
+}
+
 // GET /api/sync/calendar-config — configuración real del calendario por plataforma
 export const getCalendarConfig = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const db = (await import('mongoose')).default.connection.db!;
     const userId = req.user!.id;   // calendario por cuenta (no compartido entre usuarios)
 
-    // platform_config tiene overrides manuales para cualquier plataforma
+    // platform_config tiene overrides que solo avanzan por caminos puntuales
+    // (subir desde el escritorio, el botón "Fijar", o recordUploadEvent tras
+    // publicar desde el celular) -- CUALQUIER otra vía que marque un video
+    // como publicado (el auto-sync de YouTube, publicar directo desde
+    // Biblioteca remota, vincular a mano en Sincronizar) nunca los toca, y el
+    // override se queda pegado mostrando un "último publicado" viejo aunque
+    // haya algo más reciente de verdad. Por eso NINGUNA plataforma confía
+    // ciegamente en el override: siempre se calcula también la versión real
+    // (PlatformVideoModel, la fuente que sí actualizan todos esos caminos) y
+    // se usa la que tenga la fecha más reciente de las dos.
     const stored = await db.collection('platform_config')
       .find({ userId, platform: { $in: ['tiktok', 'instagram', 'youtube'] } })
       .toArray();
 
     const storedMap = new Map(stored.map(c => [c.platform as string, c]));
 
-    // YouTube: usa override manual si existe, si no calcula desde platformvideos
-    let ytConfig: { platform: string; lastPublishedTitle: string; lastPublishedDate: string; intervalDays: number };
-    const ytOverride = storedMap.get('youtube');
-    if (ytOverride) {
-      ytConfig = {
-        platform:           'youtube',
-        lastPublishedTitle: ytOverride.lastPublishedTitle,
-        lastPublishedDate:  ytOverride.lastPublishedDate,
-        intervalDays:       ytOverride.intervalDays ?? 4,
+    const allConfigs = await Promise.all(['youtube', 'tiktok', 'instagram'].map(async (platform) => {
+      const override = storedMap.get(platform);
+      const dynamic = await computeLastPublishedDynamic(userId, platform);
+
+      const overrideDate = override?.lastPublishedDate ? new Date(override.lastPublishedDate).getTime() : 0;
+      const dynamicDate = dynamic?.lastPublishedDate ? new Date(dynamic.lastPublishedDate).getTime() : 0;
+      // Empate (mismo día) a favor del override -- suele traer el intervalDays
+      // que el usuario ajustó a mano, que la versión dinámica no puede saber.
+      const useDynamic = dynamic && dynamicDate > overrideDate;
+
+      const base = useDynamic
+        ? dynamic!
+        : override
+          ? { lastPublishedTitle: override.lastPublishedTitle, lastPublishedDate: override.lastPublishedDate, intervalDays: override.intervalDays ?? dynamic?.intervalDays ?? DEFAULT_INTERVAL_DAYS[platform] }
+          : dynamic ?? { lastPublishedTitle: '', lastPublishedDate: '', intervalDays: DEFAULT_INTERVAL_DAYS[platform] };
+
+      return {
+        platform,
+        ...base,
+        lastVideoId: override?.lastVideoId ?? null,
+        nextVideoId: override?.nextVideoId ?? null,
+        nextRemoteLibraryVideoId: override?.nextRemoteLibraryVideoId ?? null,
       };
-    } else {
-      const ytVideos = await PlatformVideoModel.find({ userId, platform: 'youtube', linkedFileId: { $ne: null } })
-        .sort({ publishedAt: -1 })
-        .limit(7)
-        .lean();
-
-      ytConfig = { platform: 'youtube', lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 4 };
-      if (ytVideos.length > 0) {
-        const diffs: number[] = [];
-        for (let i = 0; i < Math.min(6, ytVideos.length - 1); i++) {
-          const diff = Math.round(
-            (new Date(ytVideos[i].publishedAt).getTime() - new Date(ytVideos[i + 1].publishedAt).getTime())
-            / (1000 * 60 * 60 * 24)
-          );
-          diffs.push(diff);
-        }
-        const interval = diffs.length
-          ? Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length)
-          : 4;
-
-        const linkedFile = await FileModel.findById(ytVideos[0].linkedFileId).select('file_name').lean();
-        ytConfig = {
-          platform:           'youtube',
-          lastPublishedTitle: linkedFile?.file_name ?? ytVideos[0].title,
-          lastPublishedDate:  new Date(ytVideos[0].publishedAt).toISOString().slice(0, 10),
-          intervalDays:       interval,
-        };
-      }
-    }
-
-    const result = ['tiktok', 'instagram'].map(p => {
-      const c = storedMap.get(p);
-      return c
-        ? { platform: p, lastPublishedTitle: c.lastPublishedTitle, lastPublishedDate: c.lastPublishedDate, intervalDays: c.intervalDays ?? 3, lastVideoId: c.lastVideoId ?? null, nextVideoId: c.nextVideoId ?? null, nextRemoteLibraryVideoId: c.nextRemoteLibraryVideoId ?? null }
-        : { platform: p, lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 3, lastVideoId: null, nextVideoId: null, nextRemoteLibraryVideoId: null };
-    });
-
-    const allConfigs = [{ ...ytConfig, lastVideoId: ytOverride?.lastVideoId ?? null, nextVideoId: ytOverride?.nextVideoId ?? null, nextRemoteLibraryVideoId: ytOverride?.nextRemoteLibraryVideoId ?? null }, ...result];
+    }));
 
     // Enriquece con datos del nextVideo para cada plataforma. El puntero guardado
     // (nextVideoId) solo avanza vía "Subir" o el botón "Fijar" del calendario —

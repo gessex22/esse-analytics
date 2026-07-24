@@ -502,9 +502,13 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
 // dispara después de cada subida de escritorio. Sin esto, el Calendario solo
 // avanzaba "lastPublished"/"próximo" cuando se publicaba desde el escritorio:
 // publicar desde el celular dejaba esos campos congelados en lo último que
-// mandó el PC (o vacíos, si nunca se publicó desde ahí). "Próximo" se
-// aproxima igual que findNewerAdjacent en local-backend/db/file.repo.ts: el
-// archivo activo más viejo con fecha_creacion posterior al recién publicado.
+// mandó el PC (o vacíos, si nunca se publicó desde ahí). "Próximo" replica
+// findNewerAdjacent en local-backend/db/file.repo.ts: el primer archivo activo
+// con fecha_creacion posterior al recién publicado que TODAVÍA no está
+// resuelto (ni publicado ni descartado) para esta plataforma puntual -- sin
+// ese filtro, un archivo ya publicado por otra vía (ej. directo desde
+// Biblioteca remota, que no pasa por acá) dejaba el puntero pegado ahí para
+// siempre en vez de saltarlo.
 async function syncCalendarAfterPublish(
   userId: string,
   platform: string,
@@ -519,6 +523,8 @@ async function syncCalendarAfterPublish(
       status: { $ne: 'ELIMINADO_DISCO' },
       content_status: { $ne: 'descartado' },
       fecha_creacion: { $gt: ref },
+      platforms: { $ne: platform },
+      platforms_discarded: { $ne: platform },
     }).sort({ fecha_creacion: 1, _id: 1 }).select('file_name').lean();
 
     const db = (await import('mongoose')).default.connection.db!;

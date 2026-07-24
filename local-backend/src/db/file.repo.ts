@@ -79,11 +79,16 @@ export const fileRepo = {
   },
 
   /**
-   * El video inmediatamente MÁS NUEVO que el dado (por fecha_creacion).
-   * Es "el siguiente" en la secuencia de publicación: al publicar uno, el próximo
-   * avanza hacia lo más reciente (mismo criterio que el botón "Fijar" del calendario).
+   * El primer video MÁS NUEVO que el dado (por fecha_creacion) que TODAVÍA no
+   * está resuelto (ni publicado ni descartado) para `platform`. Es "el
+   * siguiente" en la secuencia de publicación de ESA plataforma puntual --
+   * antes tomaba directo el archivo inmediatamente adyacente sin mirar su
+   * estado, así que si ese archivo (o varios seguidos) ya estaban publicados
+   * en `platform` por otra vía (ej. publicado directo desde el celular sin
+   * pasar por acá), el calendario quedaba pegado mostrando como "próximo" un
+   * video que en realidad ya salió.
    */
-  findNewerAdjacent(file: DbFile): DbFile | undefined {
+  findNewerAdjacent(file: DbFile, platform: Platform): DbFile | undefined {
     const ref = file.fecha_creacion ?? file.created_at;
     const row = db.prepare(`
       SELECT * FROM files
@@ -91,9 +96,11 @@ export const fileRepo = {
         AND content_status != 'descartado'
         AND id != ?
         AND COALESCE(fecha_creacion, created_at) > ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(platforms) WHERE json_each.value = ?)
+        AND NOT EXISTS (SELECT 1 FROM json_each(platforms_discarded) WHERE json_each.value = ?)
       ORDER BY COALESCE(fecha_creacion, created_at) ASC, id ASC
       LIMIT 1
-    `).get(file.id, ref) as RawRow | undefined;
+    `).get(file.id, ref, platform, platform) as RawRow | undefined;
     return row ? parse(row) : undefined;
   },
 
