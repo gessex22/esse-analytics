@@ -174,7 +174,7 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
       match_status:  'manual',
       title:         result.title?.slice(0, 300) || title?.slice(0, 300) || undefined,
     });
-    reportUploadEvent(req.headers.authorization, {
+    await reportUploadEvent(req.headers.authorization, {
       platform: 'youtube', platformId: result.videoId, platformUrl: result.videoUrl,
       fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: result.title || title,
     });

@@ -292,7 +292,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       match_status:   'manual',
       title:          fullCaption.slice(0, 300) || undefined,
     });
-    reportUploadEvent(req.headers.authorization, {
+    await reportUploadEvent(req.headers.authorization, {
       platform: 'instagram', platformId: publishData.id, platformUrl: postUrl,
       fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: fullCaption,
     });
@@ -317,7 +317,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
             match_status:   'manual',
             title:          fullCaption.slice(0, 300) || undefined,
           });
-          reportUploadEvent(req.headers.authorization, {
+          await reportUploadEvent(req.headers.authorization, {
             platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url,
             fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: fullCaption,
           });

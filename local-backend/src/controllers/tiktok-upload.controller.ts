@@ -165,7 +165,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
       match_status:   'manual',
       title:          String(title).slice(0, 300) || undefined,
     });
-    reportUploadEvent(req.headers.authorization, {
+    await reportUploadEvent(req.headers.authorization, {
       platform: 'tiktok', platformId: publish_id, platformUrl,
       fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: String(title),
     });

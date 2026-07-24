@@ -5,6 +5,7 @@ import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { reportUploadEvent } from '../services/upload-history.service';
+import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
@@ -158,10 +159,29 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
   if (platforms_discarded !== undefined && (!Array.isArray(platforms_discarded) || platforms_discarded.some(p => !valid.includes(p)))) {
     res.status(400).json({ message: 'platforms_discarded inválido.' }); return;
   }
+  const before = fileRepo.findById(fileId);
   const data: Parameters<typeof fileRepo.update>[1] = { platforms: platforms as any };
   if (platforms_discarded !== undefined) data.platforms_discarded = platforms_discarded as any;
   const updated = fileRepo.update(fileId, data);
   if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
+  // Un cambio manual del badge también debe llegar al espejo central; de lo
+  // contrario solo queda en SQLite hasta que el siguiente tick automático
+  // consiga ejecutarse.
+  pushFilesToCloudInBackground(req.headers.authorization);
+  // Un badge también puede ser la confirmación de una publicación externa.
+  // Avanzamos la cola y precargamos el siguiente sin inventar un platformId;
+  // el enlace real se registra cuando el usuario lo pega en el modal.
+  const newlyPublished = (['youtube', 'instagram', 'tiktok'] as Platform[])
+    .filter(p => platforms.includes(p) && !(before?.platforms ?? []).includes(p));
+  for (const platform of newlyPublished) {
+    const nextFile = fileRepo.findNewerAdjacent(updated, platform);
+    configRepo.markPublished(platform, updated.file_name, updated.id, nextFile ? String(nextFile.id) : null);
+    syncNextVideoToCentral(req.headers.authorization, platform, {
+      lastPublishedDate: new Date().toISOString().slice(0, 10),
+      lastPublishedTitle: updated.file_name,
+      nextFile,
+    }).catch(err => console.warn(`[calendar] precarga tras badge falló: ${err.message}`));
+  }
   res.json({ platforms, platforms_discarded });
 };
 
@@ -194,7 +214,7 @@ export const getPlatformLinks = (req: Request, res: Response): void => {
 // Fija/corrige a mano el link de una plataforma puntual sin pasar por el flujo
 // de subida — pensado para arreglar un link roto o cargar uno publicado desde
 // afuera de la app, directamente desde la vista de Videos.
-export const setPlatformLink = (req: Request, res: Response): void => {
+export const setPlatformLink = async (req: Request, res: Response): Promise<void> => {
   const { fileId, platform } = req.params;
   const { url } = req.body as { url?: string | null };
   const valid: Platform[] = ['youtube', 'instagram', 'tiktok'];
@@ -235,11 +255,20 @@ export const setPlatformLink = (req: Request, res: Response): void => {
   // el link que ve OTRO PC al hacer pull) -- nunca a PlatformVideoModel
   // (Sincronizar/Estadísticas) ni al Calendario. Pegarle a record-publish (lo
   // mismo que ya hace cada subida real) cierra ese hueco sin duplicar lógica.
-  reportUploadEvent(req.headers.authorization, {
-    platform, platformId, platformUrl: trimmed,
-    fileName: file.file_name, contentId: file.content_id, title: file.file_name,
-  });
-  res.json({ platform_url: trimmed, platforms: fileRepo.findById(fileId)!.platforms });
+    await reportUploadEvent(req.headers.authorization, {
+      platform, platformId, platformUrl: trimmed,
+      fileName: file.file_name, contentId: file.content_id, title: file.file_name,
+    });
+    // La confirmación manual por link equivale a una publicación real:
+    // después de que la central actualizó badge/link/calendario, precargar el
+    // siguiente video y fijar su ID remoto de forma inmediata.
+    const nextFile = fileRepo.findNewerAdjacent(file, platform as Platform);
+    await syncNextVideoToCentral(req.headers.authorization, platform as any, {
+      lastPublishedDate: new Date().toISOString().slice(0, 10),
+      lastPublishedTitle: file.file_name,
+      nextFile,
+    });
+    res.json({ platform_url: trimmed, platforms: fileRepo.findById(fileId)!.platforms });
 };
 
 // ── PATCH /api/videos/bulk — edición masiva (plataformas y/o tipo de contenido) ─

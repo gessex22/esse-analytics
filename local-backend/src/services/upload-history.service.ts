@@ -7,7 +7,7 @@ const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 // depender del push completo del catálogo (que puede tardar, fallar, o quedar
 // flaco tras un wipe de logout). Best-effort: un fallo acá no debe romper una
 // subida que ya se completó.
-export function reportUploadEvent(
+export async function reportUploadEvent(
   authHeader: string | undefined,
   data: {
     platform: string;
@@ -18,23 +18,30 @@ export function reportUploadEvent(
     title?: string | null;
     publishedAt?: string | Date;
   },
-): void {
+): Promise<void> {
   if (!authHeader) return;
   const deviceId = configRepo.get('install_id');
   if (!deviceId) return;
 
-  fetch(`${CENTRAL}/api/sync/history`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-    body: JSON.stringify({
-      deviceId,
-      platform:    data.platform,
-      platformId:  data.platformId,
-      platformUrl: data.platformUrl ?? null,
-      fileName:    data.fileName ?? null,
-      contentId:   data.contentId ?? null,
-      title:       data.title ?? null,
-      publishedAt: data.publishedAt ? new Date(data.publishedAt).toISOString() : new Date().toISOString(),
-    }),
-  }).catch(() => { /* no-op */ });
+  try {
+    const res = await fetch(`${CENTRAL}/api/sync/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+      body: JSON.stringify({
+        deviceId,
+        platform:    data.platform,
+        platformId:  data.platformId,
+        platformUrl: data.platformUrl ?? null,
+        fileName:    data.fileName ?? null,
+        contentId:   data.contentId ?? null,
+        title:       data.title ?? null,
+        publishedAt: data.publishedAt ? new Date(data.publishedAt).toISOString() : new Date().toISOString(),
+      }),
+    });
+    if (!res.ok) console.warn(`[history] central respondió HTTP ${res.status}`);
+  } catch (err: any) {
+    // La plataforma ya pudo haber publicado. No convertir una falla de
+    // propagación en un falso error de subida; el push/tick podrá reintentar.
+    console.warn('[history] no se pudo propagar el evento:', err.message);
+  }
 }

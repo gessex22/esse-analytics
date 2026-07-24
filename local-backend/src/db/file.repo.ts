@@ -156,7 +156,6 @@ export const fileRepo = {
     const rows = db.prepare(
       `SELECT id, file_name, file_path, duracion_segundos, platforms, platforms_discarded FROM files
        WHERE status != 'ELIMINADO_DISCO'
-         AND json_array_length(platforms) + json_array_length(platforms_discarded) < 3
        ORDER BY COALESCE(fecha_creacion, created_at) DESC LIMIT ?`
     ).all(limit) as any[];
     return rows.map(r => ({
