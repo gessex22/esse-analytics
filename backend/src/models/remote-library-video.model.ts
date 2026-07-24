@@ -36,6 +36,15 @@ export interface IRemoteLibraryVideo extends Document {
   platforms: RemotePlatform[];
   platformsDiscarded: RemotePlatform[];
   platformLinks: IRemoteLibraryPlatformLink[];
+  // true cuando estos bytes son una copia deliberada hecha A PARTIR de un
+  // archivo local conocido (import server-a-servidor del cliente, o
+  // endurecido desde un hardlink -- ver remote-library-retention.service.ts).
+  // En ese caso el sweep puede liberarlos igual que a cualquier hardlink
+  // (nlink > 1) aunque ya tengan nlink === 1, porque no son la única copia
+  // real -- el original sigue viviendo aparte en la biblioteca local. Sin
+  // este flag, nlink === 1 se interpreta siempre como "única copia, no
+  // tocar", lo que dejaba pegado para siempre a TODO lo que pasara por acá.
+  safeToEvict?: boolean;
 }
 
 const platformLinkSchema = new Schema<IRemoteLibraryPlatformLink>({
@@ -58,6 +67,7 @@ const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   platforms:                 { type: [String], enum: ['youtube', 'instagram', 'tiktok'], default: [] },
   platformsDiscarded:        { type: [String], enum: ['youtube', 'instagram', 'tiktok'], default: [] },
   platformLinks:             { type: [platformLinkSchema], default: [] },
+  safeToEvict:               { type: Boolean, default: false },
 }, { timestamps: true });
 
 export const RemoteLibraryVideoModel = model<IRemoteLibraryVideo>(

@@ -155,6 +155,10 @@ export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response):
         userId, contentId, fileName, storedFileName, sizeBytes,
         durationSeconds, resolution, formato,
         platforms: [], platformsDiscarded: [],
+        // Este endpoint solo lo llama local-backend (ensureNextVideoInRemoteLibrary)
+        // para un archivo que YA confirmó que existe en la biblioteca local --
+        // no es la única copia, el sweep puede liberarlo más adelante sin miedo.
+        safeToEvict: true,
       });
       res.json({ ok: true, video: doc });
     } catch (err: any) {

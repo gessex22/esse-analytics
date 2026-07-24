@@ -85,7 +85,12 @@ async function hardenIfHardlinked(userId: string, storedFileName: string, docId:
   const newPath = resolveRemoteLibraryFilePath(userId, newStoredFileName);
 
   fs.copyFileSync(oldPath, newPath);
-  await RemoteLibraryVideoModel.updateOne({ _id: docId }, { $set: { storedFileName: newStoredFileName } });
+  // safeToEvict: true -- esta copia se hizo A PARTIR de un archivo local que
+  // existía en ese momento (el hardlink lo prueba). Cuando este video deje de
+  // ser "el próximo", el sweep puede liberarlo aunque ya tenga nlink === 1 --
+  // sin este flag quedaría pegado para siempre (ver interpretación de nlink
+  // más abajo en el loop principal).
+  await RemoteLibraryVideoModel.updateOne({ _id: docId }, { $set: { storedFileName: newStoredFileName, safeToEvict: true } });
   fs.unlinkSync(oldPath); // libera el hardlink viejo -- el local queda con su propio link intacto
   return true;
 }
@@ -104,7 +109,7 @@ export async function runRemoteLibraryRetentionSweep(): Promise<RetentionSweepRe
     for (const userId of userIds) {
       const protectedIds = await protectedFor(userId);
 
-      const videos = await RemoteLibraryVideoModel.find({ userId }).select('fileName storedFileName').lean();
+      const videos = await RemoteLibraryVideoModel.find({ userId }).select('fileName storedFileName safeToEvict').lean();
       // Mismo criterio conservador que en getGroupStats: un fileName repetido
       // dentro de la misma cuenta es ambiguo (no se sabe cuál es cuál) --
       // se protege de más antes que arriesgar borrar el video equivocado.
@@ -136,10 +141,13 @@ export async function runRemoteLibraryRetentionSweep(): Promise<RetentionSweepRe
         // local del que se hizo hardlink en la migración, ver
         // migrate-local-to-nube-copy.js) -- borrar esta entrada NO borra el
         // video real, solo la copia redundante en Biblioteca remota.
-        // nlink === 1: esta es la ÚNICA copia (ej. subida directa por TUS
-        // desde el celular, sin archivo local en esta PC) -- nunca se borra,
-        // sería una pérdida real y permanente del video.
-        if (stat.nlink > 1) {
+        // nlink === 1 pero safeToEvict: esta copia se hizo a partir de un
+        // archivo local conocido (endurecido, o subida de ensureNextVideoInRemoteLibrary)
+        // -- tampoco es la única copia real, solo dejó de tener el hardlink.
+        // nlink === 1 sin safeToEvict: acá sí podría ser la ÚNICA copia (ej.
+        // subida directa por TUS desde el celular, sin archivo local en esta
+        // PC) -- nunca se borra, sería una pérdida real y permanente.
+        if (stat.nlink > 1 || v.safeToEvict) {
           deleteRemoteLibraryFile(userId, v.storedFileName);
           // storedFileName a null -- así el listado (GET /api/remote-library/videos)
           // puede filtrar limpio por "todavía tiene bytes" sin tener que golpear
