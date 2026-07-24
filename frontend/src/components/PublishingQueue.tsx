@@ -981,7 +981,11 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     if (!video) return;
     setPinningNext(prev => ({ ...prev, [platform]: true }));
     try {
-      await Promise.all(affected.map(p => syncService.updateCalendarConfig(p, { nextVideoId: video.fileId })));
+      // video.fileId es el id local (SQLite) del switcher, no el _id de Mongo —
+      // la central no puede resolverlo. Igual que nextVideoId en pinVideo, hay
+      // que mandar el file_name (título): getCalendarConfig lo resuelve con el
+      // mismo fallback por nombre que usa en todos lados para cruzar PC↔central.
+      await Promise.all(affected.map(p => syncService.updateCalendarConfig(p, { nextVideoId: video.title })));
     } catch { /* no-op */ }
     finally { setPinningNext(prev => ({ ...prev, [platform]: false })); }
   }
