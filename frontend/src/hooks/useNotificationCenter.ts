@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePluginActivity, phaseLabel } from "./usePluginActivity";
 import { useUploadActivity, uploadPhaseLabel } from "./useUploadActivity";
+import { useRemoteLibraryPreloadActivity } from "./useRemoteLibraryPreloadActivity";
 
 export interface NotificationItem {
   id: string;
@@ -27,6 +28,11 @@ function uploadLabel(a: NonNullable<ReturnType<typeof useUploadActivity>>): stri
   return `${uploadPhaseLabel(a.phase)} a ${platform}${pct}`;
 }
 
+function preloadLabel(a: NonNullable<ReturnType<typeof useRemoteLibraryPreloadActivity>>): string {
+  if (a.phase === "error") return `Error al guardar "${a.title}" en la nube${a.message ? `: ${a.message}` : ""}`;
+  return `Guardando en la nube: ${a.title}`;
+}
+
 /** Centro de notificaciones: une actividad de transcripción (usePluginActivity)
  * y de subida (useUploadActivity) en una sola lista persistida en memoria
  * (dropdown de la campana) + una señal de "nube" transitoria que se muestra
@@ -34,6 +40,7 @@ function uploadLabel(a: NonNullable<ReturnType<typeof useUploadActivity>>): stri
 export function useNotificationCenter(enabled: boolean) {
   const pluginActivity = usePluginActivity(enabled);
   const uploadActivity = useUploadActivity(enabled);
+  const preloadActivity = useRemoteLibraryPreloadActivity(enabled);
 
   const [items, setItems] = useState<Record<string, NotificationItem>>({});
   const [cloudOpen, setCloudOpen] = useState(false);
@@ -63,14 +70,25 @@ export function useNotificationCenter(enabled: boolean) {
         next.upload = { ...next.upload, label: `${next.upload.label} — listo`, status: "done", updatedAt: now };
       }
 
+      if (preloadActivity) {
+        next.preload = {
+          id: "preload",
+          label: preloadLabel(preloadActivity),
+          status: preloadActivity.phase === "error" ? "error" : "running",
+          updatedAt: now,
+        };
+      } else if (next.preload?.status === "running") {
+        next.preload = { ...next.preload, label: `${next.preload.label} — listo`, status: "done", updatedAt: now };
+      }
+
       return next;
     });
 
-    const signature = JSON.stringify([pluginActivity, uploadActivity]);
+    const signature = JSON.stringify([pluginActivity, uploadActivity, preloadActivity]);
     if (signature !== lastSignature.current) {
       lastSignature.current = signature;
-      // "[null,null]" es el estado de reposo inicial — no dispara nube.
-      if (signature !== JSON.stringify([null, null]) || hideTimer.current) {
+      // "[null,null,null]" es el estado de reposo inicial — no dispara nube.
+      if (signature !== JSON.stringify([null, null, null]) || hideTimer.current) {
         setCloudOpen(true);
         setUnread(true);
         if (hideTimer.current) clearTimeout(hideTimer.current);
@@ -78,7 +96,7 @@ export function useNotificationCenter(enabled: boolean) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(pluginActivity), JSON.stringify(uploadActivity)]);
+  }, [JSON.stringify(pluginActivity), JSON.stringify(uploadActivity), JSON.stringify(preloadActivity)]);
 
   useEffect(() => () => { if (hideTimer.current) clearTimeout(hideTimer.current); }, []);
 

@@ -337,7 +337,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     syncNextVideoToCentral(req.headers.authorization, 'instagram', {
       lastPublishedDate:  new Date().toISOString().slice(0, 10),
       lastPublishedTitle: fileDoc.file_name,
-      nextVideoTitle:     nextIg?.file_name ?? null,
+      nextFile:           nextIg,
     });
     // Solo se marca facebook como publicado si el Reel realmente salió — antes
     // se marcaba siempre que el checkbox estuviera activo, aunque Meta nunca

@@ -57,7 +57,7 @@ export interface FinishedRemoteLibraryUpload {
   contentId?: string;
 }
 
-const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB, mismo límite que la subida single-shot anterior
+export const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB, mismo límite que la subida single-shot anterior
 
 // Whitelist en vez de "lo que sea que el cliente diga que es" -- el filetype/
 // filename de Upload-Metadata los arma el cliente, no está verificado contra
@@ -65,10 +65,13 @@ const MAX_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB, mismo límite que la subid
 // siempre) en vez de guardar una extensión arbitraria en disco.
 const VIDEO_EXT_WHITELIST = new Set(['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.3gp']);
 
-function extFromMetadata(meta: Record<string, string | null> | undefined): string {
-  const name = meta?.filename;
+export function extFromFileName(name: string | null | undefined): string {
   const ext = name ? path.extname(name).toLowerCase() : '';
   return VIDEO_EXT_WHITELIST.has(ext) ? ext : '.mp4';
+}
+
+function extFromMetadata(meta: Record<string, string | null> | undefined): string {
+  return extFromFileName(meta?.filename);
 }
 
 // Nombre para MOSTRAR (título en la lista, no el nombre en disco -- ese

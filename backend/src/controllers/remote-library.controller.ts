@@ -10,6 +10,9 @@ import {
   deleteRemoteLibraryFile,
   buildRemoteLibraryTusServer,
   optimizeThumbnail,
+  extFromFileName,
+  sanitizeDisplayName,
+  MAX_UPLOAD_SIZE,
   FinishedRemoteLibraryUpload,
 } from '../services/remote-library-storage.service';
 
@@ -91,6 +94,74 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
 // ── ALL /api/remote-library/tus(/:id) ─────────────────────────────────────────
 export const handleRemoteLibraryTus = (req: Request, res: Response): void => {
   remoteLibraryTusServer.handle(req, res);
+};
+
+// ── GET /api/remote-library/videos/lookup?contentId= ──────────────────────────
+// El cliente (local-backend, ver calendar-sync.service.ts) usa esto para saber
+// si "el próximo video a publicar" YA está en Biblioteca remota antes de
+// subirlo de nuevo -- por contentId (files.content_id local), no por fileName:
+// un nombre de archivo puede repetirse dentro de la misma cuenta (ver
+// remote-library-retention.service.ts), contentId no.
+export const lookupRemoteLibraryVideoByContentId = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const contentId = req.query.contentId as string | undefined;
+    if (!contentId) { res.status(400).json({ error: 'contentId requerido' }); return; }
+
+    const doc = await RemoteLibraryVideoModel.findOne({ userId: req.user!.id, contentId }).select('_id').lean();
+    res.json({ id: doc ? String(doc._id) : null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// ── POST /api/remote-library/videos/import?fileName=&contentId=&durationSeconds=&resolution=&formato= ──
+// Relay server-a-servidor: local-backend sube acá directo (sin pasar por el
+// cliente/renderer) el archivo de "próximo a publicar" que todavía no estaba
+// en Biblioteca remota, para que el almacenamiento dinámico (ver
+// remote-library-retention.service.ts) tenga algo que proteger. Body = bytes
+// crudos del video (Content-Type video/* u octet-stream) -- no multipart, no
+// TUS: es un solo tiro confiable en LAN/localhost, no una subida resumable
+// desde una conexión de celular que se puede cortar.
+export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.user!.id;
+  const contentLength = parseInt(req.headers['content-length'] as string, 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_SIZE) {
+    res.status(413).json({ error: 'Archivo demasiado grande' });
+    return;
+  }
+
+  const fileName = sanitizeDisplayName(req.query.fileName as string, 'video.mp4');
+  const contentId = (req.query.contentId as string) || undefined;
+  const durationSeconds = req.query.durationSeconds ? Number(req.query.durationSeconds) : undefined;
+  const resolution = (req.query.resolution as string) || undefined;
+  const formato = (req.query.formato as string) || undefined;
+
+  const storedFileName = `${randomUUID()}${extFromFileName(req.query.fileName as string)}`;
+  const filePath = resolveRemoteLibraryFilePath(userId, storedFileName);
+  const writeStream = fs.createWriteStream(filePath);
+
+  req.pipe(writeStream);
+
+  writeStream.on('error', (err) => {
+    fs.unlink(filePath, () => {});
+    if (!res.headersSent) res.status(500).json({ error: 'Error al guardar el archivo', detail: err.message });
+  });
+  req.on('error', () => writeStream.destroy());
+
+  writeStream.on('finish', async () => {
+    try {
+      const sizeBytes = fs.statSync(filePath).size;
+      const doc = await RemoteLibraryVideoModel.create({
+        userId, contentId, fileName, storedFileName, sizeBytes,
+        durationSeconds, resolution, formato,
+        platforms: [], platformsDiscarded: [],
+      });
+      res.json({ ok: true, video: doc });
+    } catch (err: any) {
+      fs.unlink(filePath, () => {});
+      res.status(500).json({ error: 'Error al registrar el video', detail: err.message });
+    }
+  });
 };
 
 // ── Miniatura ──────────────────────────────────────────────────────────────

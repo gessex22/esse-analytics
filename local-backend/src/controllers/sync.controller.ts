@@ -3,6 +3,7 @@ import { fileRepo } from '../db/file.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -185,8 +186,16 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
 };
 
 // PATCH /api/sync/calendar-config/:platform
+// Este endpoint es el que pega el botón "Fijar" del Calendario (PublishingQueue)
+// en modo local -- solo escribe el mirror de SQLite, no toca la central de
+// por sí. Además, best-effort (no bloquea la respuesta ni la falla), se
+// encarga de precargar a Biblioteca remota el video recién fijado como
+// "próximo" y avisarle a la central el id real -- mismo mecanismo que ya usa
+// syncNextVideoToCentral para lo que se publica desde las vistas de Subir
+// (ver calendar-sync.service.ts): el usuario controla el calendario, y es acá
+// donde queda reflejado ese control hacia la nube.
 export const updateCalendarConfig = (req: Request, res: Response): void => {
-  const { platform } = req.params;
+  const { platform } = req.params as { platform: 'tiktok' | 'instagram' | 'youtube' };
   if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
     res.status(400).json({ message: 'Plataforma no válida' }); return;
   }
@@ -201,4 +210,13 @@ export const updateCalendarConfig = (req: Request, res: Response): void => {
   });
 
   res.json({ ok: true });
+
+  if ('nextVideoId' in req.body) {
+    const nextFile = resolveStoredVideo(nextVideoId);
+    syncNextVideoToCentral(req.headers.authorization, platform, {
+      lastPublishedDate:  lastPublishedDate  ?? '',
+      lastPublishedTitle: lastPublishedTitle ?? '',
+      nextFile,
+    });
+  }
 };

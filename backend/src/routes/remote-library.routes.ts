@@ -9,6 +9,8 @@ import {
   getRemoteLibraryThumbnail,
   updateRemoteLibraryVideoPlatforms,
   deleteRemoteLibraryVideo,
+  lookupRemoteLibraryVideoByContentId,
+  importRemoteLibraryVideo,
 } from '../controllers/remote-library.controller';
 import { verifyToken, verifyTokenFromHeaderOrQuery, requireCloudStorage } from '../middleware/auth.middleware';
 
@@ -27,6 +29,11 @@ router.all('/api/remote-library/tus', verifyToken, requireCloudStorage, handleRe
 router.all('/api/remote-library/tus/:id', verifyToken, requireCloudStorage, handleRemoteLibraryTus);
 
 router.post('/api/remote-library/videos/:id/thumbnail', verifyToken, requireCloudStorage, remoteLibraryThumbnailUploadMiddleware, uploadRemoteLibraryThumbnail);
+// Relay servidor-a-servidor para precarga automática desde local-backend (ver
+// calendar-sync.service.ts) -- deben ir ANTES de /videos/:id, si no Express los
+// matchea como si "lookup"/"import" fueran un :id.
+router.get('/api/remote-library/videos/lookup', verifyToken, requireCloudStorage, lookupRemoteLibraryVideoByContentId);
+router.post('/api/remote-library/videos/import', verifyToken, requireCloudStorage, importRemoteLibraryVideo);
 router.get('/api/remote-library/videos', verifyToken, requireCloudStorage, listRemoteLibraryVideos);
 router.get('/api/remote-library/videos/:id', verifyToken, requireCloudStorage, getRemoteLibraryVideo);
 // verifyTokenFromHeaderOrQuery, no verifyToken a secas: para poder usarse

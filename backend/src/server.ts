@@ -17,6 +17,7 @@ import componentsRouter      from './routes/components.routes';
 import backupRouter          from './routes/backup.routes';
 import remoteLibraryRouter   from './routes/remote-library.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
+import { runRemoteLibraryRetentionSweep } from './services/remote-library-retention.service';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -74,12 +75,27 @@ app.use(componentsRouter);
 app.use(backupRouter);
 app.use(remoteLibraryRouter);
 
+const REMOTE_LIBRARY_RETENTION_INTERVAL_MS = 60 * 60 * 1000; // 1h
+
+function scheduleRemoteLibraryRetentionSweep(): void {
+  runRemoteLibraryRetentionSweep()
+    .then(r => console.log(`[remote-library-retention] usuarios=${r.usersScanned} protegidos=${r.protectedCount} liberados=${r.evicted} únicaCopia=${r.keptSoleCopy} endurecidos=${r.hardened}`))
+    .catch(err => console.error('[remote-library-retention] error:', err.message));
+  setTimeout(scheduleRemoteLibraryRetentionSweep, REMOTE_LIBRARY_RETENTION_INTERVAL_MS);
+}
+
 mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 })
   .then(() => {
     console.log('Conectado exitosamente a MongoDB Atlas');
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`API corriendo en http://0.0.0.0:${PORT}`);
     });
+    // Almacenamiento dinámico de Biblioteca remota: libera bytes de video que
+    // ya no son "el próximo a publicar" de ninguna plataforma (ver
+    // remote-library-retention.service.ts). Corre una vez al arrancar y
+    // después cada 1h -- no hace falta disparo inmediato por evento porque
+    // total, si un video queda de más un rato, no pasa nada grave.
+    scheduleRemoteLibraryRetentionSweep();
   })
   .catch((err) => {
     console.error('Error de conexion a MongoDB:', err.message);

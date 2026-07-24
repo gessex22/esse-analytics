@@ -189,7 +189,7 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     syncNextVideoToCentral(req.headers.authorization, 'youtube', {
       lastPublishedDate:  new Date().toISOString().slice(0, 10),
       lastPublishedTitle: fileDoc.file_name,
-      nextVideoTitle:     nextYt?.file_name ?? null,
+      nextFile:           nextYt,
     });
     pushFilesToCloudInBackground(req.headers.authorization);
 

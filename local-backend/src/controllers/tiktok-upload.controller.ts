@@ -179,7 +179,7 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     syncNextVideoToCentral(req.headers.authorization, 'tiktok', {
       lastPublishedDate:  new Date().toISOString().slice(0, 10),
       lastPublishedTitle: fileDoc.file_name,
-      nextVideoTitle:     nextTk?.file_name ?? null,
+      nextFile:           nextTk,
     });
     pushFilesToCloudInBackground(req.headers.authorization);
 

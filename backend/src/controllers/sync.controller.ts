@@ -563,11 +563,11 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
     const result = ['tiktok', 'instagram'].map(p => {
       const c = storedMap.get(p);
       return c
-        ? { platform: p, lastPublishedTitle: c.lastPublishedTitle, lastPublishedDate: c.lastPublishedDate, intervalDays: c.intervalDays ?? 3, lastVideoId: c.lastVideoId ?? null, nextVideoId: c.nextVideoId ?? null }
-        : { platform: p, lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 3, lastVideoId: null, nextVideoId: null };
+        ? { platform: p, lastPublishedTitle: c.lastPublishedTitle, lastPublishedDate: c.lastPublishedDate, intervalDays: c.intervalDays ?? 3, lastVideoId: c.lastVideoId ?? null, nextVideoId: c.nextVideoId ?? null, nextRemoteLibraryVideoId: c.nextRemoteLibraryVideoId ?? null }
+        : { platform: p, lastPublishedTitle: '', lastPublishedDate: '', intervalDays: 3, lastVideoId: null, nextVideoId: null, nextRemoteLibraryVideoId: null };
     });
 
-    const allConfigs = [{ ...ytConfig, lastVideoId: ytOverride?.lastVideoId ?? null, nextVideoId: ytOverride?.nextVideoId ?? null }, ...result];
+    const allConfigs = [{ ...ytConfig, lastVideoId: ytOverride?.lastVideoId ?? null, nextVideoId: ytOverride?.nextVideoId ?? null, nextRemoteLibraryVideoId: ytOverride?.nextRemoteLibraryVideoId ?? null }, ...result];
 
     // Enriquece con datos del nextVideo para cada plataforma
     const enriched = await Promise.all(allConfigs.map(async (cfg) => {
@@ -604,7 +604,7 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
 export const updateCalendarConfig = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { platform } = req.params;
-    const { lastPublishedDate, lastPublishedTitle, intervalDays, lastVideoId, nextVideoId } = req.body;
+    const { lastPublishedDate, lastPublishedTitle, intervalDays, lastVideoId, nextVideoId, nextRemoteLibraryVideoId } = req.body;
     if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
       res.status(400).json({ message: 'Plataforma no válida' });
       return;
@@ -615,6 +615,12 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
     if (intervalDays       !== undefined) fields.intervalDays       = intervalDays;
     if (lastVideoId        !== undefined) fields.lastVideoId        = lastVideoId;
     if (nextVideoId        !== undefined) fields.nextVideoId        = nextVideoId;
+    // Id real de RemoteLibraryVideoModel para "el próximo" -- lo manda el
+    // cliente (local-backend, ver calendar-sync.service.ts) DESPUÉS de
+    // confirmar/subir el video a Biblioteca remota. Reemplaza el cruce por
+    // fileName (ambiguo si hay nombres repetidos) como fuente de verdad para
+    // el almacenamiento dinámico (ver remote-library-retention.service.ts).
+    if (nextRemoteLibraryVideoId !== undefined) fields.nextRemoteLibraryVideoId = nextRemoteLibraryVideoId;
 
     const userId = req.user!.id;
     fields.userId = userId;
