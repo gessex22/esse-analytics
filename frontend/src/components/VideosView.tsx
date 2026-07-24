@@ -17,6 +17,7 @@ import {
   CalendarClock,
   Link2,
   Cloud,
+  Database,
 } from "lucide-react";
 import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry } from "../services/api";
 import { VideoModal } from "./player/VideoModal";
@@ -1123,12 +1124,17 @@ export function VideosView({
                     <span className="text-[10px] border border-border rounded px-1 py-0.5 text-muted-foreground font-mono">
                       {video.ratio}
                     </span>
-                    {video.contentId && (syncStatus[video.contentId]?.metadataBackedUp || syncStatus[video.contentId]?.inRemoteLibrary) && (
-                      <span
-                        title={syncStatus[video.contentId]?.inRemoteLibrary ? "Video en la Biblioteca remota (Nube)" : "Metadata respaldada en la nube"}
-                        className="text-emerald-400/80"
-                      >
+                    {/* Nube = bytes reales en Biblioteca remota. Backup de metadata es
+                        otra cosa (backup_files, casi todo el catálogo) -- separados para
+                        no hacer creer que "está en la nube" cuando solo es el catálogo. */}
+                    {video.contentId && syncStatus[video.contentId]?.inRemoteLibrary && (
+                      <span title="Video en la Biblioteca remota (Nube)" className="text-emerald-400/80">
                         <Cloud className="w-3 h-3" />
+                      </span>
+                    )}
+                    {video.contentId && syncStatus[video.contentId]?.metadataBackedUp && (
+                      <span title="Metadata respaldada en la nube" className="text-muted-foreground/60">
+                        <Database className="w-3 h-3" />
                       </span>
                     )}
                     {/* Fecha visible sólo en móvil aquí */}
