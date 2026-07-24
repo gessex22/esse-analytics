@@ -40,7 +40,9 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
 
   const stat = fs.statSync(file.file_path);
   if (stat.size > DIRECT_UPLOAD_LIMIT) {
-    return uploadToRemoteLibraryTus(authHeader, file, stat.size);
+    const videoId = await uploadToRemoteLibraryTus(authHeader, file, stat.size);
+    if (videoId) await uploadThumbnailToRemoteLibrary(authHeader, videoId, file);
+    return videoId;
   }
 
   const res = await fetch(`${CENTRAL}/api/remote-library/videos/import?${params.toString()}`, {
