@@ -77,6 +77,41 @@ async function tryProxyFromPeer(req: AuthRequest, res: Response, path: string): 
 // tiene ffmpeg, no hay forma de calcularlos acá.
 const remoteLibraryTusServer = buildRemoteLibraryTusServer(
   async (info: FinishedRemoteLibraryUpload) => {
+    // TUS puede reintentarse después de un corte o un 409 de offset. Upsert
+    // por la identidad estable del archivo evita crear un documento Mongo por
+    // cada intento y conserva links/estados ya asociados al video.
+    if (info.contentId) {
+      const previous = await RemoteLibraryVideoModel.findOne({
+        userId: info.userId,
+        contentId: info.contentId,
+      }).select('storedFileName').lean();
+      const doc = await RemoteLibraryVideoModel.findOneAndUpdate(
+        { userId: info.userId, contentId: info.contentId },
+        {
+          $set: {
+            fileName: info.fileName,
+            storedFileName: info.storedFileName,
+            sizeBytes: info.sizeBytes,
+            durationSeconds: info.durationSeconds,
+            resolution: info.resolution,
+            formato: info.formato,
+            safeToEvict: true,
+          },
+          $setOnInsert: {
+            userId: info.userId,
+            contentId: info.contentId,
+            platforms: [],
+            platformsDiscarded: [],
+          },
+        },
+        { upsert: true, new: true },
+      );
+      if (previous?.storedFileName && previous.storedFileName !== info.storedFileName) {
+        deleteRemoteLibraryFile(info.userId, previous.storedFileName);
+      }
+      return doc;
+    }
+
     return RemoteLibraryVideoModel.create({
       userId: info.userId,
       contentId: info.contentId,
@@ -88,6 +123,7 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
       formato: info.formato,
       platforms: [],
       platformsDiscarded: [],
+      safeToEvict: true,
     });
   },
 );
