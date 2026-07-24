@@ -17,7 +17,7 @@ import { RemoteGate } from "./components/RemoteGate";
 import { useBackendType } from "./hooks/useBackendType";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { canPublishOnMobile } from "./lib/mobileMode";
-import { useAutoBackup } from "./hooks/useAutoBackup";
+import { useSyncOrchestrator } from "./hooks/useSyncOrchestrator";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
@@ -132,8 +132,9 @@ export default function App() {
   const mobileMode      = isMobile && isLocal;
   const mobileCanUpload = canPublishOnMobile(user);
 
-  // Backup automático: solo en el dispositivo central y para premium.
-  useAutoBackup(isLocal && isPremium);
+  // Sync automático (push + pull + precargado a Biblioteca remota): solo en
+  // el dispositivo central y para premium.
+  useSyncOrchestrator(isLocal && isPremium);
   const [showLogin, setShowLogin] = useState(false);
   const [activeNav, setActiveNav]           = useState(1);
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
@@ -216,7 +217,7 @@ export default function App() {
             if (data.detected) {
               // El catálogo se acaba de reconstruir desde disco (platforms vacío,
               // sin transcripciones). Traemos YA el estado real desde la nube, antes
-              // de que el auto-backup (useAutoBackup) tenga chance de pushear el
+              // de que el sync automático (useSyncOrchestrator) tenga chance de pushear el
               // catálogo vacío primero. Las transcripciones no tienen push (no hay
               // otra copia), así que este pull solo rellena lo que falta localmente.
               await Promise.all([

@@ -3,6 +3,7 @@ import { fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
+import { ensurePreloadForNextVideos } from '../services/calendar-sync.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -407,5 +408,18 @@ export function getLocalBackupStatus(_req: Request, res: Response): void {
 // desde esta instalación va sin fullSync para no archivar videos de otra PC.
 export function markSecondaryInstall(_req: Request, res: Response): void {
   configRepo.set('secondary_install', '1');
+  res.json({ ok: true });
+}
+
+// POST /api/local/backup/ensure-preload
+// Parte del sync tick del frontend (ver syncOrchestrator.ts) — no solo dispara
+// tras publicar. Revisa el "próximo" de cada plataforma y, si esta PC tiene el
+// archivo y todavía no está en Biblioteca remota, lo sube. Ver
+// ensurePreloadForNextVideos para el porqué (el precargado quedaba atado
+// solo al momento exacto de publicar desde Subir).
+export async function ensurePreload(req: Request, res: Response): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
+  await ensurePreloadForNextVideos(authHeader);
   res.json({ ok: true });
 }

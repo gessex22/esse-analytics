@@ -1,4 +1,4 @@
-import { DbFile } from '../db/file.repo';
+import { DbFile, fileRepo } from '../db/file.repo';
 import { ensureNextVideoInRemoteLibrary } from './remote-library-preload.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
@@ -35,4 +35,44 @@ export async function syncNextVideoToCentral(
       }),
     });
   } catch { /* no-op */ }
+}
+
+// El precargado de syncNextVideoToCentral solo dispara en el instante exacto de
+// publicar desde "Subir" de ESTA plataforma -- si el "próximo" avanzó por otro
+// camino (celular, toggle en Videos, autocorrección de getCalendarConfig cuando
+// el puntero guardado queda obsoleto) nadie vuelve a intentarlo, y Biblioteca
+// remota se queda sin el archivo justo cuando el celular lo necesita. Pensada
+// para correr periódica (ver syncOrchestrator.ts en el frontend), no solo tras
+// publicar: por cada plataforma, si el "próximo" actual de la central todavía
+// no tiene nextRemoteLibraryVideoId Y el archivo existe en ESTA PC, lo sube y
+// fija el puntero (nextVideoId también, para no depender de que el cálculo
+// dinámico de la central elija lo mismo la próxima vez que se lea).
+export async function ensurePreloadForNextVideos(authHeader: string | undefined): Promise<void> {
+  if (!authHeader) return;
+  try {
+    const res = await fetch(`${CENTRAL}/api/sync/calendar-config`, { headers: { Authorization: authHeader } });
+    if (!res.ok) return;
+    const configs: {
+      platform: string;
+      nextVideo?: { fileId: string; title: string } | null;
+      nextRemoteLibraryVideoId?: string | null;
+    }[] = await res.json();
+
+    for (const cfg of configs) {
+      if (!cfg.nextVideo || cfg.nextRemoteLibraryVideoId) continue; // sin próximo, o ya precargado
+      if (!['youtube', 'instagram', 'tiktok'].includes(cfg.platform)) continue;
+
+      const file = fileRepo.findByName(cfg.nextVideo.title);
+      if (!file) continue; // el "próximo" lo tiene otro dispositivo, no esta PC
+
+      const nextRemoteLibraryVideoId = await ensureNextVideoInRemoteLibrary(authHeader, file);
+      if (!nextRemoteLibraryVideoId) continue;
+
+      await fetch(`${CENTRAL}/api/sync/calendar-config/${cfg.platform}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+        body: JSON.stringify({ nextVideoId: cfg.nextVideo.fileId, nextRemoteLibraryVideoId }),
+      }).catch(() => {});
+    }
+  } catch { /* best-effort, igual que syncNextVideoToCentral */ }
 }

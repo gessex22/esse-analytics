@@ -20,6 +20,7 @@ import {
   Database,
 } from "lucide-react";
 import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry } from "../services/api";
+import { runSyncTick } from "../services/syncOrchestrator";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
@@ -330,11 +331,6 @@ type VideosCache = {
 };
 let videosCache: VideosCache | null = null;
 
-// Throttle del pull de backup al entrar a la vista — evita repetirlo en cada
-// cambio rápido de pestaña (mismo criterio que MIN_GAP_MS en useAutoBackup).
-const PLATFORM_PULL_MIN_GAP_MS = 60 * 1000;
-let lastPlatformPull = 0;
-
 // ── Componente principal ──────────────────────────────────────────────────────
 export function VideosView({
   role = "todopoderoso",
@@ -459,18 +455,14 @@ export function VideosView({
   useEffect(() => { loadPage(1); }, [loadPage]);
 
   // Trae del backup en la nube los links de publicación (platform_videos) al
-  // entrar a esta vista. Publicar desde el celular / modo remoto los mirrorea
-  // en la central (mirrorPlatformVideoToBackup, backend/backup.controller.ts),
-  // pero eso solo llega al SQLite local vía este pull — antes solo corría una
-  // vez, al detectar una PC sin carpeta configurada (ver App.tsx), así que en
-  // una PC ya en uso los links publicados desde otro dispositivo nunca
-  // aparecían acá ni en "Editar links de plataforma".
+  // entrar a esta vista, para que "Editar links de plataforma" no muestre
+  // datos viejos si algo se publicó desde otro dispositivo. Comparte el
+  // cooldown de runSyncTick (syncOrchestrator.ts) con el resto de los
+  // disparadores (mount de la app, foco recuperado, fallback periódico) — así
+  // cambiar de pestaña seguido no golpea la central de más, pero si pasó un
+  // rato sí refresca.
   useEffect(() => {
-    if (Date.now() - lastPlatformPull < PLATFORM_PULL_MIN_GAP_MS) return;
-    lastPlatformPull = Date.now();
-    backupService.pull()
-      .then(() => loadPage(currentPage, selectedTipo, selectedStatus))
-      .catch(() => {});
+    runSyncTick().then(() => loadPage(currentPage, selectedTipo, selectedStatus));
   }, []);
 
   // Lee si hay carpeta configurada en esta máquina (señal de PC original)
