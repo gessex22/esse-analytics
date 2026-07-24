@@ -46,7 +46,7 @@ pnpm-debug.log*
 !.vscode/extensions.json
 .idea/
 .DS_Store
-.claude/settings.local.json
+.claude/
 Thumbs.db
 *.suo
 *.ntvs*
@@ -60,3 +60,7 @@ Thumbs.db
 *.mkv
 *.avi
 *.webm
+
+# ─── Datos locales / debug (nunca versionar) ───────────────────────
+*.db
+backend/resp.json
