@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import {
   Play, Camera, Music2, AlertTriangle, Clock, Pencil,
   ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
-  Eye, Heart, MessageCircle, Send,
+  Eye, Heart, MessageCircle, Send, SkipForward,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { videoService, syncService, setupService, WorkflowMode } from "../services/api";
@@ -198,11 +198,11 @@ function getViewsCount(stats: Record<string, any> | undefined, platform: Platfor
 
 function UpcomingCard({
   slot, video, index, total, overdue, neutral,
-  onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading,
+  onOlder, onNewer, onPin, onPinNext, onOpen, onIntervalChange, pinning, pinned, pinningNext, loading,
 }: {
   slot: PlatformSlot; video: SlimVideo | undefined; index: number; total: number; overdue: boolean; neutral?: boolean;
-  onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
-  onIntervalChange: (d: number) => void; pinning: boolean; pinned: boolean; loading: boolean;
+  onOlder: () => void; onNewer: () => void; onPin: () => void; onPinNext: () => void; onOpen: () => void;
+  onIntervalChange: (d: number) => void; pinning: boolean; pinned: boolean; pinningNext: boolean; loading: boolean;
 }) {
   const cfg     = neutral ? NEUTRAL_CFG : PLATFORM_CFG[slot.platform];
   const Icon    = cfg.icon;
@@ -264,6 +264,14 @@ function UpcomingCard({
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-20 transition-colors"
         >
           <Clapperboard className="w-4 h-4" />
+        </button>
+        <button
+          onClick={onPinNext}
+          disabled={loading || pinningNext || !video}
+          title="Fijar como próximo a publicar, sin marcarlo publicado"
+          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-20 transition-colors"
+        >
+          {pinningNext ? <Loader2 className="w-4 h-4 animate-spin" /> : <SkipForward className="w-4 h-4" />}
         </button>
         {overdue ? (
           <button
@@ -388,11 +396,11 @@ function UrgencyPill({ urgency, nextDate, onEdit }: { urgency: Urgency; nextDate
 }
 
 function VideoSwitcher({
-  videos, index, onOlder, onNewer, onPin, onOpen, pinning, pinned,
+  videos, index, onOlder, onNewer, onPin, onPinNext, onOpen, pinning, pinned, pinningNext,
 }: {
   videos: SlimVideo[]; index: number;
-  onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
-  pinning: boolean; pinned: boolean;
+  onOlder: () => void; onNewer: () => void; onPin: () => void; onPinNext: () => void; onOpen: () => void;
+  pinning: boolean; pinned: boolean; pinningNext: boolean;
 }) {
   if (videos.length === 0) {
     return (
@@ -429,29 +437,41 @@ function VideoSwitcher({
         </button>
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-1.5">
         <span className="text-xs text-muted-foreground">{index + 1} / {videos.length}</span>
-        <button
-          onClick={onPin}
-          disabled={pinning || pinned}
-          className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
-            pinned ? "bg-emerald-500/15 text-emerald-600 cursor-default" : "bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
-          }`}
-        >
-          {pinning ? <Loader2 className="w-3 h-3 animate-spin" /> : pinned ? <Check className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
-          {pinned ? "Fijado" : "Fijar como publicado"}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={onPinNext}
+            disabled={pinningNext}
+            title="Fijar como próximo a publicar, sin marcarlo publicado"
+            className="flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border border-border text-foreground hover:bg-secondary transition-colors disabled:opacity-60"
+          >
+            {pinningNext ? <Loader2 className="w-3 h-3 animate-spin" /> : <SkipForward className="w-3 h-3" />}
+            Fijar como próximo
+          </button>
+          <button
+            onClick={onPin}
+            disabled={pinning || pinned}
+            title="Marca este video como YA publicado y avanza la cola"
+            className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
+              pinned ? "bg-emerald-500/15 text-emerald-600 cursor-default" : "bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+            }`}
+          >
+            {pinning ? <Loader2 className="w-3 h-3 animate-spin" /> : pinned ? <Check className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
+            {pinned ? "Fijado" : "Fijar como publicado"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 function PlatformCard({
-  slot, videos, index, onOlder, onNewer, onPin, onOpen, onIntervalChange, pinning, pinned, loading, neutral,
+  slot, videos, index, onOlder, onNewer, onPin, onPinNext, onOpen, onIntervalChange, pinning, pinned, pinningNext, loading, neutral,
 }: {
   slot: PlatformSlot; videos: SlimVideo[]; index: number;
-  onOlder: () => void; onNewer: () => void; onPin: () => void; onOpen: () => void;
-  onIntervalChange: (days: number) => void; pinning: boolean; pinned: boolean; loading: boolean; neutral?: boolean;
+  onOlder: () => void; onNewer: () => void; onPin: () => void; onPinNext: () => void; onOpen: () => void;
+  onIntervalChange: (days: number) => void; pinning: boolean; pinned: boolean; pinningNext: boolean; loading: boolean; neutral?: boolean;
 }) {
   const cfg     = neutral ? NEUTRAL_CFG : PLATFORM_CFG[slot.platform];
   const Icon    = cfg.icon;
@@ -515,9 +535,11 @@ function PlatformCard({
             onOlder={onOlder}
             onNewer={onNewer}
             onPin={onPin}
+            onPinNext={onPinNext}
             onOpen={onOpen}
             pinning={pinning}
             pinned={pinned}
+            pinningNext={pinningNext}
           />
         )}
       </div>
@@ -764,6 +786,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   const [indices, setIndices] = useState<Record<Platform, number>>(calendarCache?.indices ?? { tiktok: 0, instagram: 0, youtube: 0 });
   const [pinning, setPinning] = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
   const [pinned,  setPinned]  = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
+  const [pinningNext, setPinningNext] = useState<Record<Platform, boolean>>({ tiktok: false, instagram: false, youtube: false });
 
   // Flujo simple: las 3 plataformas avanzan siempre juntas — se colapsa la UI a
   // una sola tarjeta/fila, pero las acciones (fijar, navegar, cambiar intervalo)
@@ -946,6 +969,23 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     finally { setPinning(prev => ({ ...prev, [platform]: false })); }
   }
 
+  // A diferencia de pinVideo, NO marca el archivo como publicado — solo mueve el
+  // puntero "próximo" del calendario al video que se está mirando en el switcher.
+  // Sirve para reordenar la cola (publicar este antes que otro) sin declarar una
+  // publicación que todavía no pasó (eso rompía el calendario, ver conversación
+  // sobre "final - oneplus" quedando fijo como próximo de TikTok aunque ya
+  // estaba publicado).
+  async function pinNextVideo(platform: Platform) {
+    const affected = isSimple ? ALL_PLATFORMS : [platform];
+    const video = videosForPlatform(platform)[indices[platform]];
+    if (!video) return;
+    setPinningNext(prev => ({ ...prev, [platform]: true }));
+    try {
+      await Promise.all(affected.map(p => syncService.updateCalendarConfig(p, { nextVideoId: video.fileId })));
+    } catch { /* no-op */ }
+    finally { setPinningNext(prev => ({ ...prev, [platform]: false })); }
+  }
+
   const slotFor = (p: Platform) => slots.find(s => s.platform === p) ?? FALLBACK_SLOTS.find(s => s.platform === p)!;
   // Simple: colapsa a una sola tarjeta — la plataforma con el lastDate más
   // reciente entre las 3 (la que de verdad avanzó última). El resto de la UI
@@ -989,9 +1029,9 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     return (
       <UpcomingCard
         key={p} slot={slot} video={currentVideo} index={indices[p]} total={platformVideos.length} overdue={isOverdue} neutral={isSimple}
-        onOlder={() => navigate(p, "older")} onNewer={() => navigate(p, "newer")} onPin={() => pinVideo(p)}
+        onOlder={() => navigate(p, "older")} onNewer={() => navigate(p, "newer")} onPin={() => pinVideo(p)} onPinNext={() => pinNextVideo(p)}
         onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
-        onIntervalChange={d => updateInterval(p, d)} pinning={pinning[p]} pinned={pinned[p]} loading={loading}
+        onIntervalChange={d => updateInterval(p, d)} pinning={pinning[p]} pinned={pinned[p]} pinningNext={pinningNext[p]} loading={loading}
       />
     );
   };
@@ -1042,10 +1082,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
                       onOlder={() => navigate(p, "older")}
                       onNewer={() => navigate(p, "newer")}
                       onPin={() => pinVideo(p)}
+                      onPinNext={() => pinNextVideo(p)}
                       onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
                       onIntervalChange={d => updateInterval(p, d)}
                       pinning={pinning[p]}
                       pinned={pinned[p]}
+                      pinningNext={pinningNext[p]}
                       loading={loading}
                       neutral={isSimple}
                     />
