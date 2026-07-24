@@ -46,7 +46,7 @@
       "releaseType": "release"
     },
     "directories": {
-      "output": "C:/esse-release",
+      "output": "release",
       "buildResources": "assets"
     },
     "files": [
