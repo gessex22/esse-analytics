@@ -599,10 +599,23 @@ export async function applyPlatformPublish(userId: string, data: {
   // propios union types (Platform, SyncPlatform, RemotePlatform), ninguno
   // 100% igual entre sí.
   const platform = data.platform as any;
-  const platformId = data.platformId;
+  let platformId = data.platformId;
   const { platformUrl, fileName, contentId, title } = data;
   const publishedAtDate = data.publishedAt ?? new Date();
   const matchStatus = data.matchStatus ?? 'manual';
+
+  // Un link de Instagram pegado a mano solo trae el shortcode del permalink
+  // (ver extractPlatformId en local-backend/video.controller.ts) -- Graph API
+  // necesita el media id numérico real, si no las stats de Estadísticas
+  // quedan en 0 para siempre (bug real detectado con "beta - blackbery.mp4").
+  // Best-effort: si no lo puede resolver, sigue con el shortcode tal cual.
+  if (platform === 'instagram' && !/^\d+$/.test(platformId)) {
+    try {
+      const { resolveInstagramMediaId } = await import('../services/instagram.service');
+      const resolved = await resolveInstagramMediaId(userId, platformUrl ?? platformId);
+      if (resolved) platformId = resolved;
+    } catch { /* sigue con el shortcode -- no bloquea el link/badge */ }
+  }
 
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;

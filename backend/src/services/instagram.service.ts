@@ -60,6 +60,29 @@ export async function getRecentInstagramMedia(userId: string, limit: number, aft
   return { items, nextCursor: data.paging?.cursors?.after ?? null };
 }
 
+// Un link de Instagram pegado a mano (ver extractPlatformId en el editor de
+// escritorio) solo puede sacar el shortcode del permalink (ej. "DbKtpt1RRLv")
+// -- Graph API no acepta eso como media id para nada (stats, insights), así
+// que sin resolver el id numérico real las vistas/likes/comentarios de ese
+// reel quedan en 0 para siempre. Busca por coincidencia de permalink entre
+// los medios recientes de la cuenta; si no aparece (video fuera de la
+// ventana reciente) devuelve null y el caller sigue con el shortcode tal
+// cual, sin bloquear el link/badge.
+export async function resolveInstagramMediaId(userId: string, urlOrId: string): Promise<string | null> {
+  if (/^\d+$/.test(urlOrId)) return urlOrId;
+  const shortcodeMatch = urlOrId.match(/instagram\.com\/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/);
+  const shortcode = shortcodeMatch ? shortcodeMatch[1] : urlOrId;
+  let cursor: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const { items, nextCursor } = await getRecentInstagramMedia(userId, 25, cursor);
+    const match = items.find((i) => i.platformUrl?.includes(shortcode));
+    if (match) return match.platformId;
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+  return null;
+}
+
 // Las vistas de un Reel NO vienen en los campos básicos del media — hay que
 // pedirlas aparte via /insights. Si el token no tiene el scope
 // instagram_business_manage_insights, la API responde error de permiso y acá
