@@ -97,19 +97,44 @@ async function uploadToRemoteLibraryTus(authHeader: string, file: DbFile, sizeBy
       const read = await handle.read(chunk, 0, length, offset);
       if (read.bytesRead !== length) throw new Error('Lectura incompleta del archivo local');
 
-      const patch = await fetch(location, {
-        method: 'PATCH',
-        headers: {
-          Authorization: authHeader,
-          'Tus-Resumable': '1.0.0',
-          'Upload-Offset': String(offset),
-          'Content-Type': 'application/offset+octet-stream',
-          'Content-Length': String(length),
-        },
-        body: chunk,
-      });
-      if (!patch.ok) throw new Error(`Falló un bloque TUS (${patch.status})`);
-      offset = Number(patch.headers.get('upload-offset') ?? offset + length);
+      let patch: Response | null = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        patch = await fetch(location, {
+          method: 'PATCH',
+          headers: {
+            Authorization: authHeader,
+            'Tus-Resumable': '1.0.0',
+            'Upload-Offset': String(offset),
+            'Content-Type': 'application/offset+octet-stream',
+            'Content-Length': String(length),
+          },
+          body: chunk,
+        });
+        if (patch.ok) break;
+
+        // Si el proxy o la central ya aceptó el bloque pero la respuesta se
+        // perdió, recuperamos el offset real antes de reintentar.
+        if (patch.status === 409) {
+          const head = await fetch(location, {
+            headers: { Authorization: authHeader, 'Tus-Resumable': '1.0.0' },
+          });
+          const serverOffset = Number(head.headers.get('upload-offset'));
+          if (head.ok && Number.isFinite(serverOffset) && serverOffset >= offset && serverOffset <= sizeBytes) {
+            offset = serverOffset;
+            break;
+          }
+        }
+
+        if (attempt < 3 && (patch.status === 408 || patch.status === 429 || patch.status >= 500)) {
+          await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+          continue;
+        }
+        const detail = await patch.text().catch(() => '');
+        throw new Error(`Falló un bloque TUS (${patch.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+      }
+      if (!patch?.ok) continue;
+      const responseOffset = Number(patch.headers.get('upload-offset'));
+      offset = Number.isFinite(responseOffset) ? responseOffset : offset + length;
       if (offset >= sizeBytes) {
         const payload = await patch.json().catch(() => null) as { video?: { _id?: string } } | null;
         uploadedId = payload?.video?._id ? String(payload.video._id) : null;
