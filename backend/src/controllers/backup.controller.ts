@@ -610,7 +610,11 @@ export async function getSyncStatus(req: AuthRequest, res: Response): Promise<vo
 
     const [backedUp, inRemoteLibrary] = await Promise.all([
       BackupFileModel.find({ userId, content_id: { $in: contentIds } }, { content_id: 1 }).lean(),
-      RemoteLibraryVideoModel.find({ userId, contentId: { $in: contentIds } }, { contentId: 1 }).lean(),
+      // storedFileName != null -- si no, "en la nube" quedaba en true para
+      // siempre aunque el almacenamiento dinámico ya haya liberado los bytes
+      // (ver remote-library-retention.service.ts): el doc/miniatura sobreviven
+      // a propósito, pero eso ya no es "hay bytes reales en la nube".
+      RemoteLibraryVideoModel.find({ userId, contentId: { $in: contentIds }, storedFileName: { $ne: null } }, { contentId: 1 }).lean(),
     ]);
     const backedUpSet = new Set(backedUp.map(f => f.content_id));
     const remoteSet = new Set(inRemoteLibrary.map(v => v.contentId));

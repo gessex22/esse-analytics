@@ -19,6 +19,17 @@ export const remoteLibraryProxy = createProxyMiddleware({
   // central responde 404 porque esa ruta no existe ahí.
   pathRewrite: (path) => `/api/remote-library${path}`,
   on: {
+    // El CORS de la central solo permite esse-analytics.com -- las peticiones
+    // que llegan acá vía este proxy son de Electron (Origin tipo file:// o
+    // http://localhost:xxxx, según cómo cargue la ventana), y http-proxy
+    // reenvía el header Origin del cliente tal cual salvo que se lo saquemos
+    // acá. Sin esto, la central las rechaza con "Origen no permitido por
+    // CORS" -- este proxy YA es la barrera de confianza (solo local-backend
+    // le habla a la central con el JWT del usuario), así que se tratan como
+    // lo que son: server-a-servidor, sin Origin.
+    proxyReq: (proxyReq) => {
+      proxyReq.removeHeader('origin');
+    },
     // @tus/server arma el header Location con la URL que VE (la de la central,
     // detrás de este proxy) -- sin reescribirlo, tus-js-client intentaría mandar
     // los siguientes chunks PATCH directo a la central, saltándose el proxy (y
