@@ -320,8 +320,16 @@ export const streamRemoteLibraryVideo = async (req: AuthRequest, res: Response):
 
     if (range) {
       const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
-      const start = parseInt(startStr, 10);
-      const end = endStr ? parseInt(endStr, 10) : fileSize - 1;
+      // "bytes=-N" (sufijo, RFC 7233 §2.1: "los últimos N bytes") -- startStr
+      // queda vacío porque el string arranca con "-". ExoPlayer lo manda para
+      // ubicar el moov atom en videos grabados con el celular (queda al final
+      // del archivo, no al principio como en un mp4 "fast-start"). Antes esto
+      // parseaba start como NaN -> Content-Range inválido -> streaming roto
+      // (502 en el borde) para CUALQUIER video que necesitara este pedido
+      // específico para poder empezar a reproducirse.
+      const isSuffixRange = startStr === '' && endStr !== undefined;
+      const start = isSuffixRange ? Math.max(0, fileSize - parseInt(endStr, 10)) : parseInt(startStr, 10);
+      const end = isSuffixRange ? fileSize - 1 : (endStr ? parseInt(endStr, 10) : fileSize - 1);
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
