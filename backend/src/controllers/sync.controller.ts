@@ -569,29 +569,50 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
 
     const allConfigs = [{ ...ytConfig, lastVideoId: ytOverride?.lastVideoId ?? null, nextVideoId: ytOverride?.nextVideoId ?? null, nextRemoteLibraryVideoId: ytOverride?.nextRemoteLibraryVideoId ?? null }, ...result];
 
-    // Enriquece con datos del nextVideo para cada plataforma
+    // Enriquece con datos del nextVideo para cada plataforma. El puntero guardado
+    // (nextVideoId) solo avanza vía "Subir" o el botón "Fijar" del calendario —
+    // marcar la plataforma resuelta por otro camino (toggle en Videos, "Editar
+    // links") no lo toca. Si el archivo al que apunta ya está resuelto para ESA
+    // plataforma (publicado o descartado), el puntero quedó obsoleto: se
+    // descarta y se recalcula el verdadero próximo (el más reciente sin
+    // resolver ahí), igual que hace fileRepo.findNextUnpublished en local.
     const enriched = await Promise.all(allConfigs.map(async (cfg) => {
-      if (!cfg.nextVideoId) return { ...cfg, nextVideo: null };
-      try {
-        const mongoose = (await import('mongoose')).default;
-        let file: any = null;
+      const platform = cfg.platform;
+      let file: any = null;
+
+      if (cfg.nextVideoId) {
         try {
-          file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
-            .select('file_name duracion_segundos').lean();
-        } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
-        if (!file) {
-          file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
-            .select('file_name duracion_segundos').lean();
-        }
-        if (!file) return { ...cfg, nextVideo: null };
-        const dur = (file as any).duracion_segundos as number | undefined;
-        const duration = dur
-          ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
-          : '';
-        return { ...cfg, nextVideo: { fileId: String(file._id), title: (file as any).file_name, duration } };
-      } catch {
-        return { ...cfg, nextVideo: null };
+          const mongoose = (await import('mongoose')).default;
+          try {
+            file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
+              .select('file_name duracion_segundos platforms platforms_discarded').lean();
+          } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
+          if (!file) {
+            file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
+              .select('file_name duracion_segundos platforms platforms_discarded').lean();
+          }
+          if (file && ((file.platforms ?? []).includes(platform) || (file.platforms_discarded ?? []).includes(platform))) {
+            file = null; // obsoleto — cae al recálculo de abajo
+          }
+        } catch { file = null; }
       }
+
+      if (!file) {
+        file = await FileModel.findOne({
+          userId,
+          status: { $ne: 'ELIMINADO_DISCO' },
+          content_status: { $ne: 'descartado' },
+          platforms: { $ne: platform },
+          platforms_discarded: { $ne: platform },
+        }).sort({ fecha_creacion: -1, _id: -1 }).select('file_name duracion_segundos').lean();
+      }
+
+      if (!file) return { ...cfg, nextVideoId: null, nextVideo: null };
+      const dur = (file as any).duracion_segundos as number | undefined;
+      const duration = dur
+        ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
+        : '';
+      return { ...cfg, nextVideoId: String(file._id), nextVideo: { fileId: String(file._id), title: (file as any).file_name, duration } };
     }));
 
     res.json(enriched);

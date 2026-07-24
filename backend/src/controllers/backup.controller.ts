@@ -496,6 +496,50 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   );
 }
 
+// Actualiza platform_config (la colección que lee getCalendarConfig, ver
+// sync.controller.ts) tras una publicación real que NO pasó por el PC --
+// mismo efecto que syncNextVideoToCentral (local-backend/services/calendar-sync.service.ts)
+// dispara después de cada subida de escritorio. Sin esto, el Calendario solo
+// avanzaba "lastPublished"/"próximo" cuando se publicaba desde el escritorio:
+// publicar desde el celular dejaba esos campos congelados en lo último que
+// mandó el PC (o vacíos, si nunca se publicó desde ahí). "Próximo" se
+// aproxima igual que findNewerAdjacent en local-backend/db/file.repo.ts: el
+// archivo activo más viejo con fecha_creacion posterior al recién publicado.
+async function syncCalendarAfterPublish(
+  userId: string,
+  platform: string,
+  publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null,
+): Promise<void> {
+  if (!publishedFile || !['youtube', 'instagram', 'tiktok'].includes(platform)) return;
+  try {
+    const ref = publishedFile.fecha_creacion ?? new Date(0);
+    const nextFile = await FileModel.findOne({
+      userId,
+      _id: { $ne: publishedFile._id },
+      status: { $ne: 'ELIMINADO_DISCO' },
+      content_status: { $ne: 'descartado' },
+      fecha_creacion: { $gt: ref },
+    }).sort({ fecha_creacion: 1, _id: 1 }).select('file_name').lean();
+
+    const db = (await import('mongoose')).default.connection.db!;
+    await db.collection('platform_config').updateOne(
+      { userId, platform },
+      {
+        $set: {
+          userId, platform,
+          lastPublishedDate:  new Date().toISOString().slice(0, 10),
+          lastPublishedTitle: publishedFile.file_name,
+          lastVideoId:        String(publishedFile._id),
+          nextVideoId:        nextFile?.file_name ?? null,
+        },
+      },
+      { upsert: true },
+    );
+  } catch (err: any) {
+    console.warn('[calendar] sync tras publish falló:', err.message);
+  }
+}
+
 // POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —
 // registra UN evento de subida confirmada, en el momento exacto en que pasa
 // (llamado desde cada upload controller local, y desde UploadCoordinator en iOS,
@@ -537,6 +581,7 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
     );
 
     let linkedFileId: any = null;
+    let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
     if (fileName) {
       let file = contentId
         ? await FileModel.findOne({ userId, content_id: contentId })
@@ -560,6 +605,7 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
           { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
         );
       }
+      publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
     }
 
     await PlatformVideoModel.updateOne(
@@ -582,6 +628,8 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
       platform, platformId, platformUrl, fileName, contentId, title,
       publishedAt: publishedAtDate, matchStatus: 'manual',
     });
+
+    await syncCalendarAfterPublish(userId, platform, publishedFile);
 
     res.json({ ok: true });
   } catch (err: any) {
