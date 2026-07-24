@@ -1,7 +1,41 @@
 import { DbFile, fileRepo } from '../db/file.repo';
+import { configRepo } from '../db/config.repo';
 import { ensureNextVideoInRemoteLibrary } from './remote-library-preload.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+
+type CentralCalendarEntry = {
+  platform: 'youtube' | 'instagram' | 'tiktok';
+  lastPublishedTitle?: string | null;
+  lastPublishedDate?: string | null;
+  intervalDays?: number | null;
+  nextVideo?: { fileId: string; contentId?: string | null; title: string } | null;
+};
+
+/** La central manda el próximo; SQLite solo conserva un espejo local. */
+export async function syncCalendarFromCentral(authHeader: string | undefined): Promise<void> {
+  if (!authHeader) return;
+  const res = await fetch(`${CENTRAL}/api/sync/calendar-config`, { headers: { Authorization: authHeader } });
+  if (!res.ok) return;
+
+  const entries = await res.json() as CentralCalendarEntry[];
+  for (const entry of entries) {
+    if (!['youtube', 'instagram', 'tiktok'].includes(entry.platform)) continue;
+    const nextFile = entry.nextVideo
+      ? (entry.nextVideo.contentId ? fileRepo.findByContentId(entry.nextVideo.contentId) : undefined)
+        ?? fileRepo.findByName(entry.nextVideo.title)
+      : undefined;
+    const lastFile = entry.lastPublishedTitle ? fileRepo.findByName(entry.lastPublishedTitle) : undefined;
+
+    configRepo.setPlatformConfig(entry.platform, {
+      ...(entry.lastPublishedTitle !== undefined ? { last_published_title: entry.lastPublishedTitle ?? '' } : {}),
+      ...(entry.lastPublishedDate !== undefined ? { last_published_date: entry.lastPublishedDate ?? '' } : {}),
+      ...(entry.intervalDays != null ? { interval_days: entry.intervalDays } : {}),
+      ...(entry.nextVideo ? { next_video_id: nextFile ? String(nextFile.id) : null } : { next_video_id: null }),
+      ...(lastFile ? { last_video_id: String(lastFile.id) } : {}),
+    });
+  }
+}
 
 // El Calendario (PublishingQueue) lee su config del calendario CENTRAL (Mongo),
 // no de configRepo.markPublished (que solo escribe el mirror local en SQLite).
@@ -50,11 +84,13 @@ export async function syncNextVideoToCentral(
 export async function ensurePreloadForNextVideos(authHeader: string | undefined): Promise<void> {
   if (!authHeader) return;
   try {
+    // Actualiza primero el espejo local: la central decide el próximo video.
+    await syncCalendarFromCentral(authHeader);
     const res = await fetch(`${CENTRAL}/api/sync/calendar-config`, { headers: { Authorization: authHeader } });
     if (!res.ok) return;
     const configs: {
       platform: string;
-      nextVideo?: { fileId: string; title: string } | null;
+      nextVideo?: { fileId: string; contentId?: string | null; title: string } | null;
       nextRemoteLibraryVideoId?: string | null;
     }[] = await res.json();
 
@@ -67,7 +103,8 @@ export async function ensurePreloadForNextVideos(authHeader: string | undefined)
       if (!cfg.nextVideo) continue;
       if (!['youtube', 'instagram', 'tiktok'].includes(cfg.platform)) continue;
 
-      const file = fileRepo.findByName(cfg.nextVideo.title);
+      const file = (cfg.nextVideo.contentId ? fileRepo.findByContentId(cfg.nextVideo.contentId) : undefined)
+        ?? fileRepo.findByName(cfg.nextVideo.title);
       if (!file) continue; // el "próximo" lo tiene otro dispositivo, no esta PC
 
       const nextRemoteLibraryVideoId = await ensureNextVideoInRemoteLibrary(authHeader, file);

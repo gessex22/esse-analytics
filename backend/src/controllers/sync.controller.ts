@@ -641,11 +641,11 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
           const mongoose = (await import('mongoose')).default;
           try {
             file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
-              .select('file_name duracion_segundos platforms platforms_discarded').lean();
+              .select('file_name content_id duracion_segundos platforms platforms_discarded').lean();
           } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
           if (!file) {
             file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
-              .select('file_name duracion_segundos platforms platforms_discarded').lean();
+              .select('file_name content_id duracion_segundos platforms platforms_discarded').lean();
           }
           if (file) {
             resolvedId = String((file as any)._id);
@@ -663,7 +663,7 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
           content_status: { $ne: 'descartado' },
           platforms: { $ne: platform },
           platforms_discarded: { $ne: platform },
-        }).sort({ fecha_creacion: -1, _id: -1 }).select('file_name duracion_segundos').lean();
+        }).sort({ fecha_creacion: -1, _id: -1 }).select('file_name content_id duracion_segundos').lean();
       }
 
       // Esta autocorrección antes solo vivía en memoria (se devolvía bien en
@@ -687,7 +687,16 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
       const duration = dur
         ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
         : '';
-      return { ...cfg, nextVideoId: String(file._id), nextVideo: { fileId: String(file._id), title: (file as any).file_name, duration } };
+      return {
+        ...cfg,
+        nextVideoId: String(file._id),
+        nextVideo: {
+          fileId: String(file._id),
+          contentId: (file as any).content_id ?? null,
+          title: (file as any).file_name,
+          duration,
+        },
+      };
     }));
 
     res.json(enriched);
@@ -731,4 +740,3 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
     res.status(500).json({ message: err.message });
   }
 };
-

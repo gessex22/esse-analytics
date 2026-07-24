@@ -108,8 +108,20 @@ export const lookupRemoteLibraryVideoByContentId = async (req: AuthRequest, res:
     const contentId = req.query.contentId as string | undefined;
     if (!contentId) { res.status(400).json({ error: 'contentId requerido' }); return; }
 
-    const doc = await RemoteLibraryVideoModel.findOne({ userId: req.user!.id, contentId }).select('_id').lean();
-    res.json({ id: doc ? String(doc._id) : null });
+    // Solo cuenta como "ya precargado" si TODAVÍA tiene bytes reales -- un doc
+    // sin storedFileName (barrido de retención lo liberó porque dejó de ser
+    // "el próximo", o nunca tuvo bytes, solo metadata de catálogo) no sirve
+    // para publicar: sin este chequeo, el precargado se daba por hecho y
+    // nunca volvía a subir el archivo (bug real confirmado en producción).
+    // Puede haber filas antiguas de catálogo sin bytes y otra fila posterior
+    // con la precarga real. Filtrar en Mongo evita que findOne() elija primero
+    // la fila huérfana y devuelva un falso positivo.
+    const doc = await RemoteLibraryVideoModel.findOne({
+      userId: req.user!.id,
+      contentId,
+      storedFileName: { $exists: true, $nin: [null, ''] },
+    }).sort({ updatedAt: -1, _id: -1 }).select('_id storedFileName').lean();
+    res.json({ id: doc?.storedFileName ? String(doc._id) : null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -152,15 +164,29 @@ export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response):
   writeStream.on('finish', async () => {
     try {
       const sizeBytes = fs.statSync(filePath).size;
-      const doc = await RemoteLibraryVideoModel.create({
-        userId, contentId, fileName, storedFileName, sizeBytes,
-        durationSeconds, resolution, formato,
-        platforms: [], platformsDiscarded: [],
-        // Este endpoint solo lo llama local-backend (ensureNextVideoInRemoteLibrary)
-        // para un archivo que YA confirmó que existe en la biblioteca local --
-        // no es la única copia, el sweep puede liberarlo más adelante sin miedo.
-        safeToEvict: true,
-      });
+      // Upsert por contentId, no create() ciego -- si ya existía un doc para
+      // este video (metadata de catálogo sin bytes, o bytes liberados por el
+      // barrido de retención), hay que reusarlo: crear uno nuevo dejaría dos
+      // filas de Nube para el mismo video, una con badges/platformLinks y otra
+      // con los bytes recién subidos, divergiendo entre sí.
+      const doc = contentId
+        ? await RemoteLibraryVideoModel.findOneAndUpdate(
+            { userId, contentId },
+            {
+              $set: { fileName, storedFileName, sizeBytes, durationSeconds, resolution, formato, safeToEvict: true },
+              $setOnInsert: { userId, contentId, platforms: [], platformsDiscarded: [] },
+            },
+            { upsert: true, new: true },
+          )
+        : await RemoteLibraryVideoModel.create({
+            userId, contentId, fileName, storedFileName, sizeBytes,
+            durationSeconds, resolution, formato,
+            platforms: [], platformsDiscarded: [],
+            // Este endpoint solo lo llama local-backend (ensureNextVideoInRemoteLibrary)
+            // para un archivo que YA confirmó que existe en la biblioteca local --
+            // no es la única copia, el sweep puede liberarlo más adelante sin miedo.
+            safeToEvict: true,
+          });
       res.json({ ok: true, video: doc });
     } catch (err: any) {
       fs.unlink(filePath, () => {});

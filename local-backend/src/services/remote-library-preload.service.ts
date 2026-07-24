@@ -5,13 +5,29 @@ import { ensureThumbnail } from './thumbnail.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
+// Evita que dos disparadores simultáneos (montaje, foco, VideosView, etc.)
+// suban el mismo archivo antes de que la central alcance a registrar el primero.
+const inFlightByContentId = new Map<string, Promise<string | null>>();
+
 async function lookupRemoteLibraryId(authHeader: string, contentId: string): Promise<string | null> {
   const res = await fetch(`${CENTRAL}/api/remote-library/videos/lookup?contentId=${encodeURIComponent(contentId)}`, {
     headers: { Authorization: authHeader },
   });
-  if (!res.ok) return null;
+  // Un error de consulta no significa que el video no exista. Abortamos para
+  // no convertir una caída temporal de la central en una subida duplicada.
+  if (!res.ok) throw new Error(`No se pudo comprobar la Biblioteca remota (${res.status})`);
   const data = await res.json();
-  return data.id ?? null;
+  if (!data.id) return null;
+
+  // Defensa adicional mientras haya instalaciones centrales antiguas: el
+  // endpoint lookup puede devolver un documento de catálogo sin bytes. Solo
+  // consideramos precargado un video cuyo metadata confirma storedFileName.
+  const detail = await fetch(`${CENTRAL}/api/remote-library/videos/${encodeURIComponent(String(data.id))}`, {
+    headers: { Authorization: authHeader },
+  });
+  if (!detail.ok) return null;
+  const detailData = await detail.json();
+  return detailData.video?.storedFileName ? String(data.id) : null;
 }
 
 async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<string | null> {
@@ -71,6 +87,24 @@ export async function ensureNextVideoInRemoteLibrary(
   file: DbFile | undefined,
 ): Promise<string | null> {
   if (!authHeader || !file?.content_id) return null;
+
+  const key = `${authHeader}:${file.content_id}`;
+  const inFlight = inFlightByContentId.get(key);
+  if (inFlight) return inFlight;
+
+  const pending = ensureNextVideoInRemoteLibraryOnce(authHeader, file);
+  inFlightByContentId.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (inFlightByContentId.get(key) === pending) inFlightByContentId.delete(key);
+  }
+}
+
+async function ensureNextVideoInRemoteLibraryOnce(
+  authHeader: string,
+  file: DbFile,
+): Promise<string | null> {
 
   try {
     const existing = await lookupRemoteLibraryId(authHeader, file.content_id);

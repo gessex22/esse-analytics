@@ -70,6 +70,14 @@ const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   safeToEvict:               { type: Boolean, default: false },
 }, { timestamps: true });
 
+// Un video local es único por cuenta + contentId. El filtro parcial excluye
+// documentos históricos de catálogo que no tienen contentId, pero evita que
+// carreras de subida creen copias nuevas del mismo archivo.
+remoteLibraryVideoSchema.index(
+  { userId: 1, contentId: 1 },
+  { unique: true, partialFilterExpression: { contentId: { $type: 'string' } } },
+);
+
 export const RemoteLibraryVideoModel = model<IRemoteLibraryVideo>(
   'RemoteLibraryVideo',
   remoteLibraryVideoSchema,
