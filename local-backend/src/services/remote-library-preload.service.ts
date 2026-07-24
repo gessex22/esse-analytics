@@ -4,6 +4,8 @@ import { setPreloadActivity, clearPreloadActivity, setPreloadError } from '../st
 import { ensureThumbnail } from './thumbnail.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const DIRECT_UPLOAD_LIMIT = 80 * 1024 * 1024;
+const TUS_CHUNK_SIZE = 8 * 1024 * 1024;
 
 // Evita que dos disparadores simultáneos (montaje, foco, VideosView, etc.)
 // suban el mismo archivo antes de que la central alcance a registrar el primero.
@@ -37,6 +39,10 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
   if (file.formato) params.set('formato', file.formato);
 
   const stat = fs.statSync(file.file_path);
+  if (stat.size > DIRECT_UPLOAD_LIMIT) {
+    return uploadToRemoteLibraryTus(authHeader, file, stat.size);
+  }
+
   const res = await fetch(`${CENTRAL}/api/remote-library/videos/import?${params.toString()}`, {
     method: 'POST',
     headers: { Authorization: authHeader, 'Content-Type': 'video/mp4', 'Content-Length': String(stat.size) },
@@ -49,6 +55,78 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
   const videoId = data.video?._id ? String(data.video._id) : null;
   if (videoId) await uploadThumbnailToRemoteLibrary(authHeader, videoId, file);
   return videoId;
+}
+
+function tusMetadata(entries: Record<string, string>): string {
+  return Object.entries(entries)
+    .map(([key, value]) => `${key} ${Buffer.from(value, 'utf8').toString('base64')}`)
+    .join(',');
+}
+
+async function uploadToRemoteLibraryTus(authHeader: string, file: DbFile, sizeBytes: number): Promise<string | null> {
+  const create = await fetch(`${CENTRAL}/api/remote-library/tus`, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      'Tus-Resumable': '1.0.0',
+      'Upload-Length': String(sizeBytes),
+      'Upload-Metadata': tusMetadata({
+        filename: file.file_name,
+        fileName: file.file_name,
+        filetype: 'video/mp4',
+        contentId: file.content_id,
+        ...(file.duracion_segundos ? { durationSeconds: String(file.duracion_segundos) } : {}),
+        ...(file.resolucion ? { resolution: file.resolucion } : {}),
+        ...(file.formato ? { formato: file.formato } : {}),
+      }),
+    },
+  });
+  if (!create.ok) throw new Error(`Falló la creación de subida TUS (${create.status})`);
+
+  let location = create.headers.get('location');
+  if (!location) throw new Error('La central no devolvió la URL de subida TUS');
+  if (location.startsWith('/')) location = `${CENTRAL}${location}`;
+
+  const handle = await fs.promises.open(file.file_path, 'r');
+  let uploadedId: string | null = null;
+  try {
+    let offset = 0;
+    while (offset < sizeBytes) {
+      const length = Math.min(TUS_CHUNK_SIZE, sizeBytes - offset);
+      const chunk = Buffer.allocUnsafe(length);
+      const read = await handle.read(chunk, 0, length, offset);
+      if (read.bytesRead !== length) throw new Error('Lectura incompleta del archivo local');
+
+      const patch = await fetch(location, {
+        method: 'PATCH',
+        headers: {
+          Authorization: authHeader,
+          'Tus-Resumable': '1.0.0',
+          'Upload-Offset': String(offset),
+          'Content-Type': 'application/offset+octet-stream',
+          'Content-Length': String(length),
+        },
+        body: chunk,
+      });
+      if (!patch.ok) throw new Error(`Falló un bloque TUS (${patch.status})`);
+      offset = Number(patch.headers.get('upload-offset') ?? offset + length);
+      if (offset >= sizeBytes) {
+        const payload = await patch.json().catch(() => null) as { video?: { _id?: string } } | null;
+        uploadedId = payload?.video?._id ? String(payload.video._id) : null;
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+
+  if (uploadedId) return uploadedId;
+
+  const detail = await fetch(`${CENTRAL}/api/remote-library/videos/lookup?contentId=${encodeURIComponent(file.content_id)}`, {
+    headers: { Authorization: authHeader },
+  });
+  if (!detail.ok) throw new Error(`No se pudo confirmar la subida TUS (${detail.status})`);
+  const data = await detail.json();
+  return data.id ? String(data.id) : null;
 }
 
 // A diferencia de subir a mano (Android/iOS/Electron generan el frame en el
