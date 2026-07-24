@@ -550,6 +550,18 @@ async function syncCalendarAfterPublish(
     }).sort({ fecha_creacion: 1, _id: 1 }).select('file_name').lean();
 
     const db = (await import('mongoose')).default.connection.db!;
+    // nextRemoteLibraryVideoId apunta a los BYTES ya precargados del "próximo"
+    // anterior -- si acá "próximo" cambia de archivo y no se invalida, queda
+    // apuntando a un video que ya no es el próximo real. ensurePreloadForNextVideos
+    // (local-backend/calendar-sync.service.ts) interpreta "viene con un id" como
+    // "ya está precargado" y nunca vuelve a intentarlo: Biblioteca remota se
+    // queda sin el archivo correcto para siempre (bug real confirmado: los 3
+    // platform_config quedaron con IDs de precarga huérfanos, apuntando a
+    // documentos que ya no existen).
+    const current = await db.collection('platform_config').findOne({ userId, platform }, { projection: { nextVideoId: 1 } });
+    const newNextVideoId = nextFile?.file_name ?? null;
+    const nextChanged = (current?.nextVideoId ?? null) !== newNextVideoId;
+
     await db.collection('platform_config').updateOne(
       { userId, platform },
       {
@@ -558,7 +570,8 @@ async function syncCalendarAfterPublish(
           lastPublishedDate:  new Date().toISOString().slice(0, 10),
           lastPublishedTitle: publishedFile.file_name,
           lastVideoId:        String(publishedFile._id),
-          nextVideoId:        nextFile?.file_name ?? null,
+          nextVideoId:        newNextVideoId,
+          ...(nextChanged ? { nextRemoteLibraryVideoId: null } : {}),
         },
       },
       { upsert: true },

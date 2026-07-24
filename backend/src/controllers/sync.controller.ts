@@ -634,6 +634,7 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
     const enriched = await Promise.all(allConfigs.map(async (cfg) => {
       const platform = cfg.platform;
       let file: any = null;
+      let resolvedId: string | null = null; // a qué archivo apuntaba el puntero guardado, antes de chequear si quedó obsoleto
 
       if (cfg.nextVideoId) {
         try {
@@ -646,8 +647,11 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
             file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
               .select('file_name duracion_segundos platforms platforms_discarded').lean();
           }
-          if (file && ((file.platforms ?? []).includes(platform) || (file.platforms_discarded ?? []).includes(platform))) {
-            file = null; // obsoleto — cae al recálculo de abajo
+          if (file) {
+            resolvedId = String((file as any)._id);
+            if ((file.platforms ?? []).includes(platform) || (file.platforms_discarded ?? []).includes(platform)) {
+              file = null; // obsoleto — cae al recálculo de abajo
+            }
           }
         } catch { file = null; }
       }
@@ -660,6 +664,22 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
           platforms: { $ne: platform },
           platforms_discarded: { $ne: platform },
         }).sort({ fecha_creacion: -1, _id: -1 }).select('file_name duracion_segundos').lean();
+      }
+
+      // Esta autocorrección antes solo vivía en memoria (se devolvía bien en
+      // la respuesta pero platform_config quedaba con el puntero viejo para
+      // siempre). Sin persistirla, ensurePreloadForNextVideos (desktop) sigue
+      // viendo el nextRemoteLibraryVideoId huérfano de la vez anterior y nunca
+      // vuelve a precargar el archivo realmente próximo -- mismo bug que en
+      // syncCalendarAfterPublish, este es el otro camino por el que "próximo"
+      // podía cambiar sin invalidar la precarga.
+      const finalId = file ? String((file as any)._id) : null;
+      if (finalId !== resolvedId) {
+        const mongooseMod = (await import('mongoose')).default;
+        mongooseMod.connection.db!.collection('platform_config').updateOne(
+          { userId, platform },
+          { $set: { nextVideoId: file ? (file as any).file_name : null, nextRemoteLibraryVideoId: null } },
+        ).catch(() => {});
       }
 
       if (!file) return { ...cfg, nextVideoId: null, nextVideo: null };
