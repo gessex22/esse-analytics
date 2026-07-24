@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { DbFile } from '../db/file.repo';
 import { setPreloadActivity, clearPreloadActivity, setPreloadError } from '../state/remote-library-preload-activity';
+import { ensureThumbnail } from './thumbnail.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -29,7 +30,34 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
 
   if (!res.ok) throw new Error(`Falló la subida a Biblioteca remota (${res.status})`);
   const data = await res.json();
-  return data.video?._id ? String(data.video._id) : null;
+  const videoId = data.video?._id ? String(data.video._id) : null;
+  if (videoId) await uploadThumbnailToRemoteLibrary(authHeader, videoId, file);
+  return videoId;
+}
+
+// A diferencia de subir a mano (Android/iOS/Electron generan el frame en el
+// cliente y lo mandan aparte, ver uploadRemoteLibraryThumbnail en la central),
+// este preload es 100% del lado del servidor local -- sin este paso el video
+// quedaba en Biblioteca remota sin miniatura para siempre, mostrando el ícono
+// de nube genérico en vez de un frame real en las apps. Best-effort: si falla,
+// el video ya quedó subido igual, solo se pierde la miniatura.
+async function uploadThumbnailToRemoteLibrary(authHeader: string, videoId: string, file: DbFile): Promise<void> {
+  try {
+    const { path: thumbPath } = await ensureThumbnail(file.id, file.file_path, {
+      durationSec: file.duracion_segundos ?? undefined,
+      hasDimensions: !!(file.formato && file.resolucion),
+    });
+    if (!thumbPath) return;
+
+    const form = new FormData();
+    form.append('thumbnail', new Blob([fs.readFileSync(thumbPath)], { type: 'image/jpeg' }), 'thumbnail.jpg');
+
+    await fetch(`${CENTRAL}/api/remote-library/videos/${videoId}/thumbnail`, {
+      method: 'POST',
+      headers: { Authorization: authHeader },
+      body: form,
+    });
+  } catch { /* best-effort -- ver comentario arriba */ }
 }
 
 // Se llama justo después de fijar el "próximo a publicar" de una plataforma
