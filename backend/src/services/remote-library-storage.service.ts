@@ -42,7 +42,8 @@ export function resolveRemoteLibraryFilePath(userId: string, storedFileName: str
   return path.join(getUserDir(userId), storedFileName);
 }
 
-export function deleteRemoteLibraryFile(userId: string, storedFileName: string): void {
+export function deleteRemoteLibraryFile(userId: string, storedFileName: string | null | undefined): void {
+  if (!storedFileName) return; // ya liberado (almacenamiento dinámico) o nunca tuvo bytes -- nada que borrar
   fs.unlink(resolveRemoteLibraryFilePath(userId, storedFileName), () => {});
 }
 

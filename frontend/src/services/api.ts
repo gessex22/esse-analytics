@@ -955,7 +955,7 @@ export interface RemoteLibraryVideo {
   _id: string;
   userId: string;
   fileName: string;
-  storedFileName: string;
+  storedFileName: string | null;
   sizeBytes: number;
   durationSeconds?: number;
   resolution?: string;

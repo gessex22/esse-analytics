@@ -141,6 +141,10 @@ export async function runRemoteLibraryRetentionSweep(): Promise<RetentionSweepRe
         // sería una pérdida real y permanente del video.
         if (stat.nlink > 1) {
           deleteRemoteLibraryFile(userId, v.storedFileName);
+          // storedFileName a null -- así el listado (GET /api/remote-library/videos)
+          // puede filtrar limpio por "todavía tiene bytes" sin tener que golpear
+          // el filesystem por cada fila. El documento y la miniatura no se tocan.
+          await RemoteLibraryVideoModel.updateOne({ _id: v._id }, { $set: { storedFileName: null } });
           evicted++;
         } else {
           keptSoleCopy++;

@@ -23,7 +23,11 @@ export interface IRemoteLibraryVideo extends Document {
   userId: string;
   contentId?: string;         // vincula con files.content_id (SQLite local) del mismo video — opcional, no todos los clientes lo mandan (ver Android)
   fileName: string;           // nombre original, solo para mostrar
-  storedFileName: string;     // uuid + extensión real en disco — evita colisiones
+  // uuid + extensión real en disco -- null cuando el almacenamiento dinámico
+  // (ver remote-library-retention.service.ts) ya liberó los bytes del video
+  // porque dejó de ser "el próximo a publicar". El documento y la miniatura
+  // sobreviven siempre; esto es lo único que puede quedar sin bytes.
+  storedFileName: string | null;
   sizeBytes: number;
   durationSeconds?: number;   // lo prueba el cliente (Android), la central no tiene ffmpeg
   resolution?: string;
@@ -45,7 +49,7 @@ const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   userId:                   { type: String, required: true, index: true },
   contentId:                { type: String, index: true },
   fileName:                 { type: String, required: true },
-  storedFileName:           { type: String, required: true },
+  storedFileName:           { type: String, default: null },
   sizeBytes:                { type: Number, required: true },
   durationSeconds:          { type: Number },
   resolution:                { type: String },

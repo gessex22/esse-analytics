@@ -241,6 +241,14 @@ export const listRemoteLibraryVideos = async (req: AuthRequest, res: Response): 
           3,
         ],
       };
+    } else {
+      // Listado normal (vista de escritorio) -- oculta lo que el almacenamiento
+      // dinámico ya liberó (storedFileName null, ver remote-library-retention.service.ts):
+      // mostrar la tarjeta de un video sin bytes reales confundía más de lo que
+      // ayudaba. No se aplica bajo pendingOnly porque eso resuelve "próximo en
+      // cola" para el celular por otro criterio (más viejo sin resolver) --
+      // filtrar ahí podría saltear un video que el celular sí necesita ver.
+      filter.storedFileName = { $ne: null };
     }
 
     const [videos, total] = await Promise.all([
@@ -289,6 +297,10 @@ export const streamRemoteLibraryVideo = async (req: AuthRequest, res: Response):
   try {
     const doc = await RemoteLibraryVideoModel.findOne({ _id: req.params.id, userId: req.user!.id }).lean();
     if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
+    // Almacenamiento dinámico ya liberó los bytes (ver remote-library-retention.service.ts)
+    // -- el doc/miniatura siguen, pero no hay nada que streamear ni en el peer
+    // (storedFileName es un campo de Mongo, compartido por los 2 backends).
+    if (!doc.storedFileName) { res.status(404).json({ error: 'Video liberado de Biblioteca remota' }); return; }
 
     const filePath = resolveRemoteLibraryFilePath(doc.userId, doc.storedFileName);
     if (!(await existsWithRetry(filePath))) {
