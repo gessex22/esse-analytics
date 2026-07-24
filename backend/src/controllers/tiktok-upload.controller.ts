@@ -3,8 +3,7 @@ import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
-import { PlatformVideoModel } from '../models/platform-video.model';
-import { mirrorPlatformVideoToBackup } from './backup.controller';
+import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 
@@ -311,13 +310,8 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
     }
 
     const platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${publish_id}`;
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId: req.user!.id, platform: 'tiktok', platformId: publish_id },
-      { userId: req.user!.id, platform: 'tiktok', platformId: publish_id, platformUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
-      { upsert: true },
-    );
-    await mirrorPlatformVideoToBackup(req.user!.id, {
-      platform: 'tiktok', platformId: publish_id, platformUrl, fileName: fileDoc.file_name,
+    await applyPlatformPublish(req.user!.id, {
+      platform: 'tiktok', platformId: publish_id, platformUrl, fileName: fileDoc.file_name, matchStatus: 'manual',
     });
 
     await FileModel.findByIdAndUpdate(fileId, {

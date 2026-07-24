@@ -4,8 +4,7 @@ import https from 'https';
 import http from 'http';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
-import { PlatformVideoModel } from '../models/platform-video.model';
-import { mirrorPlatformVideoToBackup } from './backup.controller';
+import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 
@@ -416,13 +415,8 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
     const mediaData = await igGet(`/${publishData.id}?fields=permalink`, access_token);
     const postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
 
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId: req.user!.id, platform: 'instagram', platformId: publishData.id },
-      { userId: req.user!.id, platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
-      { upsert: true },
-    );
-    await mirrorPlatformVideoToBackup(req.user!.id, {
-      platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, fileName: fileDoc.file_name,
+    await applyPlatformPublish(req.user!.id, {
+      platform: 'instagram', platformId: publishData.id, platformUrl: postUrl, fileName: fileDoc.file_name, matchStatus: 'manual',
     });
 
     // Crossposting robusto: el mismo archivo se publica como Reel en la Página
@@ -437,13 +431,8 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
         try {
           const fb = await publishReelToFacebookPage(filePath, page_id, access_token, fullCaption);
           facebookUrl = fb.url;
-          await PlatformVideoModel.findOneAndUpdate(
-            { userId: req.user!.id, platform: 'facebook', platformId: fb.videoId },
-            { userId: req.user!.id, platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
-            { upsert: true },
-          );
-          await mirrorPlatformVideoToBackup(req.user!.id, {
-            platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, fileName: fileDoc.file_name,
+          await applyPlatformPublish(req.user!.id, {
+            platform: 'facebook', platformId: fb.videoId, platformUrl: fb.url, fileName: fileDoc.file_name, matchStatus: 'manual',
           });
         } catch (err: any) {
           facebookError = err.message;

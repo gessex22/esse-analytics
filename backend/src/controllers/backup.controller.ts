@@ -39,11 +39,12 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       // wipe de logout + pull no recupera esos videos (bug real, ver incidente de
       // julio 2026 / fix-local-files-platforms.js): el pull queda tan incompleto
       // como el propio push, aunque en la nube exista el dato correcto en otro lado.
-      FileModel.find({ userId }).select('file_name platforms platforms_discarded').lean(),
+      FileModel.find({ userId }).select('file_name platforms platforms_discarded content_status scheduled_date duracion_segundos resolucion formato fecha_creacion updatedAt').lean(),
     ]);
 
     const centralByName = new Map(centralFiles.map(f => [f.file_name, f]));
-    const merged = allFiles.map(f => {
+    const backupNames = new Set(allFiles.map(f => f.file_name));
+    const enriched = allFiles.map(f => {
       const current = (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
       if (current >= 3) return f;
       const central = centralByName.get(f.file_name);
@@ -52,6 +53,27 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       if (centralCount <= current) return f;
       return { ...f, platforms: central.platforms ?? f.platforms, platforms_discarded: central.platforms_discarded ?? f.platforms_discarded };
     });
+    // Un archivo que se publicó/resolvió por un camino que nunca pasa por
+    // BackupFileModel (celular, Biblioteca remota, auto-sync) puede no tener
+    // NINGUNA fila ahí todavía -- el .map() de arriba nunca lo agrega, solo
+    // enriquece lo que YA existe. Sin esto, el pull del PC ni se enteraba de
+    // que ese archivo existía (aunque la SQLite local sí lo tuviera, con el
+    // badge viejo) hasta que alguna instalación lo pusheara una vez.
+    const onlyInCentral = centralFiles
+      .filter(f => !backupNames.has(f.file_name))
+      .map(f => ({
+        file_name:           f.file_name,
+        platforms:           f.platforms           ?? [],
+        platforms_discarded: f.platforms_discarded ?? [],
+        content_status:      f.content_status      ?? 'borrador',
+        scheduled_date:      f.scheduled_date       ?? null,
+        duracion_segundos:   f.duracion_segundos    ?? null,
+        resolucion:          f.resolucion           ?? null,
+        formato:             f.formato              ?? null,
+        fecha_creacion:      f.fecha_creacion        ?? null,
+        local_updated_at:    (f as any).updatedAt,
+      }));
+    const merged = [...enriched, ...onlyInCentral];
 
     const files = includeResolved
       ? merged
@@ -546,6 +568,121 @@ async function syncCalendarAfterPublish(
   }
 }
 
+// Punto único que representa "esto se publicó de verdad en esta plataforma" --
+// hasta hoy cada entry point (Sincronizar, subida real por celular/central,
+// Editar links del escritorio, marcar publicado desde Nube) actualizaba un
+// subconjunto DISTINTO de las colecciones involucradas, así que el mismo video
+// podía terminar con el link en un lado y no en otro, el badge sin el link, o
+// el Calendario sin enterarse. Esta función es la única fuente de verdad:
+// llamarla es "esto quedó publicado", y deja consistentes:
+//   - PlatformVideoModel (Sincronizar/Estadísticas)
+//   - FileModel.platforms (el badge que se ve en Videos/Nube/todos lados)
+//   - BackupPlatformVideoModel (lo que lee el pull del PC)
+//   - platform_config (el Calendario)
+//   - RemoteLibraryVideoModel, si el video también vive en Biblioteca remota
+export async function applyPlatformPublish(userId: string, data: {
+  platform: string;
+  // string | null | undefined: algunos callers (ej. googleapis' response.data.id)
+  // tipan el id como potencialmente ausente -- igual que mirrorPlatformVideoToBackup.
+  platformId: string | null | undefined;
+  platformUrl?: string | null;
+  fileName?: string | null;
+  contentId?: string | null;
+  title?: string | null;
+  publishedAt?: Date;
+  matchStatus?: string;
+}): Promise<{ linkedFileId: any | null }> {
+  if (!data.platformId) return { linkedFileId: null };
+  // any: llega de request bodies (recordUploadEvent, confirmLink, uploaders)
+  // que ya validan el valor contra su propia lista de plataformas antes de
+  // llegar acá -- este helper es compartido por varios callers con sus
+  // propios union types (Platform, SyncPlatform, RemotePlatform), ninguno
+  // 100% igual entre sí.
+  const platform = data.platform as any;
+  const platformId = data.platformId;
+  const { platformUrl, fileName, contentId, title } = data;
+  const publishedAtDate = data.publishedAt ?? new Date();
+  const matchStatus = data.matchStatus ?? 'manual';
+
+  let linkedFileId: any = null;
+  let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
+  if (fileName) {
+    let file = contentId
+      ? await FileModel.findOne({ userId, content_id: contentId })
+      : await FileModel.findOne({ userId, file_name: fileName });
+    // Si no hay ningún archivo local con ese nombre (ej. video publicado
+    // directo desde el celular, sin pasar antes por el catálogo), se crea un
+    // registro mínimo -- si no, Estadísticas (getGroupStats) no tiene de
+    // dónde sacarlo y queda sin ver el video hasta que alguien lo vincule a
+    // mano en Videos (escritorio).
+    if (!file) {
+      file = await FileModel.findOneAndUpdate(
+        { userId, file_name: fileName },
+        { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+        { upsert: true, new: true },
+      );
+    }
+    linkedFileId = file._id;
+    if (!file.platforms.includes(platform)) {
+      await FileModel.updateOne(
+        { _id: file._id },
+        { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
+      );
+    }
+    publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
+  }
+
+  await PlatformVideoModel.updateOne(
+    { userId, platform, platformId },
+    {
+      $set: {
+        userId, platform, platformId,
+        platformUrl:  platformUrl ?? '',
+        title:        title ?? '',
+        publishedAt:  publishedAtDate,
+        linkedFileId,
+        matchStatus,
+        lastSyncedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+
+  await mirrorPlatformVideoToBackup(userId, {
+    platform, platformId, platformUrl, fileName, contentId, title,
+    publishedAt: publishedAtDate, matchStatus,
+  });
+
+  await syncCalendarAfterPublish(userId, platform, publishedFile);
+
+  // E: si el mismo video (por fileName o contentId) también vive en Biblioteca
+  // remota, refleja la plataforma ahí también -- solo altas, nunca desvincula
+  // ni descarta desde acá (mismo criterio conservador que bulkUpsertBackupFiles
+  // usa para no pisar decisiones tomadas directamente en Nube). RemoteLibraryVideoModel
+  // no tiene 'facebook' en su enum de plataformas (solo youtube/instagram/tiktok).
+  if ((fileName || contentId) && ['youtube', 'instagram', 'tiktok'].includes(platform)) {
+    try {
+      const remoteQuery = contentId ? { userId, contentId } : { userId, fileName };
+      const remote = await RemoteLibraryVideoModel.findOne(remoteQuery as any);
+      if (remote && !remote.platforms.includes(platform as any)) {
+        const keptLinks = (remote.platformLinks ?? []).filter((l) => l.platform !== platform);
+        await RemoteLibraryVideoModel.updateOne(
+          { _id: remote._id },
+          {
+            $addToSet: { platforms: platform },
+            $pull: { platformsDiscarded: platform },
+            $set: { platformLinks: [...keptLinks, { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate }] },
+          },
+        );
+      }
+    } catch (err: any) {
+      console.warn('[applyPlatformPublish] sync a Biblioteca remota falló:', err.message);
+    }
+  }
+
+  return { linkedFileId };
+}
+
 // POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —
 // registra UN evento de subida confirmada, en el momento exacto en que pasa
 // (llamado desde cada upload controller local, y desde UploadCoordinator en iOS,
@@ -554,10 +691,9 @@ async function syncCalendarAfterPublish(
 // insert puntual e inmediato -- por eso sobrevive cualquier wipe local sin
 // depender de él.
 //
-// Además de loguear el evento (UploadHistoryModel), actualiza FileModel.platforms
-// y hace upsert de PlatformVideoModel -- son las 2 colecciones de las que depende
-// Estadísticas/Sincronizar (ver getGroupStats, getCrossMatchCandidates), y sin
-// esto quedaban desactualizadas para todo lo publicado fuera del flujo viejo de
+// Además de loguear el evento (UploadHistoryModel), delega en applyPlatformPublish
+// -- sin esto, FileModel/PlatformVideoModel/el Calendario/Nube quedaban
+// desactualizados para todo lo publicado fuera del flujo viejo de
 // youtube/instagram/tiktok-upload.controller.ts (ej. subidas desde el celular).
 // deviceId es opcional: iOS todavía no lo manda en record-publish.
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
@@ -586,56 +722,10 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
       { upsert: true },
     );
 
-    let linkedFileId: any = null;
-    let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
-    if (fileName) {
-      let file = contentId
-        ? await FileModel.findOne({ userId, content_id: contentId })
-        : await FileModel.findOne({ userId, file_name: fileName });
-      // Si no hay ningún archivo local con ese nombre (ej. video publicado
-      // directo desde el celular, sin pasar antes por el catálogo), se crea un
-      // registro mínimo -- si no, Estadísticas (getGroupStats) no tiene de
-      // dónde sacarlo y queda sin ver el video hasta que alguien lo vincule a
-      // mano en Videos (escritorio).
-      if (!file) {
-        file = await FileModel.findOneAndUpdate(
-          { userId, file_name: fileName },
-          { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
-          { upsert: true, new: true },
-        );
-      }
-      linkedFileId = file._id;
-      if (!file.platforms.includes(platform)) {
-        await FileModel.updateOne(
-          { _id: file._id },
-          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
-        );
-      }
-      publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
-    }
-
-    await PlatformVideoModel.updateOne(
-      { userId, platform, platformId },
-      {
-        $set: {
-          userId, platform, platformId,
-          platformUrl:  platformUrl ?? '',
-          title:        title ?? '',
-          publishedAt:  publishedAtDate,
-          linkedFileId,
-          matchStatus:  'manual',
-          lastSyncedAt: new Date(),
-        },
-      },
-      { upsert: true },
-    );
-
-    await mirrorPlatformVideoToBackup(userId, {
+    await applyPlatformPublish(userId, {
       platform, platformId, platformUrl, fileName, contentId, title,
       publishedAt: publishedAtDate, matchStatus: 'manual',
     });
-
-    await syncCalendarAfterPublish(userId, platform, publishedFile);
 
     res.json({ ok: true });
   } catch (err: any) {

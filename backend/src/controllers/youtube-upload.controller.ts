@@ -6,8 +6,7 @@ import os from 'os';
 import multer from 'multer';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
-import { PlatformVideoModel } from '../models/platform-video.model';
-import { mirrorPlatformVideoToBackup } from './backup.controller';
+import { applyPlatformPublish } from './backup.controller';
 import { markPlatformLinked } from '../models/user.model';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { AuthRequest } from '../middleware/auth.middleware';
@@ -243,19 +242,11 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     const videoId = response.data.id;
     const videoUrl = `https://www.youtube.com/shorts/${videoId}`;
 
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId: req.user!.id, platform: 'youtube', platformId: videoId },
-      { userId: req.user!.id, platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), linkedFileId: fileId, matchStatus: 'manual' },
-      { upsert: true },
-    );
-    await mirrorPlatformVideoToBackup(req.user!.id, {
-      platform: 'youtube', platformId: videoId, platformUrl: videoUrl, fileName: fileDoc.file_name,
+    await applyPlatformPublish(req.user!.id, {
+      platform: 'youtube', platformId: videoId, platformUrl: videoUrl, fileName: fileDoc.file_name, matchStatus: 'manual',
     });
 
-    await FileModel.findByIdAndUpdate(fileId, {
-      $set: { content_status: 'publicado' },
-      $addToSet: { platforms: 'youtube' },
-    });
+    await FileModel.findByIdAndUpdate(fileId, { $set: { content_status: 'publicado' } });
 
     res.json({
       ok: true,
@@ -336,12 +327,7 @@ export const remoteUploadToYoutube = async (req: AuthRequest, res: Response) => 
     const videoId = response.data.id;
     const videoUrl = `https://www.youtube.com/shorts/${videoId}`;
 
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId: req.user!.id, platform: 'youtube', platformId: videoId },
-      { userId: req.user!.id, platform: 'youtube', platformId: videoId, platformUrl: videoUrl, publishedAt: new Date(), matchStatus: 'remote' },
-      { upsert: true },
-    );
-    await mirrorPlatformVideoToBackup(req.user!.id, {
+    await applyPlatformPublish(req.user!.id, {
       platform: 'youtube', platformId: videoId, platformUrl: videoUrl, matchStatus: 'remote',
     });
 

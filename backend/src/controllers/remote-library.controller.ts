@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { applyPlatformPublish } from './backup.controller';
 import {
   resolveRemoteLibraryFilePath,
   deleteRemoteLibraryFile,
@@ -374,6 +375,16 @@ export const getRemoteLibraryThumbnail = async (req: AuthRequest, res: Response)
 export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: Response): Promise<void> => {
   const { platforms, platformsDiscarded, platformLinks } = req.body;
   try {
+    const userId = req.user!.id;
+    // Se necesita el estado ANTES del update para dos cosas: el merge de
+    // platformLinks (ya existía) y ahora también para saber qué plataformas
+    // son una novedad real (ver el best-effort de abajo).
+    const before = await RemoteLibraryVideoModel.findOne(
+      { _id: req.params.id, userId },
+      { platforms: 1, platformLinks: 1, fileName: 1, contentId: 1 },
+    ).lean();
+    if (!before) { res.status(404).json({ error: 'Video no encontrado' }); return; }
+
     const update: Record<string, unknown> = {};
     if (platforms !== undefined) update.platforms = platforms;
     if (platformsDiscarded !== undefined) update.platformsDiscarded = platformsDiscarded;
@@ -383,23 +394,36 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
     // array entero, o publicar en una plataforma pisaría el link que ya
     // había quedado registrado para otra.
     if (Array.isArray(platformLinks) && platformLinks.length > 0) {
-      const existing = await RemoteLibraryVideoModel.findOne(
-        { _id: req.params.id, userId: req.user!.id },
-        { platformLinks: 1 },
-      ).lean();
-      if (!existing) { res.status(404).json({ error: 'Video no encontrado' }); return; }
       const incomingPlatforms = new Set(platformLinks.map((l: any) => l.platform));
-      const kept = (existing.platformLinks ?? []).filter((l: any) => !incomingPlatforms.has(l.platform));
+      const kept = (before.platformLinks ?? []).filter((l: any) => !incomingPlatforms.has(l.platform));
       update.platformLinks = [...kept, ...platformLinks];
     }
 
     const doc = await RemoteLibraryVideoModel.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user!.id },
+      { _id: req.params.id, userId },
       update,
       { new: true },
     );
     if (!doc) { res.status(404).json({ error: 'Video no encontrado' }); return; }
     res.json({ ok: true, video: doc });
+
+    // Best-effort, después de responder: marcar publicado desde Nube antes
+    // solo tocaba este documento -- si vino con un link real (platformLinks,
+    // no solo el toggle de badge) para una plataforma que ANTES no estaba
+    // marcada acá, también puede ser la fuente de verdad para el archivo
+    // local del mismo video (por fileName/contentId). Sin esto, el badge y el
+    // link quedaban invisibles en Videos/Sincronizar/Calendario.
+    if (Array.isArray(platformLinks)) {
+      for (const link of platformLinks) {
+        if (!link?.platform || !link?.platformId) continue;
+        if ((before.platforms ?? []).includes(link.platform)) continue; // ya estaba, no es novedad
+        applyPlatformPublish(userId, {
+          platform: link.platform, platformId: link.platformId, platformUrl: link.platformUrl,
+          fileName: before.fileName, contentId: before.contentId,
+          publishedAt: link.publishedAt ? new Date(link.publishedAt) : undefined,
+        }).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] applyPlatformPublish falló:', err.message));
+      }
+    }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

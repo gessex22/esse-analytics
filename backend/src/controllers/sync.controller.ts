@@ -8,6 +8,7 @@ import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats } from
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { applyPlatformPublish } from './backup.controller';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -94,6 +95,20 @@ export const confirmLink = async (req: AuthRequest, res: Response): Promise<void
       $unset: { matchCandidates: '' },
     });
     if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+    // Confirmar el match acá solo tocaba PlatformVideoModel -- el badge (Videos),
+    // el link del pull del PC, el Calendario y Nube nunca se enteraban de este
+    // vínculo. Sin file_name no hay mucho que propagar (los otros stores
+    // matchean por nombre), pero best-effort igual si el archivo no lo tiene.
+    const linkedFile = await FileModel.findById(fileId).select('file_name').lean();
+    if (linkedFile) {
+      await applyPlatformPublish(userId, {
+        platform: updated.platform, platformId: updated.platformId, platformUrl: updated.platformUrl,
+        fileName: linkedFile.file_name,
+        title: updated.title, publishedAt: updated.publishedAt, matchStatus: 'manual',
+      });
+    }
+
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
@@ -335,6 +350,18 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
       },
       { upsert: true }
     );
+
+    // Igual que confirmLink: resolver un slot acá solo tocaba PlatformVideoModel
+    // -- sin esto, un video recién matcheado desde Estadísticas/cross-match
+    // podía tener el link ahí y en ningún otro lado (badge, Calendario, Nube).
+    const linkedFile = await FileModel.findById(fileId).select('file_name').lean();
+    if (linkedFile) {
+      await applyPlatformPublish(userId, {
+        platform, platformId, platformUrl,
+        fileName: linkedFile.file_name,
+        title, publishedAt: publishedAt ? new Date(publishedAt) : new Date(), matchStatus: 'manual',
+      });
+    }
 
     res.json({ ok: true });
   } catch (err: any) {

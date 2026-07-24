@@ -4,6 +4,7 @@ import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
+import { reportUploadEvent } from '../services/upload-history.service';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import fs from 'fs';
 import path from 'path';
@@ -230,6 +231,14 @@ export const setPlatformLink = (req: Request, res: Response): void => {
   // corregido a mano es un cambio de estado real, no debería esperar al próximo
   // push manual/automático para reflejarse en el mirror central.
   pushFilesToCloudInBackground(req.headers.authorization);
+  // El push de arriba solo llega a files.platforms/platform_videos (el badge y
+  // el link que ve OTRO PC al hacer pull) -- nunca a PlatformVideoModel
+  // (Sincronizar/Estadísticas) ni al Calendario. Pegarle a record-publish (lo
+  // mismo que ya hace cada subida real) cierra ese hueco sin duplicar lógica.
+  reportUploadEvent(req.headers.authorization, {
+    platform, platformId, platformUrl: trimmed,
+    fileName: file.file_name, contentId: file.content_id, title: file.file_name,
+  });
   res.json({ platform_url: trimmed, platforms: fileRepo.findById(fileId)!.platforms });
 };
 
