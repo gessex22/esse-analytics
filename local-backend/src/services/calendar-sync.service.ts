@@ -59,7 +59,12 @@ export async function ensurePreloadForNextVideos(authHeader: string | undefined)
     }[] = await res.json();
 
     for (const cfg of configs) {
-      if (!cfg.nextVideo || cfg.nextRemoteLibraryVideoId) continue; // sin próximo, o ya precargado
+      // No confiar en nextRemoteLibraryVideoId como prueba de que los bytes
+      // siguen existiendo: puede ser un ID huérfano después de una liberación
+      // por retención, una migración o un cambio de próximo video. La consulta
+      // por contentId dentro de ensureNextVideoInRemoteLibrary es la fuente de
+      // verdad y es barata cuando el video ya está precargado.
+      if (!cfg.nextVideo) continue;
       if (!['youtube', 'instagram', 'tiktok'].includes(cfg.platform)) continue;
 
       const file = fileRepo.findByName(cfg.nextVideo.title);
