@@ -17,12 +17,10 @@ const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
 
 function statsChartData(items: GroupStatsItem[]) {
   const sorted = [...items].sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime());
-  const running: Record<PlatformKey, number> = { youtube: 0, instagram: 0, tiktok: 0 };
   return sorted.map((item, index) => {
     const point: Record<string, string | number> = { video: `V${index + 1}` };
     for (const platform of PLATFORMS) {
-      running[platform] += item.platforms[platform]?.views ?? 0;
-      point[platform] = running[platform];
+      point[platform] = item.platforms[platform]?.views ?? 0;
     }
     return point;
   });
@@ -32,7 +30,7 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
   return (
     <div className="p-4 rounded-2xl border border-border bg-card">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-foreground">Vistas acumuladas por plataforma</h3>
+        <h3 className="text-sm font-semibold text-foreground">Vistas por video y plataforma</h3>
         <span className="text-[11px] text-muted-foreground">V1 = más antiguo</span>
       </div>
       <div className="h-56 w-full">
@@ -49,6 +47,32 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
           </LineChart>
         </ResponsiveContainer>
       </div>
+    </div>
+  );
+}
+
+function StatsTotalsCard({ items }: { items: GroupStatsItem[] }) {
+  const total = (key: "views" | "likes" | "comments") =>
+    items.reduce((sum, item) => sum + PLATFORMS.reduce((subtotal, platform) => subtotal + (item.platforms[platform]?.[key] ?? 0), 0), 0);
+
+  return (
+    <div className="grid grid-cols-3 gap-3 p-4 rounded-2xl border border-border bg-card">
+      {[
+        [Eye, "Vistas", total("views")],
+        [Heart, "Likes", total("likes")],
+        [MessageCircle, "Comentarios", total("comments")],
+      ].map(([Icon, label, value]) => {
+        const MetricIcon = Icon as typeof Eye;
+        return (
+          <div key={label as string} className="min-w-0">
+            <div className="flex items-center gap-1.5 text-foreground">
+              <MetricIcon className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-base font-bold truncate">{formatNum(value as number)}</span>
+            </div>
+            <span className="text-[11px] text-muted-foreground">{label as string}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -270,6 +294,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
       ) : (
         <div className="space-y-4">
           <StatsChart items={items} />
+          <StatsTotalsCard items={items} />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {items.map(item => (
             <GroupStatsCard
