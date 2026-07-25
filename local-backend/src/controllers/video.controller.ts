@@ -185,6 +185,23 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
   res.json({ platforms, platforms_discarded });
 };
 
+export const resolvePublicationSelection = (req: Request, res: Response): void => {
+  const { fileId } = req.params;
+  const { platforms } = req.body as { platforms?: string[] };
+  const valid: Platform[] = ['youtube', 'instagram', 'tiktok'];
+  if (!Array.isArray(platforms) || platforms.some(p => !valid.includes(p as Platform))) {
+    res.status(400).json({ message: 'Selección de plataformas inválida.' }); return;
+  }
+  const file = fileRepo.findById(fileId);
+  if (!file) { res.status(404).json({ message: 'No encontrado.' }); return; }
+  const discarded = valid.filter(p => !platforms.includes(p) && !file.platforms.includes(p));
+  const nextDiscarded = [...new Set([...file.platforms_discarded, ...discarded])]
+    .filter(p => !platforms.includes(p));
+  fileRepo.update(fileId, { platforms_discarded: nextDiscarded as Platform[] });
+  pushFilesToCloudInBackground(req.headers.authorization);
+  res.json({ platforms: file.platforms, platforms_discarded: nextDiscarded });
+};
+
 // ── Extrae el ID nativo de un link pegado a mano — mejora los lookups/dedup,
 // pero si no matchea ningún patrón conocido (ej. link acortado vm.tiktok.com)
 // se usa la URL completa como platform_id: sigue siendo único y no bloquea al

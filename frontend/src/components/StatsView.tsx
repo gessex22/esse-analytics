@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Eye, Heart, MessageCircle, Loader2, RefreshCw, BarChart2 } from "lucide-react";
 import { syncService, videoService, GroupStatsItem } from "../services/api";
 import { YoutubeLogo, InstagramLogo, TiktokLogo, PlatformKey } from "./icons/PlatformLogos";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // Mismos colores de marca que ya se usan en toda la app (VideosView, SyncPanel)
 // para YouTube/Instagram/TikTok — se reusan acá como identidad categórica del
@@ -13,6 +14,44 @@ const PLATFORM_CFG: Record<PlatformKey, { label: string; Logo: (p: { className?:
   tiktok:    { label: "TikTok",    Logo: TiktokLogo,    light: "bg-pink-500/10",   text: "text-pink-500",   hex: "#ec4899" },
 };
 const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
+
+function statsChartData(items: GroupStatsItem[]) {
+  const sorted = [...items].sort((a, b) => new Date(b.fecha_creacion).getTime() - new Date(a.fecha_creacion).getTime());
+  const running: Record<PlatformKey, number> = { youtube: 0, instagram: 0, tiktok: 0 };
+  return sorted.map((item, index) => {
+    const point: Record<string, string | number> = { video: `V${index + 1}` };
+    for (const platform of PLATFORMS) {
+      running[platform] += item.platforms[platform]?.views ?? 0;
+      point[platform] = running[platform];
+    }
+    return point;
+  });
+}
+
+function StatsChart({ items }: { items: GroupStatsItem[] }) {
+  return (
+    <div className="p-4 rounded-2xl border border-border bg-card">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-foreground">Vistas acumuladas por plataforma</h3>
+        <span className="text-[11px] text-muted-foreground">V1 = más nuevo</span>
+      </div>
+      <div className="h-56 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={statsChartData(items)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+            <XAxis dataKey="video" tick={{ fontSize: 11 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={formatNum} width={42} />
+            <Tooltip formatter={(value) => formatNum(Number(value))} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Line type="monotone" dataKey="youtube" name="YouTube" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="instagram" name="Instagram" stroke="#a855f7" strokeWidth={2} dot={{ r: 3 }} />
+            <Line type="monotone" dataKey="tiktok" name="TikTok" stroke="#ec4899" strokeWidth={2} dot={{ r: 3 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
 
 // ── Donut de alcance (views) ────────────────────────────────────────────────
 // Solo views (no likes/comments) — responde "qué plataforma tuvo mayor
@@ -229,7 +268,9 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
           </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          <StatsChart items={items} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {items.map(item => (
             <GroupStatsCard
               key={item.fileId}
@@ -238,6 +279,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
               onOpenVideo={onOpenVideo}
             />
           ))}
+          </div>
         </div>
       )}
     </div>

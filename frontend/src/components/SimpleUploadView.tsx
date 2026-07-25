@@ -222,6 +222,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
     setPublishing(true);
     setResults(IDLE_RESULTS);
+    await videoService.resolvePublicationSelection(video.fileId, platformsToSubmit);
     for (const p of platformsToSubmit) {
       // eslint-disable-next-line no-await-in-loop
       await uploadOne(p);

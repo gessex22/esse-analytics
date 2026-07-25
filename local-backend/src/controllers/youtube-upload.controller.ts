@@ -183,7 +183,6 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     fileRepo.addPlatform(fileId, 'youtube');
     // Flujo simple: la subida es un evento único — las demás plataformas que
     // sigan pendientes para este video se resuelven como descartadas.
-    if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'youtube');
     const nextYt = fileRepo.findNewerAdjacent(fileDoc, 'youtube');
     configRepo.markPublished('youtube', fileDoc.file_name, fileId, nextYt ? String(nextYt.id) : null);
     syncNextVideoToCentral(req.headers.authorization, 'youtube', {

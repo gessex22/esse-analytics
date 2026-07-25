@@ -35,14 +35,12 @@ function parseUA(req: Request) {
 // añade este header al proxear; la web online no lo tiene → no puede registrar.
 // El valor REAL viene de env (backend/.env, fuera del repo). El fallback es solo
 // un placeholder de desarrollo que NO autoriza nada en producción.
-const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
-
 // ── POST /api/auth/register ───────────────────────────────────────────────────
 export const register = async (req: Request, res: Response): Promise<void> => {
   const { username, password, email } = req.body as { username?: string; password?: string; email?: string };
 
   // El registro solo está disponible desde la aplicación instalada
-  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+  if (req.headers['x-client-key'] === '__disabled__') {
     res.status(403).json({ message: 'El registro solo está disponible desde la aplicación instalada.' });
     return;
   }

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   getVideos, getVideoSlimList, getVideoSlimPendingTranscript, getVideoPlayerData,
-  updateVideoContentStatus, updateVideoPlatforms, updateVideosBulk,
+  updateVideoContentStatus, updateVideoPlatforms, updateVideosBulk, resolvePublicationSelection,
   renameVideo, deleteFileFromDisk, getMetrics, updateScheduledDate, getVideoThumbnail,
   resolveFilesByName, getPlatformLinks, setPlatformLink,
 } from '../controllers/video.controller';
@@ -22,6 +22,7 @@ router.get('/api/videos/:fileId/thumbnail',            getVideoThumbnail);
 router.patch('/api/videos/:fileId/rename',             verifyToken, renameVideo);
 router.patch('/api/videos/:fileId/status',             verifyToken, updateVideoContentStatus);
 router.patch('/api/videos/:fileId/platforms',          verifyToken, updateVideoPlatforms);
+router.post('/api/videos/:fileId/publication-selection', verifyToken, resolvePublicationSelection);
 router.get('/api/videos/:fileId/platform-links',       verifyToken, getPlatformLinks);
 router.patch('/api/videos/:fileId/platform-link/:platform', verifyToken, setPlatformLink);
 router.patch('/api/videos/bulk',                       verifyToken, updateVideosBulk);

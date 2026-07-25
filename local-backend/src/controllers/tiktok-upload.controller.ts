@@ -173,7 +173,6 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     fileRepo.addPlatform(fileId, 'tiktok');
     // Flujo simple: la subida es un evento único — las demás plataformas que
     // sigan pendientes para este video se resuelven como descartadas.
-    if (configRepo.get('workflow_mode') === 'simple') fileRepo.resolveOthersAsDiscarded(fileId, 'tiktok');
     const nextTk = fileRepo.findNewerAdjacent(fileDoc, 'tiktok');
     configRepo.markPublished('tiktok', fileDoc.file_name, fileId, nextTk ? String(nextTk.id) : null);
     syncNextVideoToCentral(req.headers.authorization, 'tiktok', {

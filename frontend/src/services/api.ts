@@ -787,6 +787,13 @@ export const syncService = {
   // Últimos N videos ya matcheados en las 3 plataformas, con stats de cada una.
   getGroupStats: (limit = 5): Promise<{ items: GroupStatsItem[] }> =>
     requestJson(`/api/sync/group-stats?limit=${limit}`),
+
+  resolvePublicationSelection: (fileId: string, platforms: Platform[]): Promise<void> =>
+    requestJson(`/api/videos/${fileId}/publication-selection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ platforms }),
+    }).then(() => undefined),
 };
 
 // ==========================================

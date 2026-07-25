@@ -1,8 +1,11 @@
 import { app, BrowserWindow, shell, dialog, ipcMain } from 'electron';
 import path from 'path';
 import { autoUpdater } from 'electron-updater';
+import { Bonjour } from 'bonjour-service';
 
 let mainWindow: BrowserWindow | null = null;
+let bonjour: InstanceType<typeof Bonjour> | null = null;
+let announcedService: ReturnType<InstanceType<typeof Bonjour>['publish']> | null = null;
 const PORT = 4000;
 
 function setupEnv() {
@@ -26,6 +29,17 @@ function setupEnv() {
 function startServer() {
   // El server bundle arranca Express al ser requerido
   require('./server.cjs');
+  // Anuncia la PC por Bonjour/mDNS para que Android/iOS puedan encontrarla
+  // sin pedir al usuario que escriba la IP. La URL manual sigue siendo el
+  // respaldo para redes que bloquean multicast.
+  bonjour = new Bonjour();
+  announcedService = bonjour.publish({
+    name: `EsseAnalytics PC (${require('os').hostname()})`,
+    type: 'esseanalytics',
+    port: PORT,
+    protocol: 'tcp',
+    txt: { version: app.getVersion(), service: 'esseanalytics' },
+  });
 }
 
 function createWindow() {
@@ -115,4 +129,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  announcedService?.stop();
+  bonjour?.destroy();
 });
