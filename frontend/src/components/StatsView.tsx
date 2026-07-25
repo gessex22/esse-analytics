@@ -16,7 +16,7 @@ const PLATFORM_CFG: Record<PlatformKey, { label: string; Logo: (p: { className?:
 const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
 
 function statsChartData(items: GroupStatsItem[]) {
-  const sorted = [...items].sort((a, b) => new Date(b.fecha_creacion).getTime() - new Date(a.fecha_creacion).getTime());
+  const sorted = [...items].sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime());
   const running: Record<PlatformKey, number> = { youtube: 0, instagram: 0, tiktok: 0 };
   return sorted.map((item, index) => {
     const point: Record<string, string | number> = { video: `V${index + 1}` };
@@ -33,7 +33,7 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
     <div className="p-4 rounded-2xl border border-border bg-card">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-foreground">Vistas acumuladas por plataforma</h3>
-        <span className="text-[11px] text-muted-foreground">V1 = más nuevo</span>
+        <span className="text-[11px] text-muted-foreground">V1 = más antiguo</span>
       </div>
       <div className="h-56 w-full">
         <ResponsiveContainer width="100%" height="100%">
