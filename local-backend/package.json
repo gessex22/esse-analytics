@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/server.ts",
+    "reconcile:badges": "tsx src/scripts/reconcile-platform-badges.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",

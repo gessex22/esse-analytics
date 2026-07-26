@@ -39,7 +39,10 @@ export const getVideos = (req: Request, res: Response) => {
   for (const file of rows) {
     for (const platform of publishable) {
       const platformVideo = platformVideoRepo.findByFileAndPlatform(file.id, platform);
-      if (platformVideo?.platform_url?.trim() && !file.platforms.includes(platform)) {
+      // platform_id identifica una publicación aunque la plataforma no haya
+      // devuelto permalink (caso frecuente en TikTok o publicación manual).
+      // El URL se mantiene vacío y la UI puede mostrar "Sin link".
+      if (platformVideo?.platform_id && !file.platforms.includes(platform)) {
         fileRepo.addPlatform(file.id, platform);
         file.platforms = [...file.platforms, platform];
         file.platforms_discarded = file.platforms_discarded.filter(p => p !== platform);
@@ -245,10 +248,15 @@ export const getPlatformLinks = (req: Request, res: Response): void => {
   const { fileId } = req.params;
   const platforms: Platform[] = ['youtube', 'instagram', 'tiktok'];
   const links: Record<string, string | null> = {};
+  const statuses: Record<string, 'con_link' | 'sin_link' | 'pendiente'> = {};
   for (const p of platforms) {
-    links[p] = platformVideoRepo.findByFileAndPlatform(fileId, p)?.platform_url ?? null;
+    const publication = platformVideoRepo.findByFileAndPlatform(fileId, p);
+    links[p] = publication?.platform_url?.trim() || null;
+    statuses[p] = publication
+      ? (publication.platform_url?.trim() ? 'con_link' : 'sin_link')
+      : 'pendiente';
   }
-  res.json(links);
+  res.json({ ...links, statuses });
 };
 
 // ── PATCH /api/videos/:fileId/platform-link/:platform ──────────────────────────
