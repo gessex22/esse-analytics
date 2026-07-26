@@ -217,6 +217,7 @@ function EditLinksModal({ fileId, title, onClose, onPlatformsChange }: {
 }) {
   const [loading, setLoading] = useState(true);
   const [links, setLinks] = useState<Record<Platform, string>>({ youtube: "", instagram: "", tiktok: "" });
+  const [linkStatuses, setLinkStatuses] = useState<Partial<Record<Platform, "con_link" | "sin_link" | "badge_only" | "pendiente">>>({});
   const [savingPlatform, setSavingPlatform] = useState<Platform | null>(null);
   const [errors, setErrors] = useState<Partial<Record<Platform, string>>>({});
   const [saved, setSaved] = useState<Partial<Record<Platform, boolean>>>({});
@@ -226,6 +227,7 @@ function EditLinksModal({ fileId, title, onClose, onPlatformsChange }: {
     videoService.getPlatformLinks(fileId).then((data) => {
       if (cancelled) return;
       setLinks({ youtube: data.youtube ?? "", instagram: data.instagram ?? "", tiktok: data.tiktok ?? "" });
+      setLinkStatuses(data.statuses ?? {});
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [fileId]);
@@ -236,6 +238,7 @@ function EditLinksModal({ fileId, title, onClose, onPlatformsChange }: {
     try {
       const res = await videoService.setPlatformLink(fileId, p, links[p].trim() || null);
       setLinks((prev) => ({ ...prev, [p]: res.platform_url ?? "" }));
+      setLinkStatuses((prev) => ({ ...prev, [p]: res.platform_url ? "con_link" : "pendiente" }));
       onPlatformsChange(res.platforms);
       setSaved((s) => ({ ...s, [p]: true }));
       setTimeout(() => setSaved((s) => ({ ...s, [p]: false })), 2000);
@@ -284,10 +287,15 @@ function EditLinksModal({ fileId, title, onClose, onPlatformsChange }: {
               const Icon = cfg.Icon;
               return (
                 <div key={p} className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Icon active={!!links[p]} />
-                    <span className="text-xs font-medium text-foreground">{cfg.label}</span>
-                  </div>
+                   <div className="flex items-center gap-2">
+                     <Icon active={!!links[p]} />
+                     <span className="text-xs font-medium text-foreground">{cfg.label}</span>
+                     {linkStatuses[p] && linkStatuses[p] !== "pendiente" && (
+                       <span className={`text-[10px] ${linkStatuses[p] === "con_link" ? "text-green-400" : "text-amber-400"}`}>
+                         {linkStatuses[p] === "con_link" ? "Publicado con link" : linkStatuses[p] === "sin_link" ? "Publicado sin link" : "Badge manual"}
+                       </span>
+                     )}
+                   </div>
                   <div className="flex items-center gap-1.5">
                     <input
                       value={links[p]}

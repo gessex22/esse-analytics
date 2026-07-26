@@ -3,7 +3,7 @@ import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
-  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getStatsByIds,
+  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getStatsByIds, unlinkPlatform,
   getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -37,6 +37,7 @@ router.post('/api/sync/history',                    verifyToken, recordUploadEve
 // Settings) llama a este nombre -- mismo handler, evita tener que tocar/re-buildear
 // la app de iOS (no hay forma de compilarla/probarla desde esta máquina Windows).
 router.post('/api/sync/record-publish',             verifyToken, recordUploadEvent);
+router.delete('/api/sync/platform-link/:fileId/:platform', verifyToken, unlinkPlatform);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
 

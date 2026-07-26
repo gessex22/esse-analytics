@@ -131,6 +131,32 @@ export const markOrphan = async (req: AuthRequest, res: Response): Promise<void>
   }
 };
 
+// DELETE /api/sync/platform-link/:fileId/:platform
+// Quita la asociación central sin borrar el video publicado de la red. Esto
+// evita que un link eliminado en Electron vuelva a aparecer al sincronizar.
+export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { fileId, platform } = req.params;
+    const userId = req.user!.id;
+    if (!['youtube', 'instagram', 'tiktok', 'facebook'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' }); return;
+    }
+    const file = await FileModel.findOneAndUpdate(
+      { _id: fileId, userId },
+      { $pull: { platforms: platform, platforms_discarded: platform } },
+      { new: true },
+    ).select('_id');
+    if (!file) { res.status(404).json({ message: 'Archivo no encontrado' }); return; }
+    await PlatformVideoModel.updateMany(
+      { userId, linkedFileId: file._id, platform },
+      { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
+    );
+    res.json({ ok: true, fileId, platform });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // GET /api/sync/platform-recent/:platform?limit=20&cursor=... — página de videos
 // EN VIVO de la plataforma, para elegir manualmente cuáles son "el mismo video"
 // entre redes (emparejado cruzado). `cursor` es lo que devolvió la página
@@ -446,6 +472,13 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     for (const f of files) {
       if (items.length >= limit) break;
       const pvs = byFile.get(String(f._id)) ?? [];
+      // files.platforms también puede contener badges puestos manualmente sin
+      // URL. Esos videos no tienen una identidad consultable ni métricas reales;
+      // solo entran cuando las tres plataformas tienen PlatformVideoModel.
+      const complete = ['youtube', 'instagram', 'tiktok'].every(platform =>
+        pvs.some(pv => pv.platform === platform && !!pv.platformId)
+      );
+      if (!complete) continue;
       // Antes exigía las 3 ya cross-matcheadas en PlatformVideoModel (linkedFileId) --
       // eso depende de la herramienta de Sincronizar/cross-match, que no corre sola
       // y queda desactualizada. files.platforms (el query de arriba) ya es la señal

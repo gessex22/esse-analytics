@@ -219,6 +219,11 @@ export const platformVideoRepo = {
       for (const pv of pvByFile.get(f.id) ?? []) {
         platforms[pv.platform] = { platformId: pv.platform_id, platformUrl: pv.platform_url, title: pv.title };
       }
+      // Un badge manual sin vínculo real no debe entrar en Estadísticas: no
+      // existe un platformId al que pedirle métricas y produciría tarjetas con
+      // ceros que parecen datos válidos. El matching manual es el que completa
+      // estos tres registros.
+      if (!['youtube', 'instagram', 'tiktok'].every(p => platforms[p]?.platformId)) continue;
       result.push({ fileId: f.id, fileName: f.file_name, fechaCreacion: f.fecha_creacion, platforms });
     }
     return result;

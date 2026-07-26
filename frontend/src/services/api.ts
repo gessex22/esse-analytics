@@ -490,7 +490,9 @@ export const videoService = {
 
   // Links por plataforma de un video puntual — para editarlos inline desde
   // Videos sin ir a la pantalla de Emparejar.
-  getPlatformLinks: (fileId: string): Promise<Record<"youtube" | "instagram" | "tiktok", string | null>> =>
+  getPlatformLinks: (fileId: string): Promise<Record<"youtube" | "instagram" | "tiktok", string | null> & {
+    statuses?: Record<"youtube" | "instagram" | "tiktok", "con_link" | "sin_link" | "badge_only" | "pendiente">
+  }> =>
     requestJson(`/api/videos/${fileId}/platform-links`),
 
   setPlatformLink: (

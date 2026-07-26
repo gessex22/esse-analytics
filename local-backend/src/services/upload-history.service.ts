@@ -47,3 +47,20 @@ export async function reportUploadEvent(
     console.warn('[history] no se pudo propagar el evento:', err.message);
   }
 }
+
+export async function reportUnlinkPlatform(
+  authHeader: string | undefined,
+  fileId: string,
+  platform: string,
+): Promise<void> {
+  if (!authHeader) return;
+  try {
+    const res = await fetch(`${CENTRAL}/api/sync/platform-link/${encodeURIComponent(fileId)}/${encodeURIComponent(platform)}`, {
+      method: 'DELETE',
+      headers: { Authorization: authHeader },
+    });
+    if (!res.ok) console.warn(`[sync] no se pudo desvincular ${platform}: HTTP ${res.status}`);
+  } catch (err: any) {
+    console.warn('[sync] no se pudo propagar la desvinculación:', err.message);
+  }
+}

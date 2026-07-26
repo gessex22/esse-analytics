@@ -4,7 +4,7 @@ import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
-import { reportUploadEvent } from '../services/upload-history.service';
+import { reportUploadEvent, reportUnlinkPlatform } from '../services/upload-history.service';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import fs from 'fs';
@@ -279,6 +279,9 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     platformVideoRepo.unlinkFromFile(fileId, platform);
     fileRepo.removePlatform(fileId, platform as Platform);
     pushFilesToCloudInBackground(req.headers.authorization);
+    // El espejo central es additive para publicaciones nuevas; una limpieza
+    // manual necesita este evento explícito para no resucitar en el próximo pull.
+    await reportUnlinkPlatform(req.headers.authorization, String(fileId), platform);
     res.json({ platform_url: null, platforms: fileRepo.findById(fileId)!.platforms });
     return;
   }
