@@ -506,6 +506,7 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   platform: string;
   platformId: string | null | undefined;
   platformUrl?: string | null;
+  remoteLibraryVideoId?: string | null;
   deviceId?: string | null;
   source?: string | null;
   publishedAt?: Date;
@@ -652,9 +653,20 @@ export async function applyPlatformPublish(userId: string, data: {
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
   if (fileName) {
-    let file = contentId
-      ? await FileModel.findOne({ userId, content_id: contentId })
+    const remote = data.remoteLibraryVideoId
+      ? await RemoteLibraryVideoModel.findOne({ _id: data.remoteLibraryVideoId, userId })
+          .select('contentId fileName')
+          .lean()
+      : null;
+    const stableContentId = contentId ?? remote?.contentId;
+    let file = stableContentId
+      ? await FileModel.findOne({ userId, content_id: stableContentId })
       : await FileModel.findOne({ userId, file_name: fileName });
+    // El nombre puede cambiar al clonar/importar el video en otro dispositivo;
+    // el ID de Biblioteca remota/contentId es la identidad real.
+    if (!file && remote?.fileName && remote.fileName !== fileName) {
+      file = await FileModel.findOne({ userId, file_name: remote.fileName });
+    }
     // Si no hay ningún archivo local con ese nombre (ej. video publicado
     // directo desde el celular, sin pasar antes por el catálogo), se crea un
     // registro mínimo -- si no, Estadísticas (getGroupStats) no tiene de
@@ -695,6 +707,7 @@ export async function applyPlatformPublish(userId: string, data: {
 
   await mirrorPlatformVideoToBackup(userId, {
     platform, platformId, platformUrl, fileName, contentId, title,
+    remoteLibraryVideoId: data.remoteLibraryVideoId,
     deviceId: data.deviceId, source: data.source,
     publishedAt: publishedAtDate, matchStatus,
   });
@@ -745,7 +758,7 @@ export async function applyPlatformPublish(userId: string, data: {
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, title, publishedAt } = req.body ?? {};
+    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -770,7 +783,7 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
     );
 
     await applyPlatformPublish(userId, {
-      platform, platformId, platformUrl, fileName, contentId, title,
+      platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title,
       deviceId, source,
       publishedAt: publishedAtDate, matchStatus: 'manual',
     });
