@@ -30,6 +30,25 @@ export const getVideos = (req: Request, res: Response) => {
     offset,
   });
 
+  // La publicación real también queda registrada en platform_videos. Si por
+  // una sincronización incompleta llegó el link pero no el array platforms,
+  // el link es la evidencia más fuerte: reparamos el badge antes de responder
+  // y lo dejamos persistido para que el siguiente push lo lleve a la nube.
+  let repairedFromLinks = false;
+  const publishable: Platform[] = ['youtube', 'instagram', 'tiktok'];
+  for (const file of rows) {
+    for (const platform of publishable) {
+      const platformVideo = platformVideoRepo.findByFileAndPlatform(file.id, platform);
+      if (platformVideo?.platform_url?.trim() && !file.platforms.includes(platform)) {
+        fileRepo.addPlatform(file.id, platform);
+        file.platforms = [...file.platforms, platform];
+        file.platforms_discarded = file.platforms_discarded.filter(p => p !== platform);
+        repairedFromLinks = true;
+      }
+    }
+  }
+  if (repairedFromLinks) pushFilesToCloudInBackground(req.headers.authorization);
+
   const totalPages = Math.ceil(total / limit);
 
   res.json({
@@ -74,7 +93,12 @@ export const getVideoSlimList = (req: Request, res: Response) => {
     title:     f.file_name,
     filePath:  f.file_path,
     duration:  f.duracion_segundos ? formatDuration(f.duracion_segundos) : '',
-    platforms: f.platforms,
+    platforms: [...new Set([
+      ...f.platforms,
+      ...(['youtube', 'instagram', 'tiktok'] as Platform[]).filter(platform =>
+        !!platformVideoRepo.findByFileAndPlatform(f.id, platform)?.platform_url?.trim(),
+      ),
+    ])],
     platforms_discarded: f.platforms_discarded,
   })));
 };
