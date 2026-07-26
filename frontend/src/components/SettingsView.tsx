@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, ChevronRight, ChevronLeft } from "lucide-react";
+import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -17,6 +17,7 @@ const ALL_SECTIONS = [
   { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false, description: "Emparejar entre plataformas y vincular con archivo local" },
   { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true,  description: "Acceso remoto y respaldo en la nube" },
   { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true,  description: "Gestioná los datos guardados en esta instalación" },
+  { id: "licencias",  label: "Licencias",       icon: FileText,    roles: ["todopoderoso", "editor"], localOnly: false, description: "Software de terceros incluido en la aplicacion" },
 ];
 
 function ColoresPanel() {
@@ -166,6 +167,33 @@ function DatosPanel() {
   );
 }
 
+function LicenciasPanel() {
+  return (
+    <div className="space-y-5 max-w-lg">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Software de terceros</h3>
+        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+          Esta aplicacion incluye FFmpeg para normalizar videos y generar miniaturas. La informacion completa tambien se entrega junto con el instalador.
+        </p>
+      </div>
+      <div className="rounded-xl border border-border bg-card/40 p-4 space-y-3">
+        <div>
+          <p className="text-sm font-medium text-foreground">FFmpeg 6.1.1</p>
+          <p className="text-xs text-muted-foreground mt-1">GPL v3 - compilacion essentials de gyan.dev - incluye libx264 y libx265</p>
+        </div>
+        <div className="space-y-1.5 text-xs">
+          <a className="block text-primary hover:underline" href="https://github.com/FFmpeg/FFmpeg/commit/e38092ef93" target="_blank" rel="noreferrer">Codigo fuente correspondiente (commit exacto)</a>
+          <a className="block text-primary hover:underline" href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noreferrer">Informacion de la compilacion distribuida</a>
+          <a className="block text-primary hover:underline" href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" rel="noreferrer">Texto de la licencia GPLv3</a>
+          <a className="block text-primary hover:underline" href="https://github.com/gessex22/esse-analytics/blob/main/electron/THIRD-PARTY-NOTICES.md" target="_blank" rel="noreferrer">Avisos de terceros de EsseAnalytics</a>
+          <a className="block text-primary hover:underline" href="https://github.com/gessex22/esse-analytics/blob/main/electron/FFMPEG-SOURCE-OFFER.md" target="_blank" rel="noreferrer">Registro de fuente y compilacion</a>
+        </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed border-t border-border pt-3">FFmpeg es software de terceros y no es propiedad de EsseAnalytics. Su uso y distribucion estan sujetos a sus licencias correspondientes.</p>
+      </div>
+    </div>
+  );
+}
+
 interface SettingsViewProps {
   role: string;
   isLocal?: boolean;
@@ -193,6 +221,7 @@ export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }:
     sync:       <SyncPanel onOpenVideo={onOpenVideo} />,
     frieden:    <FriedenPanel isPremium={!!isPremium} />,
     datos:      <DatosPanel />,
+    licencias:  <LicenciasPanel />,
   };
 
   // Ajustes es un menú (como en celular): cada sección es una fila que lleva a
