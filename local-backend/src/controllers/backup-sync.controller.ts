@@ -232,6 +232,10 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       // aplicamos sin importar el timestamp (máquina nueva / DB reescaneada).
       const localEmpty = !hasData(localFile.platforms) && !hasData(localFile.platforms_discarded);
       const cloudHas   = hasData(cf.platforms) || hasData(cf.platforms_discarded);
+      const sameState = (a: any[], b: any[]) =>
+        [...(a ?? [])].sort().join('|') === [...(b ?? [])].sort().join('|');
+      const platformsChanged = !sameState(localFile.platforms, cf.platforms)
+        || !sameState(localFile.platforms_discarded, cf.platforms_discarded);
 
       // tipo_contenido: si al local le falta y la nube lo tiene, lo recuperamos
       // siempre, sin importar el estado de platforms. Antes esta recuperación
@@ -244,7 +248,10 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
         localFile.tipo_contenido = cf.tipo_contenido;
       }
 
-      if (cloudTs > localTs) {
+      // El timestamp puede quedar por delante por un reescaneo local o por
+      // una actualización del vínculo platform_video. El badge es estado,
+      // no solo orden temporal: si difiere, siempre debe converger.
+      if (cloudTs > localTs || platformsChanged) {
         fileRepo.update(localFile.id, {
           platforms:           cf.platforms           ?? [],
           platforms_discarded: cf.platforms_discarded ?? [],
