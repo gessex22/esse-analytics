@@ -118,6 +118,8 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
       publishedAt: pv.published_at ?? pv.created_at,
       title:       pv.title ?? null,
       fileName:    pv.file_name ?? null,
+      deviceId:    pv.device_id ?? null,
+      source:      pv.source ?? null,
       linkedFileId: pv.linked_file_id ?? null,
       matchStatus: pv.match_status,
     }));

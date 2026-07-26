@@ -14,6 +14,8 @@ export interface DbPlatformVideo {
   platform: string;
   platform_id: string;
   platform_url?: string;
+  device_id?: string;
+  source?: string;
   published_at?: string;
   linked_file_id?: number;
   match_status: MatchStatus;
@@ -28,6 +30,8 @@ interface RawRow {
   platform: string;
   platform_id: string;
   platform_url: string | null;
+  device_id: string | null;
+  source: string | null;
   published_at: string | null;
   linked_file_id: number | null;
   match_status: string;
@@ -41,6 +45,8 @@ function parse(row: RawRow): DbPlatformVideo {
   return {
     ...row,
     platform_url:    row.platform_url ?? undefined,
+    device_id:       row.device_id ?? undefined,
+    source:          row.source ?? undefined,
     published_at:    row.published_at ?? undefined,
     linked_file_id:  row.linked_file_id ?? undefined,
     match_status:    row.match_status as MatchStatus,
@@ -115,6 +121,8 @@ export const platformVideoRepo = {
     match_status?: MatchStatus;
     title?: string;
     description?: string;
+    device_id?: string;
+    source?: string;
   }): DbPlatformVideo {
     const existing = this.findByPlatformAndId(data.platform, data.platform_id);
     const publishedAt = data.published_at ? new Date(data.published_at).toISOString() : null;
@@ -123,19 +131,20 @@ export const platformVideoRepo = {
 
     if (!existing) {
       db.prepare(`
-        INSERT INTO platform_videos (platform, platform_id, platform_url, published_at, linked_file_id, match_status, title, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(data.platform, data.platform_id, data.platform_url ?? null, publishedAt, linkedFileId, matchStatus, data.title ?? null, data.description ?? null);
+        INSERT INTO platform_videos (platform, platform_id, platform_url, published_at, linked_file_id, match_status, title, description, device_id, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(data.platform, data.platform_id, data.platform_url ?? null, publishedAt, linkedFileId, matchStatus, data.title ?? null, data.description ?? null, data.device_id ?? null, data.source ?? null);
     } else {
       db.prepare(`
         UPDATE platform_videos
         SET platform_url = ?, published_at = ?, linked_file_id = ?, match_status = ?,
             title = COALESCE(?, title), description = COALESCE(?, description),
+            device_id = COALESCE(?, device_id), source = COALESCE(?, source),
             updated_at = datetime('now')
         WHERE platform = ? AND platform_id = ?
       `).run(data.platform_url ?? existing.platform_url ?? null, publishedAt ?? existing.published_at ?? null,
              linkedFileId ?? existing.linked_file_id ?? null, matchStatus,
-             data.title ?? null, data.description ?? null,
+             data.title ?? null, data.description ?? null, data.device_id ?? null, data.source ?? null,
              data.platform, data.platform_id);
     }
 

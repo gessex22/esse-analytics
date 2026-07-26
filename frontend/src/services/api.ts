@@ -741,7 +741,7 @@ export const syncService = {
 
   // Registro cronológico de todas las subidas hechas desde la app.
   getHistory: (opts: { limit?: number; offset?: number; platform?: string } = {}): Promise<{
-    items: { id: number; platform: string; platformId: string; platformUrl: string | null; publishedAt: string; title: string | null; fileName: string | null; linkedFileId: number | null; matchStatus: string }[];
+    items: { id: number | string; platform: string; platformId: string; platformUrl: string | null; publishedAt: string; title: string | null; fileName: string | null; linkedFileId: number | null; matchStatus: string; deviceId: string | null; source: string | null }[];
     total: number;
   }> => {
     const params = new URLSearchParams();

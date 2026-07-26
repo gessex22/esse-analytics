@@ -60,6 +60,7 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_videos_platform_id
     ON platform_videos(platform, platform_id);
 
+
   CREATE TABLE IF NOT EXISTS app_config (
     key        TEXT PRIMARY KEY,
     value      TEXT,
@@ -132,6 +133,11 @@ try {
     backfill(rowsSinContentId);
   }
 } catch (e) { console.warn('Backfill content_id falló:', e); }
+
+// Trazabilidad de publicación: migración tolerante para instalaciones existentes.
+for (const column of ['device_id', 'source']) {
+  try { db.exec(`ALTER TABLE platform_videos ADD COLUMN ${column} TEXT`); } catch { /* ya existe */ }
+}
 
 // Backfill platforms[] desde platform_videos (DISTINCT via subquery — SQLite no soporta json_group_array(DISTINCT)).
 try {

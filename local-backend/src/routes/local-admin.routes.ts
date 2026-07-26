@@ -60,6 +60,10 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
       // Inicia un usuario DISTINTO al dueño de esta PC → reiniciar local (borrar todo)
       // y adoptar al nuevo. Sus datos se repueblan desde la nube (calendario siempre;
       // catálogo solo si es premium, porque ese endpoint exige premium).
+      const previousMode = configRepo.get('workflow_mode');
+      if (previousMode && !configRepo.getWorkflowMode(existing.username)) {
+        configRepo.setWorkflowMode(existing.username, previousMode);
+      }
       configRepo.wipeAll();
       configRepo.clearOwner();
       switched = true;
@@ -91,8 +95,8 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
 
 // GET /api/local/setup/workflow-mode — 'simple' (un solo estado por video) o
 // 'avanzado' (estado independiente por plataforma). null = todavía no elegido.
-router.get('/api/local/setup/workflow-mode', (_req, res) => {
-  res.json({ workflowMode: configRepo.get('workflow_mode') });
+router.get('/api/local/setup/workflow-mode', verifyToken, (req: AuthRequest, res: Response) => {
+  res.json({ workflowMode: configRepo.getWorkflowMode(req.user!.username) });
 });
 
 // POST /api/local/setup/workflow-mode
@@ -103,8 +107,8 @@ router.post('/api/local/setup/workflow-mode', verifyToken, (req: AuthRequest, re
     return;
   }
 
-  const previous = configRepo.get('workflow_mode');
-  configRepo.set('workflow_mode', mode);
+  const previous = configRepo.getWorkflowMode(req.user!.username);
+  configRepo.setWorkflowMode(req.user!.username, mode);
 
   // Cambio real de modo (no la elección inicial): las 3 colas de "próximo video"
   // quedaron calculadas bajo la lógica vieja y ya no tienen por qué coincidir con

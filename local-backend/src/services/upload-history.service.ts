@@ -11,6 +11,7 @@ export async function reportUploadEvent(
   authHeader: string | undefined,
   data: {
     platform: string;
+    source?: string;
     platformId: string;
     platformUrl?: string | null;
     fileName?: string | null;
@@ -29,6 +30,7 @@ export async function reportUploadEvent(
       headers: { 'Content-Type': 'application/json', Authorization: authHeader },
       body: JSON.stringify({
         deviceId,
+        source:      data.source ?? 'pc',
         platform:    data.platform,
         platformId:  data.platformId,
         platformUrl: data.platformUrl ?? null,

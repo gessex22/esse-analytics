@@ -15,6 +15,25 @@ export const configRepo = {
     `).run(key, value);
   },
 
+  getWorkflowMode(username?: string): string | null {
+    if (username) {
+      const row = db.prepare('SELECT value FROM local_config WHERE key = ?')
+        .get(`workflow_mode:${username}`) as { value: string } | undefined;
+      if (row?.value === 'simple' || row?.value === 'avanzado') return row.value;
+    }
+    const legacy = this.get('workflow_mode');
+    return legacy === 'simple' || legacy === 'avanzado' ? legacy : null;
+  },
+
+  setWorkflowMode(username: string, mode: string): void {
+    db.prepare(`
+      INSERT INTO local_config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+    `).run(`workflow_mode:${username}`, mode);
+    // Compatibilidad con procesos locales que todavia leen la clave global.
+    this.set('workflow_mode', mode);
+  },
+
   // ── platform_config ────────────────────────────────────────────────────────
   getPlatformConfig(platform: string): Record<string, unknown> | null {
     const row = db.prepare('SELECT * FROM platform_config WHERE platform = ?').get(platform) as Record<string, unknown> | undefined;
@@ -111,10 +130,12 @@ export const configRepo = {
     // dato de la cuenta — si se pierde en cada logout, un usuario free (que no
     // tiene el pull de la nube para recuperarlo) queda "reseteado" a avanzado
     // cada vez que vuelve a entrar. Se preserva a través del wipe.
-    const preservedWorkflowMode = this.get('workflow_mode');
+    const preservedWorkflowModes = db.prepare(
+      "SELECT key, value FROM local_config WHERE key LIKE 'workflow_mode:%'",
+    ).all() as Array<{ key: string; value: string }>;
     // Mismo criterio para qué plataformas eligió usar — no depende de qué cuenta
     // esté logueada en esta PC.
-    const preservedActivePlatforms = this.get('active_platforms');
+    // active_platforms se recalcula para la cuenta activa.
 
     // Varias tablas tienen file_id/video_principal_id REFERENCES files(id) y
     // foreign_keys está ON: deben borrarse ANTES que "files", si no el DELETE de
@@ -131,8 +152,12 @@ export const configRepo = {
       }
     }
 
-    if (preservedWorkflowMode) this.set('workflow_mode', preservedWorkflowMode);
-    if (preservedActivePlatforms) this.set('active_platforms', preservedActivePlatforms);
+    for (const pref of preservedWorkflowModes) {
+      db.prepare(`
+        INSERT INTO local_config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+      `).run(pref.key, pref.value);
+    }
 
     // Las miniaturas son datos derivados de los archivos de ESTA cuenta — no
     // deben sobrevivir al wipe (logout/cambio de cuenta/reset), si no quedan

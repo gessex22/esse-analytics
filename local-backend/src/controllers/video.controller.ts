@@ -274,6 +274,7 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
   // mismo que ya hace cada subida real) cierra ese hueco sin duplicar lógica.
     await reportUploadEvent(req.headers.authorization, {
       platform, platformId, platformUrl: trimmed,
+      source: 'pc',
       fileName: file.file_name, contentId: file.content_id, title: file.file_name,
     });
     // La confirmación manual por link equivale a una publicación real:

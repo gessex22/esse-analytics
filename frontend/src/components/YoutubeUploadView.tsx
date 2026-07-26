@@ -1345,13 +1345,18 @@ function ThumbnailScrubber({ fileId, onCapture }: {
     setCaptureErr(false);
 
     const draw = () => {
-      canvas.width  = video.videoWidth  || 720;
-      canvas.height = video.videoHeight || 1280;
+      const sourceWidth = video.videoWidth || 720;
+      const sourceHeight = video.videoHeight || 1280;
+      // YouTube rechaza miniaturas grandes (limite de 2 MB). Mantener el
+      // aspecto y limitar el area evita capturas grises en videos verticales.
+      const scale = Math.min(1, 1280 / sourceWidth, 720 / sourceHeight);
+      canvas.width  = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
       try {
         canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
         canvas.toBlob(blob => {
           if (blob) {
-            onCapture(blob, canvas.toDataURL("image/jpeg", 0.85));
+            onCapture(blob, canvas.toDataURL("image/jpeg", 0.82));
           }
           setCapturing(false);
         }, "image/jpeg", 0.85);
@@ -1584,8 +1589,8 @@ export function YoutubeUploadView() {
     });
 
     let lastError = "Error desconocido";
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 2500));
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 5000));
       try {
         const res = await fetch(`${API}/api/youtube/thumbnail/${videoId}`, {
           method: "POST",
@@ -1659,7 +1664,7 @@ export function YoutubeUploadView() {
         if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
 
         // Miniatura capturada (solo en modo biblioteca)
-        if (thumbnailBlob && data.videoId) {
+        if (videoSource !== "device" && thumbnailBlob && data.videoId) {
           try {
             await uploadThumbnail(data.videoId, thumbnailBlob, authHeader);
           } catch (err: any) {
@@ -1667,6 +1672,14 @@ export function YoutubeUploadView() {
             // final en vez de dejar la miniatura fallando en silencio.
             setThumbnailError(err.message);
           }
+        }
+      }
+
+      if (videoSource === "device" && thumbnailBlob && data.videoId) {
+        try {
+          await uploadThumbnail(data.videoId, thumbnailBlob, authHeader);
+        } catch (err: any) {
+          setThumbnailError(err.message);
         }
       }
 

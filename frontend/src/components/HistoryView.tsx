@@ -15,6 +15,8 @@ type HistoryItem = {
   fileName: string | null;
   linkedFileId: number | null;
   matchStatus: string;
+  deviceId: string | null;
+  source: string | null;
 };
 
 const PLATFORM_CFG: Record<HistoryPlatform, { label: string; icon: LucideIcon; text: string; light: string; bg: string }> = {
@@ -36,6 +38,12 @@ function formatDateTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleString("es", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function sourceLabel(source: string | null, deviceId: string | null): string {
+  const labels: Record<string, string> = { pc: "PC", android: "Android", ios: "iPhone/iPad", web: "Web" };
+  const label = labels[source ?? ""] ?? source ?? "dispositivo desconocido";
+  return deviceId ? `${label} · ${deviceId.slice(0, 8)}` : label;
 }
 
 const PAGE_SIZE = 10;
@@ -159,6 +167,7 @@ export function HistoryView({ onOpenVideo }: HistoryViewProps) {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {cfg?.label ?? item.platform} · {formatDateTime(item.publishedAt)}
+                    <span className="ml-1.5">· {sourceLabel(item.source, item.deviceId)}</span>
                     {!item.linkedFileId && <span className="ml-1.5 text-amber-500/80">· sin archivo local vinculado</span>}
                   </p>
                 </div>

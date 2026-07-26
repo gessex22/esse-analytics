@@ -9,6 +9,7 @@ import { Schema, model, Document } from 'mongoose';
 // porque nunca dependió de él para existir.
 export interface IUploadHistory extends Document {
   userId: string;
+  source?: string;
   deviceId: string;      // install_id de la instalación que hizo la publicación
   platform: string;
   platformId: string;
@@ -21,6 +22,7 @@ export interface IUploadHistory extends Document {
 
 const UploadHistorySchema = new Schema<IUploadHistory>({
   userId:      { type: String, required: true },
+  source:      { type: String },
   deviceId:    { type: String, required: true },
   platform:    { type: String, required: true },
   platformId:  { type: String, required: true },

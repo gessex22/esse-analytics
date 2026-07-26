@@ -105,6 +105,8 @@ async function pushPlatformVideosToCloud(authHeader: string): Promise<void> {
     match_status:     pv.match_status,
     title:            pv.title           ?? null,
     description:      pv.description     ?? null,
+    device_id:        pv.device_id       ?? null,
+    source:           pv.source          ?? null,
     local_updated_at: pv.updated_at,
   }));
 
@@ -318,6 +320,8 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
       match_status:   cv.match_status  ?? 'sin_match',
       title:          cv.title         ?? undefined,
       description:    cv.description   ?? undefined,
+      device_id:     cv.device_id     ?? undefined,
+      source:         cv.source        ?? undefined,
     });
     recovered++;
   }

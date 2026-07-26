@@ -2,10 +2,19 @@ import fs from 'fs';
 import { DbFile } from '../db/file.repo';
 import { setPreloadActivity, clearPreloadActivity, setPreloadError } from '../state/remote-library-preload-activity';
 import { ensureThumbnail } from './thumbnail.service';
+import { normalizeForMeta, appendDebugLog } from './video-normalize.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 const DIRECT_UPLOAD_LIMIT = 80 * 1024 * 1024;
 const TUS_CHUNK_SIZE = 8 * 1024 * 1024;
+const ANDROID_MAX_WIDTH = 1080;
+const ANDROID_MAX_HEIGHT = 1920;
+
+function exceedsAndroidPlaybackLimit(resolution: unknown): boolean {
+  const match = String(resolution ?? '').match(/(\d+)\s*[x×]\s*(\d+)/i);
+  if (!match) return false;
+  return Number(match[1]) > ANDROID_MAX_WIDTH || Number(match[2]) > ANDROID_MAX_HEIGHT;
+}
 
 // Evita que dos disparadores simultáneos (montaje, foco, VideosView, etc.)
 // suban el mismo archivo antes de que la central alcance a registrar el primero.
@@ -29,18 +38,48 @@ async function lookupRemoteLibraryId(authHeader: string, contentId: string): Pro
   });
   if (!detail.ok) return null;
   const detailData = await detail.json();
-  return detailData.video?.storedFileName ? String(data.id) : null;
+  // Si la copia remota fue subida antes del fix y conserva 1440x2560 (o una
+  // resolución superior al límite del decodificador Android), devolvemos null
+  // para que el caller la reemplace por una copia normalizada. El upsert por
+  // contentId conserva el mismo documento, sus links y sus toggles.
+  if (!detailData.video?.storedFileName) return null;
+  if (exceedsAndroidPlaybackLimit(detailData.video?.resolution)) return null;
+  return String(data.id);
 }
 
 async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<string | null> {
-  const params = new URLSearchParams({ fileName: file.file_name, contentId: file.content_id ?? '' });
-  if (file.duracion_segundos) params.set('durationSeconds', String(file.duracion_segundos));
-  if (file.resolucion) params.set('resolution', file.resolucion);
-  if (file.formato) params.set('formato', file.formato);
+  // Algunos teléfonos Android (incluido el Oppo del diagnóstico) no aceptan
+  // H.264 en 1440x2560 aunque iOS y el navegador sí. La copia normalizada se
+  // usa únicamente para la Biblioteca remota; el original de la PC nunca se
+  // modifica. normalizeForMeta solo recodifica cuando hace falta (p.ej. cuando
+  // excede 1080x1920) y deja faststart/H.264/AAC compatibles.
+  let uploadFile = file;
+  let normalizedPath: string | null = null;
+  try {
+    const normalized = await normalizeForMeta(file.file_path);
+    normalizedPath = normalized.outputPath;
+    uploadFile = {
+      ...file,
+      file_path: normalized.outputPath,
+      ...(normalized.mode === 'transcode' ? { resolucion: '1080x1920' } : {}),
+    };
+    appendDebugLog(`${file.file_name} -> Biblioteca remota usando copia ${normalized.mode} compatible con Android`);
+  } catch (err: any) {
+    // No bloquear la subida de la PC por una falla de ffmpeg. El diagnóstico
+    // queda registrado y se conserva el comportamiento anterior como último
+    // recurso.
+    appendDebugLog(`${file.file_name} -> no se pudo normalizar para Android: ${err.message}; se sube original`);
+  }
 
-  const stat = fs.statSync(file.file_path);
+  try {
+  const params = new URLSearchParams({ fileName: file.file_name, contentId: file.content_id ?? '' });
+  if (uploadFile.duracion_segundos) params.set('durationSeconds', String(uploadFile.duracion_segundos));
+  if (uploadFile.resolucion) params.set('resolution', uploadFile.resolucion);
+  if (uploadFile.formato) params.set('formato', uploadFile.formato);
+
+  const stat = fs.statSync(uploadFile.file_path);
   if (stat.size > DIRECT_UPLOAD_LIMIT) {
-    const videoId = await uploadToRemoteLibraryTus(authHeader, file, stat.size);
+    const videoId = await uploadToRemoteLibraryTus(authHeader, uploadFile, stat.size);
     if (videoId) await uploadThumbnailToRemoteLibrary(authHeader, videoId, file);
     return videoId;
   }
@@ -48,7 +87,7 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
   const res = await fetch(`${CENTRAL}/api/remote-library/videos/import?${params.toString()}`, {
     method: 'POST',
     headers: { Authorization: authHeader, 'Content-Type': 'video/mp4', 'Content-Length': String(stat.size) },
-    body: fs.createReadStream(file.file_path) as any,
+    body: fs.createReadStream(uploadFile.file_path) as any,
     duplex: 'half',
   } as RequestInit);
 
@@ -57,6 +96,9 @@ async function uploadToRemoteLibrary(authHeader: string, file: DbFile): Promise<
   const videoId = data.video?._id ? String(data.video._id) : null;
   if (videoId) await uploadThumbnailToRemoteLibrary(authHeader, videoId, file);
   return videoId;
+  } finally {
+    if (normalizedPath) await fs.promises.unlink(normalizedPath).catch(() => {});
+  }
 }
 
 function tusMetadata(entries: Record<string, string>): string {

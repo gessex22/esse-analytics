@@ -49,9 +49,20 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       if (current >= 3) return f;
       const central = centralByName.get(f.file_name);
       if (!central) return f;
-      const centralCount = (central.platforms?.length ?? 0) + (central.platforms_discarded?.length ?? 0);
-      if (centralCount <= current) return f;
-      return { ...f, platforms: central.platforms ?? f.platforms, platforms_discarded: central.platforms_discarded ?? f.platforms_discarded };
+      const centralPlatforms = [...(central.platforms ?? [])].sort().join('|');
+      const currentPlatforms = [...(f.platforms ?? [])].sort().join('|');
+      const centralDiscarded = [...(central.platforms_discarded ?? [])].sort().join('|');
+      const currentDiscarded = [...(f.platforms_discarded ?? [])].sort().join('|');
+      if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) return f;
+      // El pull del cliente compara local_updated_at antes de aplicar el
+      // badge. Si devolvemos la marca vieja de BackupFileModel, Electron
+      // puede recibir el enlace de PlatformVideo pero descartar el badge.
+      return {
+        ...f,
+        platforms: central.platforms ?? f.platforms,
+        platforms_discarded: central.platforms_discarded ?? f.platforms_discarded,
+        local_updated_at: (central as any).updatedAt ?? f.local_updated_at,
+      };
     });
     // Un archivo que se publicó/resolvió por un camino que nunca pasa por
     // BackupFileModel (celular, Biblioteca remota, auto-sync) puede no tener
@@ -462,6 +473,8 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
                 platform:         v.platform,
                 platform_id:      v.platform_id,
                 platform_url:     v.platform_url    ?? null,
+                device_id:        v.device_id       ?? null,
+                source:           v.source           ?? null,
                 published_at:     v.published_at    ?? null,
                 file_name:        v.file_name       ?? null,
                 content_id:       v.content_id      ?? null,
@@ -493,6 +506,8 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   platform: string;
   platformId: string | null | undefined;
   platformUrl?: string | null;
+  deviceId?: string | null;
+  source?: string | null;
   publishedAt?: Date;
   fileName?: string | null;
   contentId?: string | null;
@@ -506,6 +521,8 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
       $set: {
         userId, platform: data.platform, platform_id: data.platformId,
         platform_url:     data.platformUrl ?? null,
+        device_id:        data.deviceId ?? null,
+        source:           data.source ?? null,
         published_at:     data.publishedAt ?? new Date(),
         file_name:        data.fileName  ?? null,
         content_id:       data.contentId ?? null,
@@ -599,6 +616,8 @@ export async function applyPlatformPublish(userId: string, data: {
   // tipan el id como potencialmente ausente -- igual que mirrorPlatformVideoToBackup.
   platformId: string | null | undefined;
   platformUrl?: string | null;
+  deviceId?: string | null;
+  source?: string | null;
   fileName?: string | null;
   contentId?: string | null;
   title?: string | null;
@@ -676,6 +695,7 @@ export async function applyPlatformPublish(userId: string, data: {
 
   await mirrorPlatformVideoToBackup(userId, {
     platform, platformId, platformUrl, fileName, contentId, title,
+    deviceId: data.deviceId, source: data.source,
     publishedAt: publishedAtDate, matchStatus,
   });
 
@@ -725,7 +745,7 @@ export async function applyPlatformPublish(userId: string, data: {
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const { deviceId, platform, platformId, platformUrl, fileName, contentId, title, publishedAt } = req.body ?? {};
+    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, title, publishedAt } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -738,6 +758,7 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
         $set: {
           userId, platform, platformId,
           deviceId:    deviceId    ?? 'desconocido',
+          source:      source      ?? 'desconocido',
           platformUrl: platformUrl ?? null,
           fileName:    fileName    ?? null,
           contentId:   contentId   ?? null,
@@ -750,6 +771,7 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
 
     await applyPlatformPublish(userId, {
       platform, platformId, platformUrl, fileName, contentId, title,
+      deviceId, source,
       publishedAt: publishedAtDate, matchStatus: 'manual',
     });
 
@@ -794,6 +816,7 @@ export async function getUploadHistory(req: AuthRequest, res: Response): Promise
       title:        h.title ?? null,
       fileName:     h.fileName ?? null,
       deviceId:     h.deviceId ?? null,
+      source:       h.source ?? null,
       linkedFileId: null, // concepto local (id de SQLite) -- no aplica en modo remoto
       matchStatus:  'manual',
     }));

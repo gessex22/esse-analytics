@@ -205,6 +205,9 @@ export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response):
       // barrido de retención), hay que reusarlo: crear uno nuevo dejaría dos
       // filas de Nube para el mismo video, una con badges/platformLinks y otra
       // con los bytes recién subidos, divergiendo entre sí.
+      const previous = contentId
+        ? await RemoteLibraryVideoModel.findOne({ userId, contentId }).select('storedFileName').lean()
+        : null;
       const doc = contentId
         ? await RemoteLibraryVideoModel.findOneAndUpdate(
             { userId, contentId },
@@ -223,6 +226,9 @@ export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response):
             // no es la única copia, el sweep puede liberarlo más adelante sin miedo.
             safeToEvict: true,
           });
+      if (previous?.storedFileName && previous.storedFileName !== doc.storedFileName) {
+        deleteRemoteLibraryFile(userId, previous.storedFileName);
+      }
       res.json({ ok: true, video: doc });
     } catch (err: any) {
       fs.unlink(filePath, () => {});

@@ -868,8 +868,22 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   }
 
   // Si ya hay cache, la vista se pinta al instante con esos datos y se refresca
-  // en segundo plano (sin spinner) para traer novedades.
-  useEffect(() => { loadAll(); }, []);
+  // en segundo plano. La publicación puede ocurrir en iOS/Android mientras
+  // Electron permanece abierto, por lo que también debemos volver a consultar
+  // calendario, videos e historial sin exigir desmontar la vista.
+  useEffect(() => {
+    loadAll();
+    const refresh = () => loadAll();
+    const onVisibility = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibility);
+    const timer = window.setInterval(refresh, 60_000);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   function updateInterval(platform: Platform, days: number) {
     if (!Number.isFinite(days) || days < 1) return;
