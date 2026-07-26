@@ -248,13 +248,13 @@ export const getPlatformLinks = (req: Request, res: Response): void => {
   const { fileId } = req.params;
   const platforms: Platform[] = ['youtube', 'instagram', 'tiktok'];
   const links: Record<string, string | null> = {};
-  const statuses: Record<string, 'con_link' | 'sin_link' | 'pendiente'> = {};
+  const statuses: Record<string, 'con_link' | 'sin_link' | 'badge_only' | 'pendiente'> = {};
   for (const p of platforms) {
     const publication = platformVideoRepo.findByFileAndPlatform(fileId, p);
     links[p] = publication?.platform_url?.trim() || null;
     statuses[p] = publication
       ? (publication.platform_url?.trim() ? 'con_link' : 'sin_link')
-      : 'pendiente';
+      : (fileRepo.findById(fileId)?.platforms.includes(p) ? 'badge_only' : 'pendiente');
   }
   res.json({ ...links, statuses });
 };
