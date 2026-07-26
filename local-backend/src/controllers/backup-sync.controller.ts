@@ -311,7 +311,6 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
 
   for (const cv of cloudVideos) {
     const existing = platformVideoRepo.findByPlatformAndId(cv.platform, cv.platform_id);
-    if (existing) { skipped++; continue; }
 
     const file = cv.content_id
       ? fileRepo.findByContentId(cv.content_id) ?? (cv.file_name ? fileRepo.findByName(cv.file_name) : undefined)
@@ -330,7 +329,7 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
       device_id:     cv.device_id     ?? undefined,
       source:         cv.source        ?? undefined,
     });
-    recovered++;
+    if (existing) skipped++; else recovered++;
   }
 
   return { recovered, skipped, orphans };

@@ -26,7 +26,28 @@ function statsChartData(items: GroupStatsItem[]) {
   });
 }
 
+function chartMax(items: GroupStatsItem[]): number {
+  const maxValue = items.reduce((max, item) => {
+    return Math.max(max, ...PLATFORMS.map(platform => Number(item.platforms[platform]?.views ?? 0)));
+  }, 0);
+  if (maxValue <= 0) return 1;
+
+  // Redondea hacia arriba a una escala legible, pero siempre basada en el
+  // máximo real de las tres plataformas. Antes Recharts terminaba mostrando
+  // una escala demasiado pequeña (por ejemplo 1.5K cuando había 3K+).
+  // Deja aproximadamente 15% de aire sobre la curva antes de redondear el
+  // límite a un número legible. Así el punto más alto nunca queda pegado al
+  // borde superior del gráfico.
+  const paddedValue = maxValue * 1.15;
+  const magnitude = 10 ** Math.floor(Math.log10(paddedValue));
+  const normalized = paddedValue / magnitude;
+  const step = normalized <= 1 ? 0.2 : normalized <= 2 ? 0.5 : normalized <= 5 ? 1 : 2;
+  const tickStep = step * magnitude;
+  return Math.ceil(paddedValue / tickStep) * tickStep;
+}
+
 function StatsChart({ items }: { items: GroupStatsItem[] }) {
+  const yMax = chartMax(items);
   return (
     <div className="p-4 rounded-2xl border border-border bg-card">
       <div className="flex items-center justify-between mb-2">
@@ -38,7 +59,14 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
           <LineChart data={statsChartData(items)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
             <XAxis dataKey="video" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} tickFormatter={formatNum} width={42} />
+            <YAxis
+              domain={[0, yMax]}
+              tick={{ fontSize: 11 }}
+              tickFormatter={formatNum}
+              width={48}
+              allowDecimals={false}
+              tickCount={5}
+            />
             <Tooltip formatter={(value) => formatNum(Number(value))} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
             <Line type="monotone" dataKey="youtube" name="YouTube" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />

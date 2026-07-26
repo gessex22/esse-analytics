@@ -146,8 +146,12 @@ export const handleCallback = async (req: Request, res: Response) => {
 
 // ── GET /api/tiktok/auth/status ───────────────────────────────────────────────
 export const getAuthStatus = async (req: AuthRequest, res: Response) => {
-  const tokens = await loadTokens(req.user!.id);
-  res.json({ connected: !!tokens?.access_token });
+  try {
+    await getValidToken(req.user!.id);
+    res.json({ connected: true });
+  } catch {
+    res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de TikTok nuevamente' });
+  }
 };
 
 // ── DELETE /api/tiktok/auth ───────────────────────────────────────────────────

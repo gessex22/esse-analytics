@@ -444,6 +444,23 @@ export async function upsertBackupConfig(req: AuthRequest, res: Response): Promi
 export async function getBackupPlatformVideos(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
+    // Recuperación: una publicación móvil puede haber quedado registrada en
+    // upload_history aunque el espejo backup_platform_videos fallara por una
+    // caída breve. Reaplicar el evento es idempotente y reconstruye también el
+    // badge en FileModel antes de que Electron haga el pull.
+    const history = await UploadHistoryModel.find({ userId }).lean();
+    await Promise.all(history.map((h: any) => applyPlatformPublish(userId, {
+      platform: h.platform,
+      platformId: h.platformId,
+      platformUrl: h.platformUrl,
+      fileName: h.fileName,
+      contentId: h.contentId,
+      title: h.title,
+      deviceId: h.deviceId,
+      source: h.source,
+      publishedAt: h.publishedAt,
+      matchStatus: 'manual',
+    })));
     const videos = await BackupPlatformVideoModel.find({ userId }).lean();
     res.json({ videos, total: videos.length });
   } catch (err: any) {
@@ -662,6 +679,10 @@ export async function applyPlatformPublish(userId: string, data: {
     let file = stableContentId
       ? await FileModel.findOne({ userId, content_id: stableContentId })
       : await FileModel.findOne({ userId, file_name: fileName });
+    if (!file && fileName) {
+      const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      file = await FileModel.findOne({ userId, file_name: { $regex: `^${escaped}$`, $options: 'i' } });
+    }
     // El nombre puede cambiar al clonar/importar el video en otro dispositivo;
     // el ID de Biblioteca remota/contentId es la identidad real.
     if (!file && remote?.fileName && remote.fileName !== fileName) {

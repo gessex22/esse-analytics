@@ -297,7 +297,14 @@ export const handleCallback = async (req: Request, res: Response) => {
 // ── GET /api/instagram/auth/status ───────────────────────────────────────────
 export const getAuthStatus = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  res.json({ connected: isUsableInstagramConnection(tokens) });
+  if (!isUsableInstagramConnection(tokens)) return res.json({ connected: false });
+  try {
+    const account = await igGet(`/${tokens!.instagram_user_id}?fields=id`, tokens!.access_token);
+    if (account?.error) throw new Error(account.error.message ?? 'invalid_token');
+    res.json({ connected: true });
+  } catch {
+    res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de Instagram nuevamente' });
+  }
 };
 
 // ── DELETE /api/instagram/auth ────────────────────────────────────────────────

@@ -109,14 +109,23 @@ export const handleCallback = async (req: Request, res: Response) => {
 // ── GET /api/youtube/auth/status ──────────────────────────────────────────────
 export const getAuthStatus = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  res.json({ connected: !!tokens });
+  if (!tokens) return res.json({ connected: false });
+  try {
+    const oauth2 = getOAuth2Client();
+    oauth2.setCredentials(tokens);
+    const { credentials } = await oauth2.refreshAccessToken();
+    await saveTokens(req.user!.id, { ...tokens, ...credentials });
+    res.json({ connected: !!credentials.access_token });
+  } catch {
+    res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de YouTube nuevamente' });
+  }
 };
 
 // ── GET /api/youtube/token ────────────────────────────────────────────────────
 // Devuelve un access_token fresco para que local-backend pueda subir directamente.
 export const getYoutubeToken = async (req: AuthRequest, res: Response) => {
   const tokens = await loadTokens(req.user!.id);
-  if (!tokens) return res.status(404).json({ error: 'NO_AUTH' });
+  if (!tokens) return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de YouTube primero' });
 
   try {
     const oauth2 = getOAuth2Client();
@@ -125,7 +134,9 @@ export const getYoutubeToken = async (req: AuthRequest, res: Response) => {
     await saveTokens(req.user!.id, credentials);
     res.json({ access_token: credentials.access_token });
   } catch (err: any) {
-    res.status(500).json({ error: 'Error al refrescar el token', detail: err.message });
+    // El refresh token revocado/expirado significa que hay que reconectar
+    // YouTube. No es un error 500 ni debe cerrar la sesión principal.
+    res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de YouTube nuevamente' });
   }
 };
 
