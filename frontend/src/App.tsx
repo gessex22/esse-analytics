@@ -21,6 +21,7 @@ import { useSyncOrchestrator } from "./hooks/useSyncOrchestrator";
 import { GemsPanel } from "./components/GemsPanel";
 import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
+import { DashboardView } from "./components/DashboardView";
 import { HistoryView } from "./components/HistoryView";
 import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
@@ -136,7 +137,7 @@ export default function App() {
   // el dispositivo central y para premium.
   useSyncOrchestrator(isLocal && isPremium);
   const [showLogin, setShowLogin] = useState(false);
-  const [activeNav, setActiveNav]           = useState(1);
+  const [activeNav, setActiveNav]           = useState(0);
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
   const [userMenuOpen, setUserMenuOpen]     = useState(false);
@@ -294,7 +295,7 @@ export default function App() {
   // Asegurar que activeNav sea válido para el rol/entorno; si no, caer en Nube (remoto
   // con storage en la nube), Calendario (remoto sin storage) o Videos (local).
   const effectiveNav = isNavVisible(activeNav) ? activeNav
-    : isLocal ? 1
+    : isLocal ? 0
     : user.hasCloudStorage ? 10
     : 7;
 
@@ -496,7 +497,8 @@ export default function App() {
                 className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"
                 style={{ paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}
               >
-                {effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
+                {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => setActiveNav(7)} />
+                  : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <UploadView />
                   : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />

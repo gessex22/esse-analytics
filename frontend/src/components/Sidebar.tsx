@@ -22,7 +22,7 @@ export const navItems = [
   { icon: Cloud,         label: "Nube"          },
 ];
 
-export const ACTIVE_VIEWS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+export const ACTIVE_VIEWS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 export const MOBILE_NAV   = [1, 2, 7, 5, 6, 10];
 
 // Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
