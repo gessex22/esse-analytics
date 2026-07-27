@@ -415,7 +415,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 5, 20);
 
-    const files = await FileModel.find({ userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } })
+    const files = await FileModel.find({ userId, platforms: { $in: ['youtube', 'instagram', 'tiktok'] } })
       .sort({ fecha_creacion: -1 })
       .select('file_name fecha_creacion')
       .lean();
@@ -475,10 +475,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       // files.platforms también puede contener badges puestos manualmente sin
       // URL. Esos videos no tienen una identidad consultable ni métricas reales;
       // solo entran cuando las tres plataformas tienen PlatformVideoModel.
-      const complete = ['youtube', 'instagram', 'tiktok'].every(platform =>
-        pvs.some(pv => pv.platform === platform && !!pv.platformId)
-      );
-      if (!complete) continue;
+      if (!pvs.some(pv => !!pv.platformId)) continue;
       // Antes exigía las 3 ya cross-matcheadas en PlatformVideoModel (linkedFileId) --
       // eso depende de la herramienta de Sincronizar/cross-match, que no corre sola
       // y queda desactualizada. files.platforms (el query de arriba) ya es la señal
