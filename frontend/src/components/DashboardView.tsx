@@ -384,6 +384,15 @@ export function DashboardView({
     };
   }, [itemFileName]);
 
+  // Si el video no está en el catálogo local de esta PC (publicado desde el
+  // celular, o los bytes locales se borraron) no hay miniatura ffmpeg posible
+  // -- se cae a la miniatura propia de la plataforma (YouTube/Instagram/
+  // TikTok), que siempre viaja en el registro aunque el archivo físico no
+  // esté acá.
+  const platformThumbnail = item
+    ? PLATFORMS.map((p) => item.platforms[p]?.thumbnail).find((t) => !!t)
+    : undefined;
+
   const calendar = demoMode ? DEMO_CALENDAR : upcoming;
   const totals = useMemo(
     () =>
@@ -495,9 +504,13 @@ export function DashboardView({
                   className="relative w-24 sm:w-32 h-32 sm:h-44 rounded-xl bg-gradient-to-br from-primary/30 via-secondary to-black overflow-hidden flex-shrink-0 disabled:cursor-default"
                   title={localFileId ? "Abrir video" : "No se encontró el archivo local"}
                 >
-                  {localFileId && (
+                  {(localFileId || platformThumbnail) && (
                     <img
-                      src={videoService.thumbnailUrl(localFileId)}
+                      src={
+                        localFileId
+                          ? videoService.thumbnailUrl(localFileId)
+                          : platformThumbnail
+                      }
                       alt=""
                       className="absolute inset-0 h-full w-full object-cover"
                       onError={(event) => {

@@ -559,11 +559,23 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         const slot = item.platforms[platform];
         const update = slot && fresh[slot.platformId];
         if (!update) continue;
+        // Object.assign pisaría un thumbnail ya guardado con `undefined` si
+        // esta vez la API no lo trajo (ej. YouTube sin snippet.thumbnails) --
+        // se conserva el anterior en ese caso en vez de perderlo.
+        const previousThumbnail = slot.thumbnail;
         Object.assign(slot, update);
+        if (!slot.thumbnail) slot.thumbnail = previousThumbnail;
         bulkOps.push({
           updateOne: {
             filter: { userId, platform, platformId: slot.platformId },
-            update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0, lastSyncedAt: new Date() } },
+            update: { $set: {
+              views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0,
+              lastSyncedAt: new Date(),
+              // Ninguno de los uploaders (applyPlatformPublish) tiene de dónde
+              // sacar una miniatura al momento de publicar -- se completa acá,
+              // aprovechando el mismo refresco en vivo que ya pide stats.
+              ...(update.thumbnail ? { thumbnail: update.thumbnail } : {}),
+            } },
           },
         });
       }
@@ -618,11 +630,20 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
       const slot = platforms[platform];
       const update = slot && fresh[slot.platformId];
       if (!update) continue;
+      const previousThumbnail = slot.thumbnail;
       Object.assign(slot, update);
+      if (!slot.thumbnail) slot.thumbnail = previousThumbnail;
       bulkOps.push({
         updateOne: {
           filter: { userId, platform, platformId: slot.platformId },
-          update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0, lastSyncedAt: new Date() } },
+          update: { $set: {
+            views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0,
+            lastSyncedAt: new Date(),
+            // Ninguno de los uploaders (applyPlatformPublish) tiene de dónde
+            // sacar una miniatura al momento de publicar -- se completa acá,
+            // aprovechando el mismo refresco en vivo que ya pide stats.
+            ...(update.thumbnail ? { thumbnail: update.thumbnail } : {}),
+          } },
         },
       });
     }

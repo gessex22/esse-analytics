@@ -120,15 +120,21 @@ export async function syncYouTubeChannel(userId: string): Promise<{ total: numbe
 
 // Stats en vivo para un puñado puntual de videos (ej. la vista de Estadísticas,
 // acotada a 5 videos) — a diferencia de getYouTubeVideos, no lee de Mongo.
-export async function getVideoStats(ids: string[]): Promise<Record<string, { views: number; likes: number; comments: number }>> {
+export async function getVideoStats(ids: string[]): Promise<Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> {
   if (ids.length === 0) return {};
   const details = await getVideoDetails(ids);
-  const result: Record<string, { views: number; likes: number; comments: number }> = {};
+  const result: Record<string, { views: number; likes: number; comments: number; thumbnail?: string }> = {};
   for (const item of details) {
     result[item.id] = {
       views:    parseInt(item.statistics?.viewCount    ?? '0'),
       likes:    parseInt(item.statistics?.likeCount    ?? '0'),
       comments: parseInt(item.statistics?.commentCount ?? '0'),
+      // getVideoDetails ya pide `part=snippet`, que trae thumbnails -- se
+      // aprovecha acá para completar PlatformVideoModel.thumbnail sin pegarle
+      // una llamada aparte a la API.
+      thumbnail: item.snippet?.thumbnails?.high?.url
+              ?? item.snippet?.thumbnails?.medium?.url
+              ?? item.snippet?.thumbnails?.default?.url,
     };
   }
   return result;

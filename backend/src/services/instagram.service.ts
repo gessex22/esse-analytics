@@ -102,21 +102,23 @@ async function fetchInsightViews(mediaId: string, accessToken: string): Promise<
 // Stats en vivo para un puñado puntual de media ids (ej. vista de Estadísticas).
 // Graph API no soporta traer varios media ids sueltos en una sola llamada, así
 // que va uno por uno — está bien acotado a los ~5 videos de esa vista.
-export async function getMediaStats(userId: string, mediaIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number }>> {
+export async function getMediaStats(userId: string, mediaIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> {
   const tokens = await loadTokens(userId);
   if (!isUsableInstagramConnection(tokens) || mediaIds.length === 0) return {};
 
-  const result: Record<string, { views: number; likes: number; comments: number }> = {};
+  const result: Record<string, { views: number; likes: number; comments: number; thumbnail?: string }> = {};
   await Promise.all(mediaIds.map(async (id) => {
     try {
+      // thumbnail_url sumado acá para completar PlatformVideoModel.thumbnail
+      // sin una llamada aparte -- mismo campo que getRecentInstagramMedia.
       const [res, views] = await Promise.all([
-        fetch(`${FB_GRAPH}/${id}?fields=like_count,comments_count&access_token=${tokens!.access_token}`),
+        fetch(`${FB_GRAPH}/${id}?fields=like_count,comments_count,thumbnail_url&access_token=${tokens!.access_token}`),
         fetchInsightViews(id, tokens!.access_token),
       ]);
       if (!res.ok) return;
       const data = await res.json() as any;
       if (data.error) return;
-      result[id] = { views, likes: data.like_count ?? 0, comments: data.comments_count ?? 0 };
+      result[id] = { views, likes: data.like_count ?? 0, comments: data.comments_count ?? 0, thumbnail: data.thumbnail_url || undefined };
     } catch { /* deja el id afuera del resultado — el caller conserva el valor guardado */ }
   }));
   return result;

@@ -63,7 +63,7 @@ export async function getRecentTikTokVideos(userId: string, limit: number, curso
 // Stats en vivo para un puñado puntual de video ids (ej. vista de Estadísticas)
 // vía /v2/video/query/ — a diferencia de /video/list/ (que trae "los últimos N"),
 // este permite pedir videos puntuales por id.
-export async function getVideoStatsByIds(userId: string, videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; shares: number }>> {
+export async function getVideoStatsByIds(userId: string, videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; shares: number; thumbnail?: string }>> {
   if (videoIds.length === 0) return {};
   let token: { access_token: string };
   try {
@@ -73,7 +73,9 @@ export async function getVideoStatsByIds(userId: string, videoIds: string[]): Pr
   }
 
   try {
-    const res = await fetch(`${TK_BASE}/video/query/?fields=id,like_count,view_count,comment_count,share_count`, {
+    // cover_image_url sumado acá para completar PlatformVideoModel.thumbnail
+    // sin una llamada aparte -- mismo campo que getRecentTikTokVideos.
+    const res = await fetch(`${TK_BASE}/video/query/?fields=id,like_count,view_count,comment_count,share_count,cover_image_url`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token.access_token}`,
@@ -84,13 +86,14 @@ export async function getVideoStatsByIds(userId: string, videoIds: string[]): Pr
     if (!res.ok) return {};
     const data = await res.json() as any;
     const videos = data.data?.videos ?? [];
-    const result: Record<string, { views: number; likes: number; comments: number; shares: number }> = {};
+    const result: Record<string, { views: number; likes: number; comments: number; shares: number; thumbnail?: string }> = {};
     for (const v of videos) {
       result[v.id] = {
         views:    v.view_count    ?? 0,
         likes:    v.like_count    ?? 0,
         comments: v.comment_count ?? 0,
         shares:   v.share_count   ?? 0,
+        thumbnail: v.cover_image_url || undefined,
       };
     }
     return result;
