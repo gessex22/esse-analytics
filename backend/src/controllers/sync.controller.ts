@@ -406,6 +406,52 @@ function statsCacheWindowMs(publishedAt?: Date | string | null): number {
   return 60 * 60 * 1000;                    // 2+ días: cada hora
 }
 
+// Dado los PlatformVideo (posiblemente con más de un documento por plataforma,
+// ver applyPlatformPublish) linkeados a UN archivo, arma el objeto `platforms`
+// quedándose con el mejor documento por plataforma y qué platformId de cada
+// plataforma venció su ventana de cache y hay que refrescar en vivo.
+// Compartido por getGroupStats (top-N completos) y getFileStats (un archivo
+// puntual, sin exigir que esté en las 3 redes).
+function buildFilePlatforms(pvs: {
+  platform: string; platformId: string; platformUrl: string; title: string; thumbnail: string;
+  views: number; likes: number; comments: number; publishedAt: Date; lastSyncedAt: Date;
+}[]) {
+  // Un mismo video de Instagram puede tener más de un documento (shortcode
+  // del link pegado a mano vs. media id numérico real -- ver
+  // applyPlatformPublish); el shortcode nunca tiene stats porque Graph API
+  // no lo acepta para pedirlas. Ante un duplicado por plataforma se
+  // prefiere el platformId numérico y, si empatan, el sincronizado más
+  // reciente -- si no, cuál "gana" quedaba a merced del orden de Mongo.
+  const bestByPlatform = new Map<string, (typeof pvs)[number]>();
+  for (const pv of pvs) {
+    const current = bestByPlatform.get(pv.platform);
+    if (!current) { bestByPlatform.set(pv.platform, pv); continue; }
+    if (pv.platform === 'instagram') {
+      const currentNumeric = /^\d+$/.test(current.platformId);
+      const candidateNumeric = /^\d+$/.test(pv.platformId);
+      if (candidateNumeric && !currentNumeric) { bestByPlatform.set(pv.platform, pv); continue; }
+      if (!candidateNumeric && currentNumeric) continue;
+    }
+    const currentSynced = current.lastSyncedAt ? new Date(current.lastSyncedAt).getTime() : 0;
+    const candidateSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
+    if (candidateSynced > currentSynced) bestByPlatform.set(pv.platform, pv);
+  }
+
+  const platforms: Record<string, any> = {};
+  const stale: Record<'youtube' | 'instagram' | 'tiktok', string | null> = { youtube: null, instagram: null, tiktok: null };
+  for (const pv of bestByPlatform.values()) {
+    platforms[pv.platform] = {
+      platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
+      views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,
+    };
+    const lastSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
+    if (Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt)) {
+      stale[pv.platform as 'youtube' | 'instagram' | 'tiktok'] = pv.platformId;
+    }
+  }
+  return { platforms, stale };
+}
+
 // GET /api/sync/group-stats?limit=5 — para la vista de Estadísticas: los últimos
 // N videos que YA están matcheados en las 3 plataformas, con las stats de cada
 // una para compararlas lado a lado. Es la misma vista para modo simple y
@@ -415,7 +461,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 5, 20);
 
-    const files = await FileModel.find({ userId, platforms: { $in: ['youtube', 'instagram', 'tiktok'] } })
+    const files = await FileModel.find({ userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } })
       .sort({ fecha_creacion: -1 })
       .select('file_name fecha_creacion')
       .lean();
@@ -475,44 +521,15 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       // files.platforms también puede contener badges puestos manualmente sin
       // URL. Esos videos no tienen una identidad consultable ni métricas reales;
       // solo entran cuando las tres plataformas tienen PlatformVideoModel.
-      if (!pvs.some(pv => !!pv.platformId)) continue;
-      // Antes exigía las 3 ya cross-matcheadas en PlatformVideoModel (linkedFileId) --
-      // eso depende de la herramienta de Sincronizar/cross-match, que no corre sola
-      // y queda desactualizada. files.platforms (el query de arriba) ya es la señal
-      // confiable de "publicado ahí" -- se arma con lo que SÍ esté linkeado, aunque
-      // sea parcial, en vez de descartar el video entero por faltar el link exacto.
+      const complete = ['youtube', 'instagram', 'tiktok'].every(platform =>
+        pvs.some(pv => pv.platform === platform && !!pv.platformId)
+      );
+      if (!complete) continue;
 
-      // Un mismo video de Instagram puede tener más de un documento (shortcode
-      // del link pegado a mano vs. media id numérico real -- ver
-      // applyPlatformPublish); el shortcode nunca tiene stats porque Graph API
-      // no lo acepta para pedirlas. Ante un duplicado por plataforma se
-      // prefiere el platformId numérico y, si empatan, el sincronizado más
-      // reciente -- si no, cuál "gana" quedaba a merced del orden de Mongo.
-      const bestByPlatform = new Map<string, (typeof pvs)[number]>();
-      for (const pv of pvs) {
-        const current = bestByPlatform.get(pv.platform);
-        if (!current) { bestByPlatform.set(pv.platform, pv); continue; }
-        if (pv.platform === 'instagram') {
-          const currentNumeric = /^\d+$/.test(current.platformId);
-          const candidateNumeric = /^\d+$/.test(pv.platformId);
-          if (candidateNumeric && !currentNumeric) { bestByPlatform.set(pv.platform, pv); continue; }
-          if (!candidateNumeric && currentNumeric) continue;
-        }
-        const currentSynced = current.lastSyncedAt ? new Date(current.lastSyncedAt).getTime() : 0;
-        const candidateSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
-        if (candidateSynced > currentSynced) bestByPlatform.set(pv.platform, pv);
-      }
-
-      const platforms: Record<string, any> = {};
-      for (const pv of bestByPlatform.values()) {
-        platforms[pv.platform] = {
-          platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
-          views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,
-        };
-        const lastSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
-        const stale = Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt);
-        if (stale) toRefresh[pv.platform as 'youtube' | 'instagram' | 'tiktok'].push(pv.platformId);
-      }
+      const { platforms, stale } = buildFilePlatforms(pvs);
+      if (stale.youtube) toRefresh.youtube.push(stale.youtube);
+      if (stale.instagram) toRefresh.instagram.push(stale.instagram);
+      if (stale.tiktok) toRefresh.tiktok.push(stale.tiktok);
       // Si el nombre se repite entre los propios archivos del usuario, tampoco
       // se puede saber a cuál de ellos corresponde el match — mismo criterio
       // conservador que para duplicados del lado de Biblioteca remota.
@@ -554,6 +571,69 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     if (bulkOps.length > 0) PlatformVideoModel.bulkWrite(bulkOps).catch(() => {});
 
     res.json({ items });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/sync/file-stats?fileId=&fileName= — stats en vivo de UN archivo
+// puntual, sin exigir que ya esté publicado en las 3 plataformas (a diferencia
+// de getGroupStats). La usa el Dashboard para el card de "último video
+// publicado": ese video puede todavía no estar cross-posteado a las 3 redes,
+// así que no puede depender de estar en el top-N "completo" de Estadísticas.
+// Acepta fileId (el _id de Mongo que expone group-stats) o fileName -- en modo
+// escritorio, el historial de subidas viene de SQLite local y su linkedFileId
+// es un id local sin relación con Mongo, así que fileName es el único cruce
+// posible ahí.
+export const getFileStats = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const fileId = typeof req.query.fileId === 'string' ? req.query.fileId : undefined;
+    const fileName = typeof req.query.fileName === 'string' ? req.query.fileName : undefined;
+    if (!fileId && !fileName) { res.status(400).json({ message: 'fileId o fileName requerido.' }); return; }
+
+    const file = fileId && Types.ObjectId.isValid(fileId)
+      ? await FileModel.findOne({ _id: fileId, userId }).select('file_name fecha_creacion').lean()
+      : fileName
+        ? await FileModel.findOne({ userId, file_name: fileName }).select('file_name fecha_creacion').lean()
+        : null;
+    if (!file) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+    const pvs = await PlatformVideoModel.find({
+      userId, linkedFileId: file._id, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
+    })
+      .select('platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+      .lean();
+
+    const { platforms, stale } = buildFilePlatforms(pvs);
+
+    const [ytStats, igStats, tkStats] = await Promise.all([
+      getYoutubeVideoStats(stale.youtube ? [stale.youtube] : []).catch(() => ({} as Record<string, any>)),
+      getMediaStats(userId, stale.instagram ? [stale.instagram] : []).catch(() => ({} as Record<string, any>)),
+      getTiktokVideoStats(userId, stale.tiktok ? [stale.tiktok] : []).catch(() => ({} as Record<string, any>)),
+    ]);
+
+    const bulkOps: any[] = [];
+    for (const [platform, fresh] of [['youtube', ytStats], ['instagram', igStats], ['tiktok', tkStats]] as const) {
+      const slot = platforms[platform];
+      const update = slot && fresh[slot.platformId];
+      if (!update) continue;
+      Object.assign(slot, update);
+      bulkOps.push({
+        updateOne: {
+          filter: { userId, platform, platformId: slot.platformId },
+          update: { $set: { views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0, lastSyncedAt: new Date() } },
+        },
+      });
+    }
+    if (bulkOps.length > 0) PlatformVideoModel.bulkWrite(bulkOps).catch(() => {});
+
+    res.json({
+      fileId: String(file._id),
+      fileName: file.file_name,
+      fecha_creacion: file.fecha_creacion,
+      platforms,
+    });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }

@@ -252,6 +252,7 @@ export function DashboardView({
   const [items, setItems] = useState<GroupStatsItem[]>([]);
   const [upcoming, setUpcoming] = useState<CalendarVideo[]>([]);
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(null);
+  const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
 
@@ -308,12 +309,47 @@ export function DashboardView({
           latestHistory?.platformId,
       )
     : undefined;
+  const matchedHistory =
+    matchedHistoryItem ?? matchedHistoryByFileId ?? matchedHistoryByPlatform;
+
+  // El último video publicado puede no estar todavía cross-posteado a las 3
+  // redes (getGroupStats solo trae los que sí lo están, para la comparación
+  // de Estadísticas) -- si no aparece ahí, se piden sus stats puntuales en
+  // vez de mostrar el card sin ninguna métrica.
+  useEffect(() => {
+    if (demoMode || !latestHistory || matchedHistory) {
+      setFallbackStats(null);
+      return;
+    }
+    const fileId =
+      latestHistory.linkedFileId != null &&
+      /^[a-f0-9]{24}$/i.test(String(latestHistory.linkedFileId))
+        ? String(latestHistory.linkedFileId)
+        : undefined;
+    const fileName = latestHistory.fileName ?? undefined;
+    if (!fileId && !fileName) {
+      setFallbackStats(null);
+      return;
+    }
+    let cancelled = false;
+    syncService
+      .getFileStats({ fileId, fileName })
+      .then((stats) => {
+        if (!cancelled) setFallbackStats(stats);
+      })
+      .catch(() => {
+        if (!cancelled) setFallbackStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [demoMode, latestHistory, matchedHistory]);
+
   const item = demoMode
     ? DEMO_ITEM
     : latestHistory
-      ? (matchedHistoryItem ??
-        matchedHistoryByFileId ??
-        matchedHistoryByPlatform ?? {
+      ? (matchedHistory ??
+        fallbackStats ?? {
           fileId: String(latestHistory.id),
           fileName:
             latestHistory.fileName ??

@@ -77,5 +77,6 @@ router.use('/api/sync/youtube',         proxyToCentral);
 router.use('/api/sync/platform-recent', proxyToCentral);
 router.use('/api/sync/cross-match',     proxyToCentral);
 router.use('/api/sync/group-stats',     proxyToCentral);
+router.use('/api/sync/file-stats',      proxyToCentral);
 
 export default router;

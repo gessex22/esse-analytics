@@ -790,6 +790,17 @@ export const syncService = {
   getGroupStats: (limit = 5): Promise<{ items: GroupStatsItem[] }> =>
     requestJson(`/api/sync/group-stats?limit=${limit}`),
 
+  // Stats en vivo de UN archivo puntual (por fileId de Mongo o por fileName),
+  // sin exigir que esté cross-posteado a las 3 plataformas -- para el card de
+  // "último video publicado" del Dashboard, cuando ese video no aparece en
+  // getGroupStats por no estar todavía completo en las 3 redes.
+  getFileStats: (query: { fileId?: string; fileName?: string }): Promise<GroupStatsItem> => {
+    const params = new URLSearchParams();
+    if (query.fileId) params.set('fileId', query.fileId);
+    if (query.fileName) params.set('fileName', query.fileName);
+    return requestJson(`/api/sync/file-stats?${params.toString()}`);
+  },
+
   resolvePublicationSelection: (fileId: string, platforms: Platform[]): Promise<void> =>
     requestJson(`/api/videos/${fileId}/publication-selection`, {
       method: "POST",

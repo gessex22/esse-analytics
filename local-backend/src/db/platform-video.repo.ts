@@ -213,7 +213,7 @@ export const platformVideoRepo = {
       if (result.length >= limit) break;
       let badges: string[];
       try { badges = JSON.parse(f.platforms || '[]'); } catch { badges = []; }
-      if (badges.length === 0) continue;
+      if (!['youtube', 'instagram', 'tiktok'].every(p => badges.includes(p))) continue;
 
       const platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }> = {};
       for (const pv of pvByFile.get(f.id) ?? []) {
@@ -223,7 +223,7 @@ export const platformVideoRepo = {
       // existe un platformId al que pedirle métricas y produciría tarjetas con
       // ceros que parecen datos válidos. El matching manual es el que completa
       // estos tres registros.
-      if (Object.keys(platforms).length === 0) continue;
+      if (!['youtube', 'instagram', 'tiktok'].every(p => platforms[p]?.platformId)) continue;
       result.push({ fileId: f.id, fileName: f.file_name, fechaCreacion: f.fecha_creacion, platforms });
     }
     return result;

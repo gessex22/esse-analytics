@@ -3,7 +3,7 @@ import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
-  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getStatsByIds, unlinkPlatform,
+  getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
   getCalendarConfig, updateCalendarConfig,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -30,6 +30,7 @@ router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('to
 // ya viene scoped por userId en el controller, el requireRole era una
 // restricción extra sin motivo real de seguridad.
 router.get ('/api/sync/group-stats',                verifyToken, getGroupStats);
+router.get ('/api/sync/file-stats',                 verifyToken, getFileStats);
 router.post('/api/sync/stats-by-ids',               verifyToken, getStatsByIds);
 router.get ('/api/sync/history',                    verifyToken, getUploadHistory);
 router.post('/api/sync/history',                    verifyToken, recordUploadEvent);
