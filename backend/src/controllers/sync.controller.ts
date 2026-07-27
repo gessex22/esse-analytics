@@ -485,8 +485,29 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       // confiable de "publicado ahí" -- se arma con lo que SÍ esté linkeado, aunque
       // sea parcial, en vez de descartar el video entero por faltar el link exacto.
 
-      const platforms: Record<string, any> = {};
+      // Un mismo video de Instagram puede tener más de un documento (shortcode
+      // del link pegado a mano vs. media id numérico real -- ver
+      // applyPlatformPublish); el shortcode nunca tiene stats porque Graph API
+      // no lo acepta para pedirlas. Ante un duplicado por plataforma se
+      // prefiere el platformId numérico y, si empatan, el sincronizado más
+      // reciente -- si no, cuál "gana" quedaba a merced del orden de Mongo.
+      const bestByPlatform = new Map<string, (typeof pvs)[number]>();
       for (const pv of pvs) {
+        const current = bestByPlatform.get(pv.platform);
+        if (!current) { bestByPlatform.set(pv.platform, pv); continue; }
+        if (pv.platform === 'instagram') {
+          const currentNumeric = /^\d+$/.test(current.platformId);
+          const candidateNumeric = /^\d+$/.test(pv.platformId);
+          if (candidateNumeric && !currentNumeric) { bestByPlatform.set(pv.platform, pv); continue; }
+          if (!candidateNumeric && currentNumeric) continue;
+        }
+        const currentSynced = current.lastSyncedAt ? new Date(current.lastSyncedAt).getTime() : 0;
+        const candidateSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
+        if (candidateSynced > currentSynced) bestByPlatform.set(pv.platform, pv);
+      }
+
+      const platforms: Record<string, any> = {};
+      for (const pv of bestByPlatform.values()) {
         platforms[pv.platform] = {
           platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
           views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,

@@ -710,21 +710,41 @@ export async function applyPlatformPublish(userId: string, data: {
     publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
   }
 
-  await PlatformVideoModel.updateOne(
-    { userId, platform, platformId },
-    {
-      $set: {
-        userId, platform, platformId,
-        platformUrl:  platformUrl ?? '',
-        title:        title ?? '',
-        publishedAt:  publishedAtDate,
-        linkedFileId,
-        matchStatus,
-        lastSyncedAt: new Date(),
+  // Si el shortcode no se pudo resolver arriba y ya existe un registro con el
+  // media id numérico real para este mismo video, crear otro con el shortcode
+  // sin resolver solo produce un duplicado con views/likes/comments en 0 para
+  // siempre (Graph API no acepta el shortcode para pedir stats) que además
+  // termina pisando al bueno en Estadísticas (getGroupStats no tenía
+  // criterio de desempate). En ese caso se actualiza el link/título del
+  // registro bueno en vez de crear uno nuevo.
+  const numericSibling = (platform === 'instagram' && !/^\d+$/.test(platformId) && linkedFileId)
+    ? await PlatformVideoModel.findOne({ userId, platform, linkedFileId, platformId: { $regex: /^\d+$/ } })
+        .select('_id')
+        .lean()
+    : null;
+
+  if (numericSibling) {
+    await PlatformVideoModel.updateOne(
+      { _id: numericSibling._id },
+      { $set: { platformUrl: platformUrl ?? '', title: title ?? '' } },
+    );
+  } else {
+    await PlatformVideoModel.updateOne(
+      { userId, platform, platformId },
+      {
+        $set: {
+          userId, platform, platformId,
+          platformUrl:  platformUrl ?? '',
+          title:        title ?? '',
+          publishedAt:  publishedAtDate,
+          linkedFileId,
+          matchStatus,
+          lastSyncedAt: new Date(),
+        },
       },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
+  }
 
   await mirrorPlatformVideoToBackup(userId, {
     platform, platformId, platformUrl, fileName, contentId, title,
