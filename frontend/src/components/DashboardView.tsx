@@ -93,8 +93,10 @@ export function DashboardView({ onOpenVideo, onOpenCalendar }: { onOpenVideo?: (
   };
   useEffect(() => { load(); }, []);
 
+  const historyPlatform = latestHistory && PLATFORMS.includes(latestHistory.platform as Platform) ? latestHistory.platform as Platform : null;
   const matchedHistoryItem = latestHistory?.fileName ? items.find(entry => entry.fileName === latestHistory.fileName) : undefined;
-  const item = demoMode ? DEMO_ITEM : latestHistory ? (matchedHistoryItem ?? {
+  const matchedHistoryByPlatform = historyPlatform ? items.find(entry => entry.platforms[historyPlatform]?.platformId === latestHistory?.platformId) : undefined;
+  const item = demoMode ? DEMO_ITEM : latestHistory ? (matchedHistoryItem ?? matchedHistoryByPlatform ?? {
     fileId: String(latestHistory.id),
     fileName: latestHistory.fileName ?? latestHistory.title ?? "Última publicación",
     fecha_creacion: latestHistory.publishedAt,
