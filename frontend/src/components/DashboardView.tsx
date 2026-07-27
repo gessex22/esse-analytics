@@ -254,6 +254,7 @@ export function DashboardView({
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
   const [localFileId, setLocalFileId] = useState<string | null>(null);
+  const [localThumbnailFailed, setLocalThumbnailFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
 
@@ -383,6 +384,9 @@ export function DashboardView({
       cancelled = true;
     };
   }, [itemFileName]);
+  useEffect(() => {
+    setLocalThumbnailFailed(false);
+  }, [localFileId]);
 
   // Si el video no está en el catálogo local de esta PC (publicado desde el
   // celular, o los bytes locales se borraron) no hay miniatura ffmpeg posible
@@ -504,20 +508,31 @@ export function DashboardView({
                   className="relative w-24 sm:w-32 h-32 sm:h-44 rounded-xl bg-gradient-to-br from-primary/30 via-secondary to-black overflow-hidden flex-shrink-0 disabled:cursor-default"
                   title={localFileId ? "Abrir video" : "No se encontró el archivo local"}
                 >
-                  {(localFileId || platformThumbnail) && (
-                    <img
-                      src={
-                        localFileId
-                          ? videoService.thumbnailUrl(localFileId)
-                          : platformThumbnail
-                      }
-                      alt=""
-                      className="absolute inset-0 h-full w-full object-cover"
-                      onError={(event) => {
-                        event.currentTarget.style.display = "none";
-                      }}
-                    />
-                  )}
+                  {(() => {
+                    // La miniatura local (ffmpeg) se intenta primero si hay
+                    // localFileId, pero puede fallar (archivo movido, thumbnail
+                    // no generado todavía, etc.) -- ahí SÍ hay que caer a la de
+                    // la plataforma en tiempo real, no solo elegir una vez.
+                    const useLocal = !!localFileId && !localThumbnailFailed;
+                    const src = useLocal
+                      ? videoService.thumbnailUrl(localFileId!)
+                      : platformThumbnail;
+                    if (!src) return null;
+                    return (
+                      <img
+                        src={src}
+                        alt=""
+                        className="absolute inset-0 h-full w-full object-cover"
+                        onError={(event) => {
+                          if (useLocal && platformThumbnail) {
+                            setLocalThumbnailFailed(true);
+                          } else {
+                            event.currentTarget.style.display = "none";
+                          }
+                        }}
+                      />
+                    );
+                  })()}
                   <div className="relative h-full flex items-center justify-center">
                     <Video className="w-8 h-8 text-primary/70" />
                   </div>
