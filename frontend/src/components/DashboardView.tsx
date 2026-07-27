@@ -253,6 +253,7 @@ export function DashboardView({
   const [upcoming, setUpcoming] = useState<CalendarVideo[]>([]);
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
+  const [localFileId, setLocalFileId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
 
@@ -359,6 +360,30 @@ export function DashboardView({
           platforms: {},
         })
       : items[0];
+
+  // El fileId de `item` viene de la central (Mongo _id) -- la miniatura y el
+  // player son locales (SQLite), así que hace falta resolver el id local por
+  // fileName antes de poder pedirlos (mismo patrón que StatsView.tsx).
+  const itemFileName = item && item.fileId !== "demo" ? item.fileName : null;
+  useEffect(() => {
+    if (!itemFileName) {
+      setLocalFileId(null);
+      return;
+    }
+    let cancelled = false;
+    videoService
+      .resolveByNames([itemFileName])
+      .then((map) => {
+        if (!cancelled) setLocalFileId(map[itemFileName] ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalFileId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [itemFileName]);
+
   const calendar = demoMode ? DEMO_CALENDAR : upcoming;
   const totals = useMemo(
     () =>
@@ -464,15 +489,15 @@ export function DashboardView({
               <div className="flex gap-4 min-w-0">
                 <button
                   onClick={() =>
-                    item.fileId !== "demo" &&
-                    onOpenVideo?.(item.fileId, item.fileName)
+                    localFileId && onOpenVideo?.(localFileId, item.fileName)
                   }
-                  className="relative w-24 sm:w-32 h-32 sm:h-44 rounded-xl bg-gradient-to-br from-primary/30 via-secondary to-black overflow-hidden flex-shrink-0"
-                  title="Abrir video"
+                  disabled={!localFileId}
+                  className="relative w-24 sm:w-32 h-32 sm:h-44 rounded-xl bg-gradient-to-br from-primary/30 via-secondary to-black overflow-hidden flex-shrink-0 disabled:cursor-default"
+                  title={localFileId ? "Abrir video" : "No se encontró el archivo local"}
                 >
-                  {item.fileId !== "demo" && (
+                  {localFileId && (
                     <img
-                      src={videoService.thumbnailUrl(item.fileId)}
+                      src={videoService.thumbnailUrl(localFileId)}
                       alt=""
                       className="absolute inset-0 h-full w-full object-cover"
                       onError={(event) => {
