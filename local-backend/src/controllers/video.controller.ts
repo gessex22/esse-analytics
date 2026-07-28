@@ -461,6 +461,38 @@ export const getMetrics = (_req: Request, res: Response) => {
   res.json({ totalVideos, guionesEstructurados: 0, clipsRandom: 0, clipsSinVoz: 0 });
 };
 
+// ── GET /api/calendar?year=&month= — mirror local de getCalendarVideos (central) ──
+// Nunca existió en local-backend: la llamada del Dashboard/Calendario caía en el
+// catch-all de Express que sirve el index.html de la SPA (200, pero HTML en vez
+// de JSON), lo que hacía fallar el JSON.parse del lado del frontend y tumbaba
+// TODO el Promise.all del Dashboard -- forzando el modo demo aunque group-stats
+// e historial sí tuvieran datos reales. Bug real confirmado en producción el
+// 2026-07-28.
+export const getCalendarVideos = (req: Request, res: Response): void => {
+  const now = new Date();
+  const year  = parseInt(req.query.year  as string) || now.getFullYear();
+  const month = parseInt(req.query.month as string) || (now.getMonth() + 1);
+
+  const rows = fileRepo.findForCalendar(year, month);
+  const videos = rows.map(r => {
+    let platforms: string[];
+    try { platforms = JSON.parse(r.platforms || '[]'); } catch { platforms = []; }
+    return {
+      _id: String(r.id),
+      fileId: String(r.id),
+      title: r.file_name,
+      date: r.effective_date,
+      content_status: r.content_status || 'borrador',
+      target_platforms: platforms,
+      published_platforms: platforms,
+      tipo_contenido: r.tipo_contenido ?? undefined,
+      duracion_segundos: r.duracion_segundos ?? undefined,
+      scheduled_date: r.scheduled_date ?? undefined,
+    };
+  });
+  res.json({ videos });
+};
+
 // ── PATCH /api/videos/:fileId/scheduled-date ─────────────────────────────────
 export const updateScheduledDate = (req: Request, res: Response): void => {
   const { scheduled_date } = req.body as { scheduled_date?: string | null };

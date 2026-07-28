@@ -165,6 +165,38 @@ export const fileRepo = {
     }));
   },
 
+  // Para GET /api/calendar?year=&month= (Dashboard + Calendario) — mirror de
+  // getCalendarVideos en backend/src/controllers/video.controller.ts, pero
+  // local: nunca existió acá, así que la llamada caía en el catch-all de la
+  // SPA (devolvía index.html) y JSON.parse tumbaba el Promise.all del
+  // Dashboard entero -- ver DashboardView.tsx. effective_date replica el
+  // $ifNull encadenado de Mongo (scheduled_date > fecha_creacion > created_at);
+  // la comparación de rango funciona por orden lexicográfico porque ambos
+  // formatos (ISO con 'T' y "YYYY-MM-DD HH:MM:SS") arrancan con el mismo
+  // prefijo de fecha.
+  findForCalendar(year: number, month: number): {
+    id: number; file_name: string; content_status: string; platforms: string;
+    tipo_contenido: string | null; duracion_segundos: number | null;
+    scheduled_date: string | null; effective_date: string;
+  }[] {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const start = `${year}-${pad(month)}-01`;
+    const nextMonth = month === 12 ? 1 : month + 1;
+    const nextYear  = month === 12 ? year + 1 : year;
+    const end = `${nextYear}-${pad(nextMonth)}-01`;
+
+    return db.prepare(`
+      SELECT id, file_name, content_status, platforms, tipo_contenido, duracion_segundos, scheduled_date,
+             COALESCE(scheduled_date, fecha_creacion, created_at) AS effective_date
+      FROM files
+      WHERE status != 'ELIMINADO_DISCO'
+        AND (content_status IS NULL OR content_status != 'descartado')
+        AND COALESCE(scheduled_date, fecha_creacion, created_at) >= ?
+        AND COALESCE(scheduled_date, fecha_creacion, created_at) <  ?
+      ORDER BY effective_date ASC
+    `).all(start, end) as any[];
+  },
+
   /** Igual que findSlim pero solo los que todavía no están clasificados — evita que
    * el plugin de transcripción tenga que preguntar archivo por archivo (era N+1).
    * Se filtra por tipo_contenido (no por "tiene fila en transcripts"): un video
