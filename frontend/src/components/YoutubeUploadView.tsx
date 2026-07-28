@@ -1318,6 +1318,17 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
   );
 }
 
+// La miniatura personalizada se captura bien (la vista previa en la app sale
+// correcta) pero YouTube la termina mostrando en gris -- no es un bug de este
+// código (thumbnails.set devuelve 200 y el pipeline de captura/subida está
+// bien: se revisó a fondo el 2026-07-28), sino un delay/quirk conocido del
+// lado de YouTube al propagar miniaturas custom por su CDN (reportado por
+// usuarios en foros, sin confirmación oficial de Google). Hasta no encontrar
+// una forma confiable de evitarlo, se desactiva y se deja el frame
+// autoseleccionado random de YouTube -- volver a esto con más tiempo/casos
+// reales para confirmar si de verdad es solo un delay o hay algo más.
+const CUSTOM_THUMBNAIL_ENABLED = false;
+
 // ── Mini reproductor / capturador de frame ────────────────────────────────────
 function ThumbnailScrubber({ fileId, onCapture }: {
   fileId: string;
@@ -1664,7 +1675,7 @@ export function YoutubeUploadView() {
         if (!res.ok) throw new Error(data.detail || data.error || "Error desconocido");
 
         // Miniatura capturada (solo en modo biblioteca)
-        if (videoSource !== "device" && thumbnailBlob && data.videoId) {
+        if (CUSTOM_THUMBNAIL_ENABLED && videoSource !== "device" && thumbnailBlob && data.videoId) {
           try {
             await uploadThumbnail(data.videoId, thumbnailBlob, authHeader);
           } catch (err: any) {
@@ -1675,7 +1686,7 @@ export function YoutubeUploadView() {
         }
       }
 
-      if (videoSource === "device" && thumbnailBlob && data.videoId) {
+      if (CUSTOM_THUMBNAIL_ENABLED && videoSource === "device" && thumbnailBlob && data.videoId) {
         try {
           await uploadThumbnail(data.videoId, thumbnailBlob, authHeader);
         } catch (err: any) {
