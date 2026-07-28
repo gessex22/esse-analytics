@@ -329,6 +329,18 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
       device_id:     cv.device_id     ?? undefined,
       source:         cv.source        ?? undefined,
     });
+
+    // El link en platform_videos no alcanza: findGroupStatsCandidates (Estadísticas)
+    // exige ADEMÁS el badge en files.platforms antes de mirar los links. Sin esto,
+    // un match hecho en otro dispositivo (celular) llegaba acá con el link real
+    // pero el archivo se quedaba sin badge para esa plataforma -- Estadísticas
+    // nunca lo mostraba aunque el Dashboard (sin ese gate) sí. Bug real confirmado
+    // en producción el 2026-07-28 con "final - detalle ddr5.mp4" (instagram
+    // linkeado, badge nunca actualizado).
+    if (file && cv.match_status !== 'sin_match' && ['youtube', 'instagram', 'tiktok'].includes(cv.platform)) {
+      fileRepo.addPlatform(file.id, cv.platform);
+    }
+
     if (existing) skipped++; else recovered++;
   }
 
