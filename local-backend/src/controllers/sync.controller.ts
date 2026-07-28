@@ -151,7 +151,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       tiktok:    candidates.map(c => c.platforms.tiktok?.platformId).filter((x): x is string => !!x),
     };
 
-    let stats: Record<'youtube' | 'instagram' | 'tiktok', Record<string, { views: number; likes: number; comments: number }>> =
+    let stats: Record<'youtube' | 'instagram' | 'tiktok', Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> =
       { youtube: {}, instagram: {}, tiktok: {} };
     try {
       const upstream = await fetch(`${CENTRAL}/api/sync/stats-by-ids`, {
@@ -172,7 +172,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
           platformId:  slot.platformId,
           platformUrl: slot.platformUrl ?? '',
           title:       slot.title ?? '',
-          thumbnail:   '',
+          thumbnail:   fresh?.thumbnail ?? '',
           views:    fresh?.views    ?? 0,
           likes:    fresh?.likes    ?? 0,
           comments: fresh?.comments ?? 0,
@@ -182,6 +182,32 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     });
 
     res.json({ items });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /api/sync/file-stats?fileId=&fileName= — proxy directo a la central: ahí vive
+// PlatformVideoModel (con los tokens OAuth para pedir stats/thumbnail en vivo), así
+// que no hay forma de resolverlo desde la SQLite local sola. Sin esta ruta el
+// Dashboard (ver DashboardView.tsx) se quedaba con el card vacío -- sin miniatura ni
+// stats -- para cualquier video recién publicado que todavía no calificara como
+// candidato completo de getGroupStats (p.ej. matcheado desde el celular, antes de
+// que el próximo pull traiga el link a esta PC).
+export const getFileStats = async (req: AuthRequest, res: Response): Promise<void> => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) { res.status(401).json({ message: 'Token requerido' }); return; }
+
+  try {
+    const params = new URLSearchParams();
+    if (typeof req.query.fileId === 'string') params.set('fileId', req.query.fileId);
+    if (typeof req.query.fileName === 'string') params.set('fileName', req.query.fileName);
+
+    const upstream = await fetch(`${CENTRAL}/api/sync/file-stats?${params.toString()}`, {
+      headers: { Authorization: authHeader },
+    });
+    const body = await upstream.json().catch(() => ({}));
+    res.status(upstream.status).json(body);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
