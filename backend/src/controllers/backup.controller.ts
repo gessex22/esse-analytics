@@ -729,6 +729,21 @@ export async function applyPlatformPublish(userId: string, data: {
       { $set: { platformUrl: platformUrl ?? '', title: title ?? '' } },
     );
   } else {
+    // Si este file+platform ya tenía OTRO platformId linkeado (ej. un link mal
+    // pegado que después se corrige, o un re-match), ese doc viejo queda
+    // desvinculado antes de crear/actualizar el nuevo -- si no, los dos quedan
+    // compitiendo por el mismo slot en buildFilePlatforms (desempate por
+    // lastSyncedAt), y cuál "gana" en Estadísticas/Dashboard queda a merced de
+    // qué doc se sincronizó último, mostrando a veces el bueno y a veces un
+    // duplicado roto con 0 vistas. Mismo criterio que ya usa
+    // resolveCrossMatchSlot para el cross-match manual -- acá faltaba para el
+    // resto de los callers (recordUploadEvent, uploaders directos).
+    if (linkedFileId) {
+      await PlatformVideoModel.updateMany(
+        { userId, platform, linkedFileId, platformId: { $ne: platformId } },
+        { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
+      );
+    }
     await PlatformVideoModel.updateOne(
       { userId, platform, platformId },
       {
