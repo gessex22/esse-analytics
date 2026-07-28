@@ -448,8 +448,24 @@ export async function getBackupPlatformVideos(req: AuthRequest, res: Response): 
     // upload_history aunque el espejo backup_platform_videos fallara por una
     // caída breve. Reaplicar el evento es idempotente y reconstruye también el
     // badge en FileModel antes de que Electron haga el pull.
+    //
+    // PERO upload_history es un log PERMANENTE (nunca se borra ni se corrige) --
+    // este endpoint lo pide el escritorio en cada sync tick (cada 5 min), así que
+    // reaplicar TODO el historial sin condición revivía para siempre cualquier
+    // link viejo/roto (ej. un id de YouTube mal pegado y borrado a mano después):
+    // volvía a pisar el link bueno en el siguiente ciclo. Bug real confirmado en
+    // producción con "final - detalle ddr5.mp4" (yDjFp89AnRQ resucitando cada 5
+    // min sobre 3kh98K5qPZw). Ahora solo se reaplican los eventos que TODAVÍA no
+    // tienen ningún PlatformVideoModel -- eso alcanza para la recuperación real
+    // (mirror que nunca se creó) sin pisar una corrección posterior.
     const history = await UploadHistoryModel.find({ userId }).lean();
-    await Promise.all(history.map((h: any) => applyPlatformPublish(userId, {
+    const existing = await PlatformVideoModel.find({
+      userId,
+      platform: { $in: [...new Set(history.map((h: any) => h.platform))] },
+    }).select('platform platformId').lean();
+    const existingKeys = new Set(existing.map((pv) => `${pv.platform}:${pv.platformId}`));
+    const missing = history.filter((h: any) => !existingKeys.has(`${h.platform}:${h.platformId}`));
+    await Promise.all(missing.map((h: any) => applyPlatformPublish(userId, {
       platform: h.platform,
       platformId: h.platformId,
       platformUrl: h.platformUrl,
