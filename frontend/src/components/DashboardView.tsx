@@ -14,14 +14,13 @@ import {
   syncService,
   videoService,
   GroupStatsItem,
-  CalendarVideo,
 } from "../services/api";
 import {
   InstagramLogo,
   TiktokLogo,
   YoutubeLogo,
-  PlatformKey,
 } from "./icons/PlatformLogos";
+import { calcNextDate } from "../data/mockPublishingData";
 
 type Platform = "youtube" | "instagram" | "tiktok";
 type HistoryItem = Awaited<
@@ -91,40 +90,22 @@ const DEMO_ITEM: GroupStatsItem = {
   },
 };
 
-const DEMO_CALENDAR: CalendarVideo[] = [
-  {
-    _id: "demo-1",
-    fileId: "demo-1",
-    title: "3 errores al publicar",
-    date: new Date(Date.now() + 86400000).toISOString(),
-    content_status: "publicado",
-    target_platforms: ["youtube", "instagram", "tiktok"],
-    published_platforms: [],
-    tipo_contenido: "GUION_ESTRUCTURADO",
-    calendarStatus: "pendiente",
-  },
-  {
-    _id: "demo-2",
-    fileId: "demo-2",
-    title: "La fórmula del hook",
-    date: new Date(Date.now() + 2 * 86400000).toISOString(),
-    content_status: "publicado",
-    target_platforms: ["instagram", "tiktok"],
-    published_platforms: [],
-    tipo_contenido: "CLIP_RANDOM",
-    calendarStatus: "pendiente",
-  },
-  {
-    _id: "demo-3",
-    fileId: "demo-3",
-    title: "Ideas para esta semana",
-    date: new Date(Date.now() + 4 * 86400000).toISOString(),
-    content_status: "publicado",
-    target_platforms: ["youtube"],
-    published_platforms: [],
-    tipo_contenido: "GUION_ESTRUCTURADO",
-    calendarStatus: "pendiente",
-  },
+// "Próximo" acá NO es una fecha fija guardada en el archivo (scheduled_date
+// nunca se usa en la práctica) -- es la misma proyección que ya calcula
+// Calendario (PublishingQueue.tsx): última publicada + intervalo de días,
+// por plataforma. Antes esta tarjeta filtraba /api/calendar por scheduled_date
+// y quedaba vacía para siempre porque ese campo nunca se completa.
+type UpcomingSlot = {
+  platform: Platform;
+  title: string;
+  date: string;
+  fileId: string;
+};
+
+const DEMO_CALENDAR: UpcomingSlot[] = [
+  { platform: "youtube", title: "3 errores al publicar", date: calcNextDate(new Date().toISOString().slice(0, 10), 1), fileId: "demo-1" },
+  { platform: "instagram", title: "La fórmula del hook", date: calcNextDate(new Date().toISOString().slice(0, 10), 2), fileId: "demo-2" },
+  { platform: "tiktok", title: "Ideas para esta semana", date: calcNextDate(new Date().toISOString().slice(0, 10), 4), fileId: "demo-3" },
 ];
 
 function formatNum(value: number) {
@@ -134,12 +115,12 @@ function formatNum(value: number) {
   return String(value);
 }
 
-function formatDate(value: string) {
+function formatDate(value: string | Date) {
   return new Intl.DateTimeFormat("es", {
     weekday: "short",
     day: "numeric",
     month: "short",
-  }).format(new Date(value));
+  }).format(typeof value === "string" ? new Date(value) : value);
 }
 
 function PlatformRow({
@@ -250,7 +231,7 @@ export function DashboardView({
   onOpenCalendar?: () => void;
 }) {
   const [items, setItems] = useState<GroupStatsItem[]>([]);
-  const [upcoming, setUpcoming] = useState<CalendarVideo[]>([]);
+  const [upcoming, setUpcoming] = useState<UpcomingSlot[]>([]);
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
   const [localFileId, setLocalFileId] = useState<string | null>(null);
@@ -261,20 +242,28 @@ export function DashboardView({
   const load = async () => {
     setLoading(true);
     try {
-      const now = new Date();
-      const [stats, calendar, history] = await Promise.all([
+      const [stats, calendarConfig, history] = await Promise.all([
         syncService.getGroupStats(5),
-        videoService.getCalendarVideos(now.getFullYear(), now.getMonth() + 1),
+        syncService.getCalendarConfig(),
         syncService.getHistory({ limit: 1 }),
       ]);
       setItems(stats.items);
       setUpcoming(
-        calendar.videos
-          ?.filter((v) => new Date(v.date) >= new Date())
-          .sort(
-            (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+        calendarConfig
+          .filter(
+            (cfg): cfg is typeof cfg & { nextVideo: NonNullable<typeof cfg.nextVideo> } =>
+              PLATFORMS.includes(cfg.platform as Platform) && !!cfg.nextVideo,
           )
-          .slice(0, 3) ?? [],
+          .map((cfg) => ({
+            platform: cfg.platform as Platform,
+            title: cfg.nextVideo.title,
+            fileId: cfg.nextVideo.fileId,
+            date: cfg.lastPublishedDate
+              ? calcNextDate(cfg.lastPublishedDate.slice(0, 10), cfg.intervalDays)
+              : new Date().toISOString().slice(0, 10),
+          }))
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(0, 3),
       );
       setLatestHistory(history.items[0] ?? null);
       setDemoMode(stats.items.length === 0 && history.items.length === 0);
@@ -629,40 +618,38 @@ export function DashboardView({
         </div>
         {calendar.length > 0 ? (
           <div className="space-y-2">
-            {calendar.map((video) => (
-              <div
-                key={video._id}
-                className="flex items-center gap-3 rounded-xl bg-secondary/40 px-3 py-3"
-              >
-                <div className="w-10 text-center flex-shrink-0">
-                  <p className="text-[10px] uppercase text-muted-foreground">
-                    {formatDate(video.date).split(" ")[0]}
-                  </p>
-                  <p className="text-lg font-semibold text-foreground leading-none mt-1">
-                    {new Date(video.date).getDate()}
-                  </p>
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium text-foreground truncate">
-                    {video.title}
-                  </p>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    {(video.target_platforms as PlatformKey[])
-                      .filter((p) => p in PLATFORM_CFG)
-                      .map((p) => {
-                        const Logo = PLATFORM_CFG[p as Platform].Logo;
-                        return (
-                          <Logo
-                            key={p}
-                            className={`w-3 h-3 ${PLATFORM_CFG[p as Platform].color}`}
-                          />
-                        );
-                      })}
+            {calendar.map((video) => {
+              // video.date es "YYYY-MM-DD" (calcNextDate) -- parsearlo con
+              // new Date(string) lo interpreta como UTC medianoche y puede
+              // mostrar el día anterior en husos horarios negativos.
+              const [y, m, d] = video.date.split("-").map(Number);
+              const localDate = new Date(y, m - 1, d);
+              const Logo = PLATFORM_CFG[video.platform].Logo;
+              return (
+                <div
+                  key={`${video.platform}-${video.fileId}`}
+                  className="flex items-center gap-3 rounded-xl bg-secondary/40 px-3 py-3"
+                >
+                  <div className="w-10 text-center flex-shrink-0">
+                    <p className="text-[10px] uppercase text-muted-foreground">
+                      {formatDate(localDate).split(" ")[0]}
+                    </p>
+                    <p className="text-lg font-semibold text-foreground leading-none mt-1">
+                      {localDate.getDate()}
+                    </p>
                   </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">
+                      {video.title}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <Logo className={`w-3 h-3 ${PLATFORM_CFG[video.platform].color}`} />
+                    </div>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
                 </div>
-                <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <p className="py-8 text-center text-sm text-muted-foreground">
