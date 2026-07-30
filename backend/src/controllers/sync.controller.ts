@@ -461,7 +461,11 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 5, 20);
 
-    const files = await FileModel.find({ userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } })
+    const files = await FileModel.find({
+      userId,
+      platforms: { $all: ['youtube', 'instagram', 'tiktok'] },
+      status: { $ne: 'ELIMINADO_DISCO' },
+    })
       .sort({ fecha_creacion: -1 })
       .select('file_name fecha_creacion')
       .lean();
@@ -793,15 +797,23 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
           const mongoose = (await import('mongoose')).default;
           try {
             file = await FileModel.findById(new mongoose.Types.ObjectId(String(cfg.nextVideoId)))
-              .select('file_name content_id duracion_segundos platforms platforms_discarded').lean();
+              .select('file_name content_id duracion_segundos platforms platforms_discarded status').lean();
           } catch { /* nextVideoId no es un ObjectId válido — buscar por file_name */ }
           if (!file) {
             file = await FileModel.findOne({ file_name: String(cfg.nextVideoId), userId })
-              .select('file_name content_id duracion_segundos platforms platforms_discarded').lean();
+              .select('file_name content_id duracion_segundos platforms platforms_discarded status').lean();
           }
           if (file) {
             resolvedId = String((file as any)._id);
-            if ((file.platforms ?? []).includes(platform) || (file.platforms_discarded ?? []).includes(platform)) {
+            // Obsoleto también si el archivo ya se borró del disco -- sin este
+            // chequeo el Calendario se queda apuntando indefinidamente a un
+            // video eliminado (nunca se publicó/descartó ahí, así que las
+            // otras dos condiciones nunca se cumplen).
+            if (
+              (file.platforms ?? []).includes(platform) ||
+              (file.platforms_discarded ?? []).includes(platform) ||
+              (file as any).status === 'ELIMINADO_DISCO'
+            ) {
               file = null; // obsoleto — cae al recálculo de abajo
             }
           }

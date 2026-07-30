@@ -155,6 +155,13 @@ export const platformVideoRepo = {
     return db.prepare('DELETE FROM platform_videos').run().changes;
   },
 
+  // Contraparte de deleteFileFromDisk (video.controller.ts): sin esto, borrar
+  // un archivo dejaba sus filas de platform_videos huérfanas para siempre
+  // (linked_file_id apuntando a un id que ya no existe en `files`).
+  deleteByFileId(fileId: number | string): number {
+    return db.prepare('DELETE FROM platform_videos WHERE linked_file_id = ?').run(Number(fileId)).changes;
+  },
+
   findAll(): DbPlatformVideo[] {
     return (db.prepare('SELECT * FROM platform_videos').all() as RawRow[]).map(parse);
   },
@@ -197,6 +204,7 @@ export const platformVideoRepo = {
     const fileRows = db.prepare(`
       SELECT id, file_name, fecha_creacion, platforms
       FROM files
+      WHERE status != 'ELIMINADO_DISCO'
       ORDER BY fecha_creacion DESC
     `).all() as { id: number; file_name: string; fecha_creacion: string | null; platforms: string }[];
 

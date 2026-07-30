@@ -422,7 +422,14 @@ export const deleteFileFromDisk = (req: Request, res: Response) => {
 
   fileRepo.update(req.params.fileId, { status: 'ELIMINADO_DISCO' });
   publishingStatusRepo.deleteByFileId(Number(req.params.fileId));
+  // Sin esto quedaban filas de platform_videos huérfanas apuntando a un
+  // archivo que ya no existe (linked_file_id sin fila en `files`).
+  platformVideoRepo.deleteByFileId(req.params.fileId);
   deleteThumbnail(doc.id);
+  // Único endpoint de escritura de este archivo que no lo hacía -- el borrado
+  // quedaba esperando al próximo push automático (foco/20min/beforeunload) en
+  // vez de reflejarse en la central de inmediato, igual que el resto.
+  pushFilesToCloudInBackground(req.headers.authorization);
 
   res.json({ message: 'Archivo eliminado del disco' });
 };
