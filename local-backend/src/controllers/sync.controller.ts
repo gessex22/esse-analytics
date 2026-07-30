@@ -17,10 +17,15 @@ function fmtDuration(secs?: number): string {
 
 // Resuelve un next_video_id guardado (puede ser un id numérico o un file_name) al
 // archivo local. Datos viejos guardaban el TÍTULO; los nuevos guardan el id.
+// findById/findByName no filtran por status -- sin este chequeo, borrar el
+// archivo que estaba fijado como "próximo" dejaba el Calendario apuntando a
+// un video eliminado para siempre (nunca se publicó/descartó ahí, así que el
+// fallback de abajo -- findNextUnpublished -- nunca llegaba a activarse).
 function resolveStoredVideo(stored: unknown) {
   if (stored == null || stored === '') return undefined;
   const s = String(stored);
-  return (/^\d+$/.test(s) ? fileRepo.findById(s) : undefined) ?? fileRepo.findByName(s);
+  const found = (/^\d+$/.test(s) ? fileRepo.findById(s) : undefined) ?? fileRepo.findByName(s);
+  return found?.status === 'ELIMINADO_DISCO' ? undefined : found;
 }
 
 // GET /api/sync/calendar-config
