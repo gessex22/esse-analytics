@@ -102,6 +102,15 @@ export const getPublishedVideos = (_req: Request, res: Response): void => {
 // GET /api/sync/history?limit=&offset=&platform=
 // Registro cronológico de todas las subidas hechas desde la app (platform_videos
 // se llena solo en cada upload: youtube/tiktok/instagram/facebook-upload.controller.ts).
+//
+// SQLite local solo se entera de lo publicado DESDE ESTA PC -- una subida hecha
+// desde el celular (iOS/Android van directo a la central, sin pasar por acá)
+// nunca aparecía en esta tabla, así que el Dashboard (limit=1, "último video
+// publicado") se quedaba mostrando lo último subido desde escritorio aunque
+// hubiera algo más reciente publicado desde el teléfono. Para offset=0 (lo que
+// realmente le importa al Dashboard) se pide también el historial de la
+// central y se fusiona por fecha -- para paginación más profunda (Historial)
+// alcanza con lo local, que sigue siendo la fuente completa para esta PC.
 export const getUploadHistory = async (req: Request, res: Response): Promise<void> => {
   try {
     const limit  = Math.min(parseInt(req.query.limit as string) || 30, 100);
@@ -110,8 +119,8 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
       ? (req.query.platform as string)
       : undefined;
 
-    const items = platformVideoRepo.findHistory({ limit, offset, platform }).map((pv) => ({
-      id:          pv.id,
+    const localItems = platformVideoRepo.findHistory({ limit, offset, platform }).map((pv) => ({
+      id:          String(pv.id),
       platform:    pv.platform,
       platformId:  pv.platform_id,
       platformUrl: pv.platform_url ?? null,
@@ -123,6 +132,33 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
       linkedFileId: pv.linked_file_id ?? null,
       matchStatus: pv.match_status,
     }));
+
+    let items = localItems;
+    if (offset === 0 && req.headers.authorization) {
+      try {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (platform) params.set('platform', platform);
+        const upstream = await fetch(`${CENTRAL}/api/sync/history?${params.toString()}`, {
+          headers: { Authorization: req.headers.authorization },
+        });
+        if (upstream.ok) {
+          const remote = await upstream.json() as { items: typeof localItems };
+          // Dedup por platform+platformId -- una subida hecha desde ESTA PC
+          // también llega a la central (record-publish), así que sin esto
+          // saldría dos veces en la lista fusionada.
+          const seen = new Set(localItems.map(i => `${i.platform}:${i.platformId}`));
+          const merged = [...localItems];
+          for (const r of remote.items ?? []) {
+            const key = `${r.platform}:${r.platformId}`;
+            if (!seen.has(key)) { seen.add(key); merged.push(r); }
+          }
+          items = merged
+            .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+            .slice(0, limit);
+        }
+      } catch { /* sin conexión a la central -- se sirve solo lo local */ }
+    }
+
     const total = platformVideoRepo.countHistory(platform);
 
     res.json({ items, total });
