@@ -13,7 +13,9 @@ import {
 import {
   syncService,
   videoService,
+  setupService,
   GroupStatsItem,
+  WorkflowMode,
 } from "../services/api";
 import {
   InstagramLogo,
@@ -238,6 +240,15 @@ export function DashboardView({
   const [localThumbnailFailed, setLocalThumbnailFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [demoMode, setDemoMode] = useState(false);
+  // 'simple' cross-postea a las 3 a la vez, así que combinar sus métricas en
+  // la tarjeta tiene sentido -- 'avanzado' publica plataforma por plataforma,
+  // y mostrar siempre las 3 sumadas sin decir cuál se publicó de verdad
+  // confundía (ver historyPlatform, más abajo).
+  const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
+  useEffect(() => {
+    setupService.getWorkflowMode().then(d => setWorkflowMode(d.workflowMode)).catch(() => {});
+  }, []);
+  const isSimpleFlow = workflowMode === "simple";
 
   const load = async () => {
     setLoading(true);
@@ -401,6 +412,14 @@ export function DashboardView({
       ),
     [item],
   );
+  // En modo avanzado, "último publicado" debe mostrar la plataforma real a
+  // la que se subió (historyPlatform) y sus métricas puntuales -- no las 3
+  // plataformas sumadas, que puede incluir datos de matches viejos sin
+  // relación con esta subida puntual.
+  const focusPlatform =
+    !isSimpleFlow && !demoMode ? historyPlatform : null;
+  const focusStats = focusPlatform ? item?.platforms[focusPlatform] : undefined;
+  const displayTotals = focusStats ?? totals;
   const ranking = useMemo(() => {
     const source = demoMode ? [DEMO_ITEM] : items;
     return PLATFORMS.map((platform) => {
@@ -482,7 +501,9 @@ export function DashboardView({
                 Último video publicado
               </h2>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Rendimiento comparado entre plataformas
+                {focusPlatform
+                  ? `Publicado en ${PLATFORM_CFG[focusPlatform].label}`
+                  : "Rendimiento comparado entre plataformas"}
               </p>
             </div>
           </div>
@@ -536,21 +557,21 @@ export function DashboardView({
                   <div className="flex flex-wrap items-center gap-3 mt-4">
                     <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
                       <Eye className="w-4 h-4 text-muted-foreground" />
-                      {formatNum(totals.views)}
+                      {formatNum(displayTotals.views)}
                     </span>
                     <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Heart className="w-4 h-4" />
-                      {formatNum(totals.likes)}
+                      {formatNum(displayTotals.likes)}
                     </span>
                     <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <MessageCircle className="w-4 h-4" />
-                      {formatNum(totals.comments)}
+                      {formatNum(displayTotals.comments)}
                     </span>
                   </div>
                 </div>
               </div>
               <div className="space-y-2 min-w-0 self-stretch flex flex-col justify-center">
-                {PLATFORMS.map((p) => (
+                {(focusPlatform ? [focusPlatform] : PLATFORMS).map((p) => (
                   <PlatformRow key={p} platform={p} stats={item.platforms[p]} />
                 ))}
               </div>
