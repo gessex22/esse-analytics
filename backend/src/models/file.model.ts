@@ -6,6 +6,8 @@ export type Platform = 'youtube' | 'instagram' | 'tiktok';
 
 export interface IFile extends Document {
   userId?: string;       // dueño del archivo (scoping por cuenta). Legacy = sin dueño → backfill al owner.
+  content_id?: string;   // identidad estable ante renombres/reimportaciones -- ver BackupFileModel y
+                          // files.content_id en SQLite local. Registros viejos no lo tienen (sparse).
   file_name: string;
   file_path: string;
   status: 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
@@ -22,6 +24,7 @@ export interface IFile extends Document {
 
 const FileSchema = new Schema<IFile>({
   userId: { type: String, index: true },
+  content_id: { type: String, sparse: true },
   file_name: { type: String, required: true },
   file_path: { type: String, required: true },
   status: { type: String, required: true, enum: ['PENDIENTE', 'PROCESANDO', 'TRANSCRITO', 'ELIMINADO_DISCO', 'ERROR'] },
@@ -47,5 +50,9 @@ const FileSchema = new Schema<IFile>({
   fecha_creacion: { type: Date },
   scheduled_date: { type: Date },
 }, { timestamps: true });
+
+// Índice compuesto para el lookup por identidad estable (bulkUpsertBackupFiles,
+// applyPlatformPublish) -- sparse porque los registros viejos no tienen content_id.
+FileSchema.index({ userId: 1, content_id: 1 }, { sparse: true });
 
 export const FileModel = model<IFile>('File', FileSchema, 'files');

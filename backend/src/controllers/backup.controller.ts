@@ -188,25 +188,42 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     }
 
     // ── Sincroniza también la colección `files` (FileModel) ────────────────────
-    // Es la que leen TODOS los endpoints remotos (catálogo, slim, calendario).
-    // Sin esto el remoto queda congelado en el scan viejo. Upsert por
-    // {userId, file_name}: conserva el _id (y los enlaces a transcripts/platformvideos).
-    // Misma protección: platforms vacío nunca pisa uno ya poblado en FileModel.
+    // Es la que leen TODOS los endpoints remotos (catálogo, slim, calendario) Y
+    // applyPlatformPublish (el match por content_id de ahí dependía de esto --
+    // antes FileModel nunca guardaba content_id, así que ese lookup nunca
+    // encontraba nada y siempre caía a file_name). Mismo criterio que ya usa
+    // BackupFileModel arriba: matchea por content_id (estable ante renombres)
+    // o por file_name como fallback, y si matcheó por content_id el filtro va
+    // por _id (permite que file_name haya cambiado sin perder los enlaces a
+    // transcripts/platformvideos). Misma protección: platforms vacío nunca
+    // pisa uno ya poblado en FileModel.
     const fileModelExisting = await FileModel.find(
-      { userId, file_name: { $in: fileNames } },
-      { file_name: 1, platforms: 1, platforms_discarded: 1 },
+      {
+        userId,
+        $or: [
+          { file_name: { $in: fileNames } },
+          ...(contentIds.length ? [{ content_id: { $in: contentIds } }] : []),
+        ],
+      },
+      { file_name: 1, content_id: 1, platforms: 1, platforms_discarded: 1 },
     ).lean();
-    const fileModelExistingMap = new Map(fileModelExisting.map(e => [e.file_name, e]));
+    const fileModelExistingByFileName  = new Map(fileModelExisting.map(e => [e.file_name, e]));
+    const fileModelExistingByContentId = new Map(fileModelExisting.filter(e => e.content_id).map(e => [e.content_id as string, e]));
+    const resolveFileModelExisting = (f: any) =>
+      (f.content_id && fileModelExistingByContentId.get(f.content_id)) || fileModelExistingByFileName.get(f.file_name);
 
     await FileModel.bulkWrite(
       incoming.map(f => {
-        const ex = fileModelExistingMap.get(f.file_name);
+        const ex = resolveFileModelExisting(f);
         const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
+        const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
         return {
           updateOne: {
-            filter: { userId, file_name: f.file_name },
+            filter,
             update: {
               $set: {
+                content_id:          f.content_id          ?? ex?.content_id ?? null,
+                file_name:           f.file_name,
                 platforms,
                 platforms_discarded,
                 content_status:      f.content_status      ?? 'borrador',
@@ -218,7 +235,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
               },
               // Solo al crear: campos requeridos que la app no envía (el remoto no
               // hace stream, así que file_path es un placeholder).
-              $setOnInsert: { userId, file_name: f.file_name, file_path: f.file_name, status: 'PENDIENTE' },
+              $setOnInsert: { userId, file_path: f.file_name, status: 'PENDIENTE' },
             },
             upsert: true,
           },
@@ -470,6 +487,12 @@ export async function getBackupPlatformVideos(req: AuthRequest, res: Response): 
     // Ahora también se descarta un evento de historial si YA existe un
     // PlatformVideoModel para ese mismo platform+fileName (con OTRO
     // platformId) -- eso significa que alguien ya lo resolvió después.
+    //
+    // El match por fileName es ambiguo si dos archivos DISTINTOS del mismo
+    // usuario comparten nombre exacto (raro, pero posible) -- por eso se
+    // prefiere content_id (identidad estable, inmune a esa colisión) cuando
+    // está disponible tanto en el historial como en FileModel, y fileName
+    // queda de fallback para registros viejos que no lo tienen.
     const history = await UploadHistoryModel.find({ userId }).lean();
     const existing = await PlatformVideoModel.find({
       userId,
@@ -478,16 +501,23 @@ export async function getBackupPlatformVideos(req: AuthRequest, res: Response): 
     const existingIdKeys = new Set(existing.map((pv) => `${pv.platform}:${pv.platformId}`));
     const linkedFileIds = existing.map((pv) => pv.linkedFileId).filter(Boolean);
     const linkedFiles = linkedFileIds.length
-      ? await FileModel.find({ _id: { $in: linkedFileIds } }).select('file_name').lean()
+      ? await FileModel.find({ _id: { $in: linkedFileIds } }).select('file_name content_id').lean()
       : [];
     const fileNameById = new Map(linkedFiles.map((f) => [String(f._id), f.file_name]));
+    const contentIdById = new Map(linkedFiles.filter((f) => f.content_id).map((f) => [String(f._id), f.content_id as string]));
     const existingFileKeys = new Set(
       existing
         .filter((pv) => pv.linkedFileId && fileNameById.has(String(pv.linkedFileId)))
         .map((pv) => `${pv.platform}:${fileNameById.get(String(pv.linkedFileId))}`),
     );
+    const existingContentIdKeys = new Set(
+      existing
+        .filter((pv) => pv.linkedFileId && contentIdById.has(String(pv.linkedFileId)))
+        .map((pv) => `${pv.platform}:${contentIdById.get(String(pv.linkedFileId))}`),
+    );
     const missing = history.filter((h: any) => {
       if (existingIdKeys.has(`${h.platform}:${h.platformId}`)) return false;
+      if (h.contentId && existingContentIdKeys.has(`${h.platform}:${h.contentId}`)) return false;
       if (h.fileName && existingFileKeys.has(`${h.platform}:${h.fileName}`)) return false;
       return true;
     });
