@@ -230,16 +230,33 @@ export const resolvePublicationSelection = (req: Request, res: Response): void =
 };
 
 // ── Extrae el ID nativo de un link pegado a mano — mejora los lookups/dedup,
-// pero si no matchea ningún patrón conocido (ej. link acortado vm.tiktok.com)
-// se usa la URL completa como platform_id: sigue siendo único y no bloquea al
-// usuario por un formato de link que no anticipamos.
-function extractPlatformId(platform: string, url: string): string {
+// pero si no matchea ningún patrón conocido se usa la URL completa como
+// platform_id: sigue siendo único y no bloquea al usuario por un formato de
+// link que no anticipamos. Guardar la URL cruda como platform_id rompe en
+// silencio la sincronización de métricas de ese video (TikTok/etc. necesitan
+// el ID real para /video/query/), así que para links acortados de TikTok
+// (vm.tiktok.com, tiktok.com/t/...) seguimos el redirect antes de extraer.
+const TIKTOK_ID_PATTERN = /tiktok\.com\/@[^/]+\/video\/(\d+)/;
+const TIKTOK_SHORT_LINK = /(?:vm\.tiktok\.com\/|tiktok\.com\/t\/)/i;
+
+async function extractPlatformId(platform: string, url: string): Promise<string> {
   const patterns: Record<string, RegExp> = {
     youtube:   /(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{6,})/,
     instagram: /instagram\.com\/(?:reel|p|tv)\/([a-zA-Z0-9_-]+)/,
-    tiktok:    /tiktok\.com\/@[^/]+\/video\/(\d+)/,
+    tiktok:    TIKTOK_ID_PATTERN,
   };
-  const match = url.match(patterns[platform]);
+
+  let resolvedUrl = url;
+  if (platform === 'tiktok' && TIKTOK_SHORT_LINK.test(url) && !TIKTOK_ID_PATTERN.test(url)) {
+    try {
+      const res = await fetch(url, { redirect: 'follow' });
+      if (res.url) resolvedUrl = res.url;
+    } catch {
+      // sin red o link inválido -- se cae al fallback de guardar la URL cruda
+    }
+  }
+
+  const match = resolvedUrl.match(patterns[platform]);
   return match ? match[1] : url;
 }
 
@@ -290,7 +307,7 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     res.status(400).json({ message: 'El link debe empezar con http:// o https://' }); return;
   }
 
-  const platformId = extractPlatformId(platform, trimmed);
+  const platformId = await extractPlatformId(platform, trimmed);
   platformVideoRepo.upsert({
     platform,
     platform_id: platformId,

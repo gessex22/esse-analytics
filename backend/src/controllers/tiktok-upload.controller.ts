@@ -292,6 +292,7 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
     const { publish_id } = initData.data as { publish_id: string };
 
     let publishStatus = 'PROCESSING_UPLOAD';
+    let realVideoId: string | null = null;
     for (let i = 0; i < 60 && !['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX', 'FAILED'].includes(publishStatus); i++) {
       await new Promise(r => setTimeout(r, 5000));
       const statusRes = await fetch(`${TK_BASE}/post/publish/status/fetch/`, {
@@ -302,8 +303,16 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
         },
         body: JSON.stringify({ publish_id }),
       });
-      const statusData = await statusRes.json() as any;
+      const statusText = await statusRes.text();
+      const statusData = JSON.parse(statusText) as any;
       publishStatus    = statusData.data?.status ?? publishStatus;
+      // ID real del video público (typo de TikTok: "publicaly", no "publicly").
+      // publish_id es solo el id de la operación de publicar -- no sirve para
+      // armar el link ni para pedir stats después vía /video/query/. Ojo: viene
+      // como número JSON de 64 bits y JSON.parse le pierde los últimos dígitos
+      // (pasa Number.MAX_SAFE_INTEGER) -- hay que sacarlo del texto crudo.
+      const postIdMatch = statusText.match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
+      if (postIdMatch) realVideoId = postIdMatch[1];
       if (publishStatus === 'FAILED') {
         throw new Error(`TikTok rechazó el video: ${statusData.data?.fail_reason ?? 'error desconocido'}`);
       }
@@ -313,9 +322,13 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
       throw new Error('Tiempo de espera agotado. El video sigue procesándose en TikTok.');
     }
 
-    const platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${publish_id}`;
+    // Sin publicaly_available_post_id (puede pasar con privacidad SELF_ONLY)
+    // no hay forma de resolver el id real acá -- se cae a publish_id como
+    // antes, sabiendo que el link/las métricas de ese video no van a andar.
+    const videoIdForLink = realVideoId ?? publish_id;
+    const platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${videoIdForLink}`;
     await applyPlatformPublish(req.user!.id, {
-      platform: 'tiktok', platformId: publish_id, platformUrl, fileName: fileDoc.file_name, matchStatus: 'manual',
+      platform: 'tiktok', platformId: videoIdForLink, platformUrl, fileName: fileDoc.file_name, matchStatus: 'manual',
     });
 
     await FileModel.findByIdAndUpdate(fileId, {
