@@ -831,6 +831,25 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
   try {
     const userId = req.user!.id;
     const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt } = req.body ?? {};
+
+    // DEBUG TEMPORAL -- rastreando de dónde viene un re-envío repetido de
+    // platformId viejo que sigue pisando correcciones manuales en Mongo.
+    // Se guarda en una colección aparte (sin schema) para no arriesgar nada
+    // del flujo real -- sacar esto una vez identificado el origen.
+    try {
+      const mongoose = (await import('mongoose')).default;
+      const db = mongoose.connection.db!;
+      await db.collection('debug_publish_log').insertOne({
+        at: new Date(),
+        userId,
+        ip: req.ip,
+        xForwardedFor: req.headers['x-forwarded-for'] ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
+        origin: req.headers['origin'] ?? null,
+        body: req.body,
+      });
+    } catch { /* nunca debe romper el flujo real por esto */ }
+
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
