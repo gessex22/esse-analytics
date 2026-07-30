@@ -458,13 +458,39 @@ export async function getBackupPlatformVideos(req: AuthRequest, res: Response): 
     // min sobre 3kh98K5qPZw). Ahora solo se reaplican los eventos que TODAVÍA no
     // tienen ningún PlatformVideoModel -- eso alcanza para la recuperación real
     // (mirror que nunca se creó) sin pisar una corrección posterior.
+    //
+    // Ese chequeo (match exacto por platformId) seguía roto para el caso más
+    // común de corrección: cuando se corrige un platformId malo (ej. un
+    // publish_id de TikTok que nunca fue el id real, ver tiktok-upload.controller.ts)
+    // el documento viejo se BORRA -- entonces el historial viejo con el
+    // platformId malo deja de matchear CUALQUIER PlatformVideoModel existente
+    // y vuelve a verse "missing" para siempre, resucitando el dato malo cada
+    // sync tick. Confirmado en producción el 2026-07-30 con dos videos
+    // rompiéndose solos cada 5-15 min sin que ningún dispositivo hiciera nada.
+    // Ahora también se descarta un evento de historial si YA existe un
+    // PlatformVideoModel para ese mismo platform+fileName (con OTRO
+    // platformId) -- eso significa que alguien ya lo resolvió después.
     const history = await UploadHistoryModel.find({ userId }).lean();
     const existing = await PlatformVideoModel.find({
       userId,
       platform: { $in: [...new Set(history.map((h: any) => h.platform))] },
-    }).select('platform platformId').lean();
-    const existingKeys = new Set(existing.map((pv) => `${pv.platform}:${pv.platformId}`));
-    const missing = history.filter((h: any) => !existingKeys.has(`${h.platform}:${h.platformId}`));
+    }).select('platform platformId linkedFileId').lean();
+    const existingIdKeys = new Set(existing.map((pv) => `${pv.platform}:${pv.platformId}`));
+    const linkedFileIds = existing.map((pv) => pv.linkedFileId).filter(Boolean);
+    const linkedFiles = linkedFileIds.length
+      ? await FileModel.find({ _id: { $in: linkedFileIds } }).select('file_name').lean()
+      : [];
+    const fileNameById = new Map(linkedFiles.map((f) => [String(f._id), f.file_name]));
+    const existingFileKeys = new Set(
+      existing
+        .filter((pv) => pv.linkedFileId && fileNameById.has(String(pv.linkedFileId)))
+        .map((pv) => `${pv.platform}:${fileNameById.get(String(pv.linkedFileId))}`),
+    );
+    const missing = history.filter((h: any) => {
+      if (existingIdKeys.has(`${h.platform}:${h.platformId}`)) return false;
+      if (h.fileName && existingFileKeys.has(`${h.platform}:${h.fileName}`)) return false;
+      return true;
+    });
     await Promise.all(missing.map((h: any) => applyPlatformPublish(userId, {
       platform: h.platform,
       platformId: h.platformId,
@@ -831,25 +857,6 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
   try {
     const userId = req.user!.id;
     const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt } = req.body ?? {};
-
-    // DEBUG TEMPORAL -- rastreando de dónde viene un re-envío repetido de
-    // platformId viejo que sigue pisando correcciones manuales en Mongo.
-    // Se guarda en una colección aparte (sin schema) para no arriesgar nada
-    // del flujo real -- sacar esto una vez identificado el origen.
-    try {
-      const mongoose = (await import('mongoose')).default;
-      const db = mongoose.connection.db!;
-      await db.collection('debug_publish_log').insertOne({
-        at: new Date(),
-        userId,
-        ip: req.ip,
-        xForwardedFor: req.headers['x-forwarded-for'] ?? null,
-        userAgent: req.headers['user-agent'] ?? null,
-        origin: req.headers['origin'] ?? null,
-        body: req.body,
-      });
-    } catch { /* nunca debe romper el flujo real por esto */ }
-
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
