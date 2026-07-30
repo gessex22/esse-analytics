@@ -12,6 +12,43 @@ function clip(s: string | null | undefined, max = 90): string {
   return t.length > max ? t.slice(0, max).trimEnd() + '…' : t;
 }
 
+// Cualquier id que NO sea puramente numérico es sospechoso -- el real de un
+// video de TikTok siempre lo es. Lo más común es un publish_id crudo (formato
+// "v_pub_file~..."/"v_pub_url~...", el id de la OPERACIÓN de publicar, no del
+// video -- ver tiktok-upload.controller.ts) que se guardó como si fuera el id
+// real. Red de seguridad centralizada, mismo criterio que
+// resolveInstagramMediaId: mientras cada uploader (central/local-backend/iOS/
+// Android) ya resuelve esto en su propio flujo de subida, cualquier OTRO
+// caller (un link pegado a mano, un cliente futuro, un bug que reintroduzca
+// un publish_id crudo) pasa igual por acá antes de guardarse en Mongo.
+export async function resolveTikTokVideoId(userId: string, platformIdOrPublishId: string): Promise<string | null> {
+  if (/^\d+$/.test(platformIdOrPublishId)) return platformIdOrPublishId;
+  let token: { access_token: string };
+  try {
+    token = await getValidToken(userId);
+  } catch {
+    return null;
+  }
+  try {
+    const res = await fetch(`${TK_BASE}/post/publish/status/fetch/`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+      },
+      body: JSON.stringify({ publish_id: platformIdOrPublishId }),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    // Viene como número JSON de 64 bits -- JSON.parse le pierde precisión
+    // (pasa Number.MAX_SAFE_INTEGER), así que se extrae del texto crudo.
+    const match = text.match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 // Últimos N videos del usuario, ordenados por fecha desc. `cursor` es el que
 // devuelve la API en `data.cursor` — hay que reenviarlo para seguir yendo hacia
 // atrás en el tiempo (TikTok suele publicar mucho más seguido que YouTube/IG,

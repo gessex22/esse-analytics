@@ -739,6 +739,21 @@ export async function applyPlatformPublish(userId: string, data: {
     } catch { /* sigue con el shortcode -- no bloquea el link/badge */ }
   }
 
+  // Mismo criterio que Instagram arriba: un publish_id crudo de TikTok (el id
+  // de la OPERACIÓN de publicar, no del video -- ver tiktok-upload.controller.ts)
+  // guardado como platformId rompía en silencio el link y las stats para
+  // siempre. Cada uploader ya lo resuelve en su propio flujo, pero esto es la
+  // red de seguridad centralizada para cualquier OTRO caller. Best-effort: si
+  // no lo puede resolver (privacidad SELF_ONLY, token vencido, etc.), sigue
+  // con el valor tal cual.
+  if (platform === 'tiktok' && !/^\d+$/.test(platformId)) {
+    try {
+      const { resolveTikTokVideoId } = await import('../services/tiktok.service');
+      const resolved = await resolveTikTokVideoId(userId, platformId);
+      if (resolved) platformId = resolved;
+    } catch { /* sigue con el valor original -- no bloquea el link/badge */ }
+  }
+
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
   if (fileName) {
