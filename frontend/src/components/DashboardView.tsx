@@ -128,16 +128,22 @@ function formatDate(value: string | Date) {
 function PlatformRow({
   platform,
   stats,
+  isDimmed = false,
 }: {
   platform: Platform;
   stats?: { views: number; likes: number; comments: number };
+  // En modo avanzado, la plataforma real de esta publicación se resalta y
+  // las otras dos quedan atenuadas -- no se esconden del todo (antes se
+  // sacaban directamente), solo se bajan de jerarquía visual, así se ve de
+  // un vistazo que no forman parte de este evento de publicación puntual.
+  isDimmed?: boolean;
 }) {
   const cfg = PLATFORM_CFG[platform];
   const Logo = cfg.Logo;
   const hasStats = Boolean(stats);
   return (
     <div
-      className={`flex items-center gap-3 rounded-xl px-3 ${"py-2.5"} ${cfg.soft}`}
+      className={`flex items-center gap-3 rounded-xl px-3 py-2.5 ${cfg.soft} ${isDimmed ? "opacity-40 grayscale" : ""}`}
     >
       <Logo className={`w-4 h-4 flex-shrink-0 ${cfg.color}`} />
       <span className="text-xs font-medium text-foreground w-20">
@@ -418,8 +424,13 @@ export function DashboardView({
   // relación con esta subida puntual.
   const focusPlatform =
     !isSimpleFlow && !demoMode ? historyPlatform : null;
+  // Con focusPlatform, el número grande es SU métrica puntual (0 si todavía
+  // no sincronizó, nunca la suma de las 3 -- eso volvería a mezclar datos de
+  // otra plataforma que no tiene que ver con esta subida puntual).
   const focusStats = focusPlatform ? item?.platforms[focusPlatform] : undefined;
-  const displayTotals = focusStats ?? totals;
+  const displayTotals = focusPlatform
+    ? { views: focusStats?.views ?? 0, likes: focusStats?.likes ?? 0, comments: focusStats?.comments ?? 0 }
+    : totals;
   const ranking = useMemo(() => {
     const source = demoMode ? [DEMO_ITEM] : items;
     return PLATFORMS.map((platform) => {
@@ -571,8 +582,13 @@ export function DashboardView({
                 </div>
               </div>
               <div className="space-y-2 min-w-0 self-stretch flex flex-col justify-center">
-                {(focusPlatform ? [focusPlatform] : PLATFORMS).map((p) => (
-                  <PlatformRow key={p} platform={p} stats={item.platforms[p]} />
+                {PLATFORMS.map((p) => (
+                  <PlatformRow
+                    key={p}
+                    platform={p}
+                    stats={item.platforms[p]}
+                    isDimmed={focusPlatform !== null && p !== focusPlatform}
+                  />
                 ))}
               </div>
             </div>
