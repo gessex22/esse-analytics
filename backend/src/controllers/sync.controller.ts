@@ -851,6 +851,18 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
       const duration = dur
         ? `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
         : '';
+      // Para la miniatura del Calendario en mobile (iOS/Android): "próximo"
+      // suele ser un archivo que solo existe en el catálogo de OTRO
+      // dispositivo (la PC que lo grabó), así que el cliente no siempre tiene
+      // una copia local de la que sacar el frame -- mismo cruce por fileName
+      // que ya usa getGroupStats para Estadísticas (Biblioteca remota no
+      // comparte id con FileModel). Ambigüedad de nombre repetido: se deja
+      // sin asignar antes que mostrar la miniatura equivocada.
+      const remoteMatches = await RemoteLibraryVideoModel.find({ userId, fileName: (file as any).file_name })
+        .select('thumbnailStoredFileName')
+        .limit(2)
+        .lean();
+      const remoteMatch = remoteMatches.length === 1 ? remoteMatches[0] : null;
       return {
         ...cfg,
         nextVideoId: String(file._id),
@@ -859,6 +871,8 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
           contentId: (file as any).content_id ?? null,
           title: (file as any).file_name,
           duration,
+          remoteLibraryVideoId: remoteMatch ? String(remoteMatch._id) : null,
+          thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
         },
       };
     }));
