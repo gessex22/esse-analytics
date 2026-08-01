@@ -621,6 +621,15 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
       .select('platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
       .lean();
 
+    // La miniatura generada al subir desde Electron vive en Biblioteca remota,
+    // no necesariamente en PlatformVideo.thumbnail (la API de la plataforma
+    // puede tardar en devolverla). El dashboard móvil necesita estos campos
+    // cuando el video recién publicado todavía no entró en group-stats.
+    const remoteMatches = await RemoteLibraryVideoModel.find({
+      userId, fileName: file.file_name,
+    }).select('_id thumbnailStoredFileName').lean();
+    const remoteMatch = remoteMatches.length === 1 ? remoteMatches[0] : null;
+
     const { platforms, stale } = buildFilePlatforms(pvs);
 
     const [ytStats, igStats, tkStats] = await Promise.all([
@@ -657,6 +666,8 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
       fileId: String(file._id),
       fileName: file.file_name,
       fecha_creacion: file.fecha_creacion,
+      remoteLibraryVideoId: remoteMatch ? String(remoteMatch._id) : null,
+      thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
       platforms,
     });
   } catch (err: any) {
