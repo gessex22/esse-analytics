@@ -4,7 +4,7 @@ import { Types } from 'mongoose';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { syncYouTubeChannel, getYouTubeVideos, getRecentYouTubeVideosLive, getVideoStats as getYoutubeVideoStats } from '../services/youtube.service';
 import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../services/instagram.service';
-import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats } from '../services/tiktok.service';
+import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats, resolveTikTokVideoId } from '../services/tiktok.service';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
@@ -406,7 +406,34 @@ function statsCacheWindowMs(publishedAt?: Date | string | null): number {
   return 60 * 60 * 1000;                    // 2+ días: cada hora
 }
 
-// Dado los PlatformVideo (posiblemente con más de un documento por plataforma,
+// Corrige EN MEMORIA (y best-effort en Mongo) cualquier platformId de TikTok
+// que todavía sea el publish_id crudo de la operación de subir (formato
+// "v_pub_..."), no el id numérico real del video. applyPlatformPublish ya
+// intenta resolverlo una sola vez al momento de publicar, pero TikTok puede
+// seguir procesando el video más allá de esa ventana (confirmado en
+// producción: publish_id sin resolver horas después de publicar, con status
+// PUBLISH_COMPLETE ya disponible) -- sin un reintento posterior, ese video
+// quedaba con id inválido para siempre, sin stats/miniatura/link real. Se
+// reintenta acá, en cada refresco de stats, así se autocorrige la primera vez
+// que el id real ya esté disponible en la API de TikTok.
+async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; platformId: string }[]): Promise<void> {
+  const pending = pvs.filter(pv => pv.platform === 'tiktok' && !/^\d+$/.test(pv.platformId));
+  if (pending.length === 0) return;
+  await Promise.all(pending.map(async (pv) => {
+    try {
+      const resolved = await resolveTikTokVideoId(userId, pv.platformId);
+      if (!resolved || resolved === pv.platformId) return;
+      const oldId = pv.platformId;
+      pv.platformId = resolved; // corrige en memoria para que este mismo request ya pida stats con el id bueno
+      await PlatformVideoModel.updateOne(
+        { userId, platform: 'tiktok', platformId: oldId },
+        { $set: { platformId: resolved } },
+      );
+    } catch { /* duplicado (ya existe un doc con ese id real) o falla de red -- se reintenta en el próximo refresh */ }
+  }));
+}
+
+// Dado los PlatformVideo (posiblemente más de un documento por plataforma,
 // ver applyPlatformPublish) linkeados a UN archivo, arma el objeto `platforms`
 // quedándose con el mejor documento por plataforma y qué platformId de cada
 // plataforma venció su ventana de cache y hay que refrescar en vivo.
@@ -479,6 +506,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     })
       .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
       .lean();
+    await resolvePendingTikTokIds(userId, linked);
     const byFile = new Map<string, typeof linked>();
     for (const pv of linked) {
       const key = String(pv.linkedFileId);
@@ -620,6 +648,7 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
     })
       .select('platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
       .lean();
+    await resolvePendingTikTokIds(userId, pvs);
 
     // La miniatura generada al subir desde Electron vive en Biblioteca remota,
     // no necesariamente en PlatformVideo.thumbnail (la API de la plataforma
