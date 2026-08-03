@@ -262,7 +262,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     if (canUseCloudStorage) {
       const newlyPublished = incoming
         .map(f => {
-          const ex = fileModelExistingMap.get(f.file_name);
+          const ex = resolveFileModelExisting(f);
           const { platforms } = resolvePlatforms(f, ex as any);
           const previous = new Set(ex?.platforms ?? []);
           const added = platforms.filter((p: string) => !previous.has(p));
