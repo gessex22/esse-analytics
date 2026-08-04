@@ -21,11 +21,19 @@ function fmtDuration(secs?: number): string {
 // archivo que estaba fijado como "próximo" dejaba el Calendario apuntando a
 // un video eliminado para siempre (nunca se publicó/descartó ahí, así que el
 // fallback de abajo -- findNextUnpublished -- nunca llegaba a activarse).
-function resolveStoredVideo(stored: unknown) {
+// `platform`, si se pasa, además descarta el puntero si ESE archivo ya quedó
+// resuelto (publicado o descartado) para esa plataforma por otro camino --
+// toggle en Videos, autopublicación, etc -- mismo chequeo que ya hace
+// getCalendarConfig en la central (sync.controller.ts del backend). Sin esto,
+// un video fijado como "próximo" y luego descartado desde Videos se quedaba
+// pegado ahí para siempre en vez de caer al fallback de abajo.
+function resolveStoredVideo(stored: unknown, platform?: 'youtube' | 'tiktok' | 'instagram') {
   if (stored == null || stored === '') return undefined;
   const s = String(stored);
   const found = (/^\d+$/.test(s) ? fileRepo.findById(s) : undefined) ?? fileRepo.findByName(s);
-  return found?.status === 'ELIMINADO_DISCO' ? undefined : found;
+  if (!found || found.status === 'ELIMINADO_DISCO') return undefined;
+  if (platform && (found.platforms.includes(platform) || found.platforms_discarded.includes(platform))) return undefined;
+  return found;
 }
 
 // GET /api/sync/calendar-config
@@ -40,7 +48,13 @@ export const getCalendarConfig = async (_req: Request, res: Response): Promise<v
 
     const enriched = platforms.map((p) => {
       const c = storedMap.get(p);
-      const next = resolveStoredVideo(c?.next_video_id) ?? fileRepo.findNextUnpublished(p);
+      const resolved = resolveStoredVideo(c?.next_video_id, p);
+      // El puntero guardado quedó obsoleto (resuelto para esta plataforma por otro
+      // camino): se limpia acá mismo, igual que la autocorrección de la central,
+      // para que no vuelva a devolverse en la próxima lectura ni se reenvíe un
+      // valor viejo la próxima vez que algo dispare syncNextVideoToCentral.
+      if (c?.next_video_id && !resolved) configRepo.setPlatformConfig(p, { next_video_id: null });
+      const next = resolved ?? fileRepo.findNextUnpublished(p);
       return {
         platform:           p,
         lastPublishedTitle: (c?.last_published_title as string) ?? '',
@@ -283,8 +297,10 @@ export const updateCalendarConfig = (req: Request, res: Response): void => {
   if ('nextVideoId' in req.body) {
     const nextFile = resolveStoredVideo(nextVideoId);
     syncNextVideoToCentral(req.headers.authorization, platform, {
-      lastPublishedDate:  lastPublishedDate  ?? '',
-      lastPublishedTitle: lastPublishedTitle ?? '',
+      // En un "skip" solo llega nextVideoId. No mandar vacíos: la central
+      // interpreta cualquier campo presente como un override intencional.
+      ...(lastPublishedDate !== undefined ? { lastPublishedDate } : {}),
+      ...(lastPublishedTitle !== undefined ? { lastPublishedTitle } : {}),
       nextFile,
     });
   }

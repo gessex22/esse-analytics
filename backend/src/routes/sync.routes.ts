@@ -4,7 +4,7 @@ import {
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
-  getCalendarConfig, updateCalendarConfig,
+  getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
 import { getUploadHistory, recordUploadEvent } from '../controllers/backup.controller';
@@ -41,6 +41,7 @@ router.post('/api/sync/record-publish',             verifyToken, recordUploadEve
 router.delete('/api/sync/platform-link/:fileId/:platform', verifyToken, unlinkPlatform);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
+router.post('/api/sync/calendar-config/:platform/skip-next', verifyToken, skipNextCalendarVideo);
 
 // router.post('/api/sync/instagram',   verifyToken, requireRole('todopoderoso'), triggerInstagramSync);
 // router.post('/api/sync/tiktok',      verifyToken, requireRole('todopoderoso'), triggerTikTokSync);

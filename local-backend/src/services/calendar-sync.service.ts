@@ -1,6 +1,7 @@
 import { DbFile, fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
 import { ensureNextVideoInRemoteLibrary } from './remote-library-preload.service';
+import { appendDebugLog } from './video-normalize.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -16,7 +17,12 @@ type CentralCalendarEntry = {
 export async function syncCalendarFromCentral(authHeader: string | undefined): Promise<void> {
   if (!authHeader) return;
   const res = await fetch(`${CENTRAL}/api/sync/calendar-config`, { headers: { Authorization: authHeader } });
-  if (!res.ok) return;
+  if (!res.ok) {
+    const detail = `[calendar] no se pudo leer la configuracion de la central (${res.status})`;
+    appendDebugLog(detail);
+    console.warn(detail);
+    return;
+  }
 
   const entries = await res.json() as CentralCalendarEntry[];
   for (const entry of entries) {
@@ -53,22 +59,45 @@ export async function syncCalendarFromCentral(authHeader: string | undefined): P
 export async function syncNextVideoToCentral(
   authHeader: string | undefined,
   platform: 'youtube' | 'instagram' | 'tiktok',
-  data: { lastPublishedDate: string; lastPublishedTitle: string; nextFile: DbFile | undefined },
+  data: { lastPublishedDate?: string; lastPublishedTitle?: string; nextFile: DbFile | undefined },
 ): Promise<void> {
   if (!authHeader) return;
   try {
     const nextRemoteLibraryVideoId = await ensureNextVideoInRemoteLibrary(authHeader, data.nextFile);
-    await fetch(`${CENTRAL}/api/sync/calendar-config/${platform}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-      body: JSON.stringify({
-        lastPublishedDate:  data.lastPublishedDate,
-        lastPublishedTitle: data.lastPublishedTitle,
-        nextVideoId:        data.nextFile?.file_name ?? undefined,
-        nextRemoteLibraryVideoId: nextRemoteLibraryVideoId ?? undefined,
-      }),
-    });
-  } catch { /* no-op */ }
+    const body = {
+      ...(data.lastPublishedDate !== undefined ? { lastPublishedDate: data.lastPublishedDate } : {}),
+      ...(data.lastPublishedTitle !== undefined ? { lastPublishedTitle: data.lastPublishedTitle } : {}),
+      nextVideoId: data.nextFile?.file_name ?? null,
+      ...(nextRemoteLibraryVideoId !== null ? { nextRemoteLibraryVideoId } : {}),
+    };
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let response: Response;
+      try {
+        response = await fetch(`${CENTRAL}/api/sync/calendar-config/${platform}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: authHeader },
+          body: JSON.stringify(body),
+        });
+      } catch (err: any) {
+        if (attempt === 3) throw err;
+        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+        continue;
+      }
+
+      if (response.ok) return;
+      const transient = response.status === 408 || response.status === 429 || response.status >= 500;
+      if (!transient || attempt === 3) {
+        throw new Error(`la central respondió ${response.status}`);
+      }
+      await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+    }
+  } catch (err: any) {
+    const detail = err instanceof Error ? err.message : String(err);
+    const title = data.nextFile?.file_name ?? 'sin próximo video';
+    appendDebugLog(`[calendar] no se pudo sincronizar ${platform} con la central tras 3 intentos (próximo: ${title}): ${detail}`);
+    console.warn(`[calendar] no se pudo sincronizar ${platform} con la central: ${detail}`);
+  }
 }
 
 // El precargado de syncNextVideoToCentral solo dispara en el instante exacto de
@@ -87,7 +116,7 @@ export async function ensurePreloadForNextVideos(authHeader: string | undefined)
     // Actualiza primero el espejo local: la central decide el próximo video.
     await syncCalendarFromCentral(authHeader);
     const res = await fetch(`${CENTRAL}/api/sync/calendar-config`, { headers: { Authorization: authHeader } });
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(`la central respondio ${res.status} al consultar los proximos videos`);
     const configs: {
       platform: string;
       nextVideo?: { fileId: string; contentId?: string | null; title: string } | null;
@@ -110,11 +139,16 @@ export async function ensurePreloadForNextVideos(authHeader: string | undefined)
       const nextRemoteLibraryVideoId = await ensureNextVideoInRemoteLibrary(authHeader, file);
       if (!nextRemoteLibraryVideoId) continue;
 
-      await fetch(`${CENTRAL}/api/sync/calendar-config/${cfg.platform}`, {
+      const response = await fetch(`${CENTRAL}/api/sync/calendar-config/${cfg.platform}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: authHeader },
         body: JSON.stringify({ nextVideoId: cfg.nextVideo.fileId, nextRemoteLibraryVideoId }),
-      }).catch(() => {});
+      });
+      if (!response.ok) throw new Error(`la central respondió ${response.status} al precargar ${cfg.platform}`);
     }
-  } catch { /* best-effort, igual que syncNextVideoToCentral */ }
+  } catch (err: any) {
+    const detail = err instanceof Error ? err.message : String(err);
+    appendDebugLog(`[calendar] precarga de próximos videos falló: ${detail}`);
+    console.warn(`[calendar] precarga de próximos videos falló: ${detail}`);
+  }
 }

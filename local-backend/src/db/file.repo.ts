@@ -325,7 +325,12 @@ export const fileRepo = {
    * Próximo video a publicar en una plataforma: el MÁS RECIENTE que todavía no está
    * publicado ahí (ni descartado para esa plataforma, ni borrado del disco, ni descartado global).
    * Es la fuente de verdad del "video por defecto" en la vista de subir y del calendario.
-   * Avanza solo: al publicar uno, queda excluido y aparece el siguiente más reciente.
+   * Avanza solo: al publicar uno, queda excluido y aparece el siguiente en la cola.
+   * ASC (el más VIEJO pendiente primero), no DESC -- antes agarraba el más
+   * nuevo, así que un video recién grabado se colaba delante de meses de
+   * backlog real (videos ya publicados en otra plataforma, esperando esta).
+   * Mismo criterio que ya asumía PublishingQueue.tsx en el frontend cuando no
+   * hay nextVideoId confiable ("el default es el pendiente más VIEJO").
    */
   findNextUnpublished(platform: Platform): DbFile | undefined {
     const row = db.prepare(`
@@ -334,7 +339,7 @@ export const fileRepo = {
         AND content_status != 'descartado'
         AND NOT EXISTS (SELECT 1 FROM json_each(platforms)           WHERE value = ?)
         AND NOT EXISTS (SELECT 1 FROM json_each(platforms_discarded) WHERE value = ?)
-      ORDER BY COALESCE(fecha_creacion, created_at) DESC, id DESC
+      ORDER BY COALESCE(fecha_creacion, created_at) ASC, id ASC
       LIMIT 1
     `).get(platform, platform) as RawRow | undefined;
     return row ? parse(row) : undefined;

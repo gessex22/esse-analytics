@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { fileRepo, FileContentStatus, Platform } from '../db/file.repo';
+import { configRepo } from '../db/config.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
@@ -386,6 +387,40 @@ export const updateVideosBulk = (req: Request, res: Response): void => {
   }
 
   res.json({ updated });
+
+  // Un descarte/publicación cambia qué video sigue disponible para el Calendario.
+  // El push de abajo ya replica files.platforms_discarded a FileModel, que es la
+  // fuente que getCalendarConfig usa para recalcular el puntero -- pero SOLO lo
+  // recalcula quien lea calendar-config después Y note que el puntero guardado
+  // quedó obsoleto (autocorrección perezosa). Si ninguna app pide ese GET hasta
+  // rato después, mobile se queda mostrando el "próximo" viejo mientras tanto
+  // (esto fue justo lo que pasó: un descarte desde Videos dejó a Android/iOS con
+  // el próximo de YouTube desactualizado mientras Electron ya mostraba el
+  // correcto). Acá avisamos de una, igual que pinVideo/pinNextVideo del
+  // Calendario, en vez de esperar a que otro cliente dispare la corrección.
+  if (updated > 0 && targetPlatforms && targetPlatforms.length > 0 && platformState) {
+    pushFilesToCloudInBackground(req.headers.authorization);
+
+    const CALENDAR_PLATFORMS = ['youtube', 'tiktok', 'instagram'] as const;
+    const affectedCalendarPlatforms = targetPlatforms.filter(
+      (p): p is 'youtube' | 'tiktok' | 'instagram' => (CALENDAR_PLATFORMS as readonly string[]).includes(p),
+    );
+    for (const platform of affectedCalendarPlatforms) {
+      const cfg = configRepo.getPlatformConfig(platform);
+      const storedNext = cfg?.next_video_id ? String(cfg.next_video_id) : null;
+      if (!storedNext) continue; // sin override fijado: el fallback dinámico ya se recalcula solo, ambos lados
+      const currentNextFile = (/^\d+$/.test(storedNext) ? fileRepo.findById(storedNext) : undefined)
+        ?? fileRepo.findByName(storedNext);
+      // El "próximo" fijado no es ninguno de los archivos tocados en este
+      // descarte: sigue siendo válido, no hay nada que corregir.
+      if (!currentNextFile || !fileIds.includes(String(currentNextFile.id))) continue;
+
+      const nextFile = fileRepo.findNextUnpublished(platform);
+      configRepo.setPlatformConfig(platform, { next_video_id: nextFile ? String(nextFile.id) : null });
+      syncNextVideoToCentral(req.headers.authorization, platform, { nextFile })
+        .catch(err => console.warn(`[calendar] aviso de próximo tras descarte/publicación falló: ${err.message}`));
+    }
+  }
 };
 
 // ── PATCH /api/videos/:fileId/rename ─────────────────────────────────────────

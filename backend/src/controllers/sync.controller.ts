@@ -861,13 +861,17 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
       }
 
       if (!file) {
+        // ASC (el más VIEJO pendiente primero) -- con DESC un video recién
+        // grabado se colaba delante de meses de backlog real (ya publicado en
+        // otra plataforma, todavía esperando esta). Mismo fix que
+        // fileRepo.findNextUnpublished en local-backend.
         file = await FileModel.findOne({
           userId,
           status: { $ne: 'ELIMINADO_DISCO' },
           content_status: { $ne: 'descartado' },
           platforms: { $ne: platform },
           platforms_discarded: { $ne: platform },
-        }).sort({ fecha_creacion: -1, _id: -1 }).select('file_name content_id duracion_segundos').lean();
+        }).sort({ fecha_creacion: 1, _id: 1 }).select('file_name content_id duracion_segundos').lean();
       }
 
       // Esta autocorrección antes solo vivía en memoria (se devolvía bien en
@@ -954,6 +958,50 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
       { upsert: true }
     );
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/calendar-config/:platform/skip-next — descarta el próximo
+// desde mobile. Es una acción acotada al archivo que la central devolvió en
+// GET; no expone el PATCH administrativo que permite fijar toda la agenda.
+export const skipNextCalendarVideo = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { platform } = req.params;
+    const { fileId } = req.body as { fileId?: string };
+    if (!['tiktok', 'instagram', 'youtube'].includes(platform) || !fileId) {
+      res.status(400).json({ message: 'Plataforma o video no válido.' }); return;
+    }
+
+    const userId = req.user!.id;
+    const file = await FileModel.findOne({ _id: fileId, userId }).select('platforms platforms_discarded').lean();
+    if (!file) { res.status(404).json({ message: 'Video no encontrado.' }); return; }
+    if ((file.platforms ?? []).includes(platform) || (file.platforms_discarded ?? []).includes(platform)) {
+      res.status(409).json({ message: 'El video ya está resuelto para esta plataforma.' }); return;
+    }
+
+    await FileModel.updateOne(
+      { _id: file._id, userId },
+      { $addToSet: { platforms_discarded: platform } },
+    );
+    // No esperar al próximo GET para reconstruir el puntero: mobile necesita
+    // que la central tenga el siguiente video desde la misma respuesta del
+    // descarte. Es el mismo criterio de elegibilidad Y el mismo orden (ASC,
+    // el más viejo pendiente primero) de getCalendarConfig.
+    const nextFile = await FileModel.findOne({
+      userId,
+      status: { $ne: 'ELIMINADO_DISCO' },
+      content_status: { $ne: 'descartado' },
+      platforms: { $ne: platform },
+      platforms_discarded: { $ne: platform },
+    }).sort({ fecha_creacion: 1, _id: 1 }).select('file_name').lean();
+    const db = (await import('mongoose')).default.connection.db!;
+    await db.collection('platform_config').updateOne(
+      { userId, platform },
+      { $set: { nextVideoId: nextFile?.file_name ?? null, nextRemoteLibraryVideoId: null } },
+    );
+    res.json({ ok: true, nextVideoId: nextFile ? String(nextFile._id) : null });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
