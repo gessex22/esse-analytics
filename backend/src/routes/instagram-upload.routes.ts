@@ -8,6 +8,7 @@ import {
   getAccountInfo,
   debugAccount,
   getToken,
+  handleDataDeletion,
 } from '../controllers/instagram-upload.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -16,6 +17,7 @@ const router = Router();
 // OAuth — el callback viene de Meta (sin JWT)
 router.get('/api/instagram/auth/url',      verifyToken, getAuthUrl);
 router.get('/api/instagram/auth/callback', handleCallback);
+router.post('/api/instagram/data-deletion', handleDataDeletion);
 router.get('/api/instagram/auth/status',   verifyToken, getAuthStatus);
 router.delete('/api/instagram/auth',       verifyToken, revokeAuth);
 router.get('/api/instagram/account-info',  verifyToken, getAccountInfo);

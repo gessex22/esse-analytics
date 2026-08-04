@@ -1,9 +1,12 @@
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
 import https from 'https';
 import http from 'http';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
+import { PlatformVideoModel } from '../models/platform-video.model';
+import { UploadHistoryModel } from '../models/upload-history.model';
 import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
@@ -31,6 +34,37 @@ export async function loadTokens(userId: string): Promise<Record<string, any> | 
   const doc = await db.collection('oauth_tokens').findOne({ provider: 'instagram', userId });
   return doc ?? null;
 }
+
+function decodeMetaSignedRequest(value: string): { user_id?: string } | null {
+  const [encodedSignature, encodedPayload] = value.split('.', 2);
+  if (!encodedSignature || !encodedPayload) return null;
+  const decodeBase64Url = (input: string) => Buffer.from(input.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const signature = decodeBase64Url(encodedSignature);
+  const expected = crypto.createHmac('sha256', fbAppSecret()).update(encodedPayload).digest();
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) return null;
+  try { return JSON.parse(decodeBase64Url(encodedPayload).toString('utf8')); } catch { return null; }
+}
+
+// POST /api/instagram/data-deletion — callback público configurado en Meta.
+export const handleDataDeletion = async (req: Request, res: Response): Promise<void> => {
+  const signedRequest = typeof req.body?.signed_request === 'string' ? req.body.signed_request : '';
+  const payload = decodeMetaSignedRequest(signedRequest);
+  if (!payload?.user_id) { res.status(400).json({ error: 'Invalid signed_request' }); return; }
+
+  const db = mongoose.connection.db!;
+  const tokenDoc = await db.collection('oauth_tokens').findOne({ provider: 'instagram', meta_user_id: payload.user_id });
+  const appUserId = tokenDoc?.userId ? String(tokenDoc.userId) : null;
+  if (appUserId) {
+    await db.collection('oauth_tokens').deleteOne({ provider: 'instagram', userId: appUserId });
+    await PlatformVideoModel.deleteMany({ userId: appUserId, platform: 'instagram' });
+    await UploadHistoryModel.deleteMany({ userId: appUserId, platform: 'instagram' });
+  }
+
+  res.json({
+    url: `${process.env.FRONTEND_URL || 'https://esse-analytics.com'}/data-deletion/`,
+    confirmation_code: crypto.randomBytes(16).toString('hex'),
+  });
+};
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 async function igGet(path: string, token: string): Promise<any> {
@@ -244,6 +278,10 @@ export const handleCallback = async (req: Request, res: Response) => {
     if (longJson.error) throw new Error(longJson.error.message ?? JSON.stringify(longJson.error));
     const longUserToken: string = longJson.access_token;
 
+    const metaUserRes = await fetch(`${FB_GRAPH}/me?fields=id&access_token=${longUserToken}`);
+    const metaUserJson = await metaUserRes.json() as any;
+    const metaUserId = metaUserJson.id as string | undefined;
+
     // Diagnóstico: qué permisos quedaron realmente otorgados en el token.
     const permsRes  = await fetch(`${FB_GRAPH}/me/permissions?access_token=${longUserToken}`);
     const permsJson = await permsRes.json() as any;
@@ -285,6 +323,7 @@ export const handleCallback = async (req: Request, res: Response) => {
       access_token:      pageAccessToken,
       instagram_user_id: igBusinessAccountId,
       page_id:           pageId,
+      meta_user_id:      metaUserId,
       authType:          'facebook_login_business',
     });
     popupResult(res, 'success', origin, client);

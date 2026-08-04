@@ -52,6 +52,8 @@ app.use(cors({
   exposedHeaders: ['Location', 'Upload-Offset', 'Upload-Length', 'Tus-Version', 'Tus-Resumable', 'Tus-Max-Size', 'Tus-Extension'],
 }));
 app.use(express.json({ limit: '10mb' }));
+// Meta envía el signed_request de eliminación como application/x-www-form-urlencoded.
+app.use(express.urlencoded({ extended: false }));
 
 app.get('/api/health', (_req, res) => {
   res.json({
