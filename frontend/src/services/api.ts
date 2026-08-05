@@ -1000,6 +1000,25 @@ export interface RemoteLibraryPage {
   hasMore: boolean;
 }
 
+// Mismo tope que MAX_REMOTE_LIBRARY_VIDEOS en remote-library-quota.service.ts
+// (central) -- acá solo para poder deshabilitar el botón de subir de una, sin
+// esperar el rechazo del server. La fuente de verdad real sigue siendo el
+// backend (ensureRemoteLibraryCapacity); si este número queda desactualizado
+// la UI se corrige sola apenas falla la subida.
+export const MAX_REMOTE_LIBRARY_VIDEOS = 5;
+
+// tus-js-client envuelve el rechazo del servidor (ej. límite de 5 videos, ver
+// remote-library-storage.service.ts) en un DetailedError cuyo .message trae un
+// montón de contexto de debug pegado (method/url/response code/request id).
+// El body real de la respuesta -- justo el mensaje limpio que arma el backend --
+// vive en .originalResponse.getBody(); si no está (error de red antes de
+// llegar al server, por ejemplo), cae al .message tal cual.
+function extractTusErrorMessage(err: any): string {
+  const body: string | undefined = err?.originalResponse?.getBody?.();
+  const trimmed = body?.trim();
+  return trimmed || err?.message || "No se pudo subir el video.";
+}
+
 export const remoteLibraryService = {
   // Paginado -- una cuenta puede tener cientos/miles de videos (ej. después
   // de migrar toda una biblioteca local a Nube), el backend ya no devuelve
@@ -1065,7 +1084,7 @@ export const remoteLibraryService = {
         ...(meta.contentId ? { contentId: meta.contentId } : {}),
       },
       onProgress: callbacks.onProgress,
-      onError: callbacks.onError,
+      onError: (err) => callbacks.onError(new Error(extractTusErrorMessage(err))),
       onSuccess: (payload) => {
         try {
           const data = JSON.parse(payload.lastResponse.getBody());

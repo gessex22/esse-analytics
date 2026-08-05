@@ -16,6 +16,7 @@ import {
   MAX_UPLOAD_SIZE,
   FinishedRemoteLibraryUpload,
 } from '../services/remote-library-storage.service';
+import { ensureRemoteLibraryCapacity } from '../services/remote-library-quota.service';
 
 // ── Failover LAN entre los 2 backends redundantes (Mac + PC Windows, cada uno
 // con su propio conector de Cloudflare Tunnel para el mismo hostname) ─────────
@@ -112,6 +113,15 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
       return doc;
     }
 
+    // Sin contentId: no hay forma de cruzar esto con un archivo conocido en
+    // la biblioteca local (típico de una subida directa desde el celular sin
+    // que ese video haya existido nunca en la PC) -- safeToEvict queda en el
+    // default (false, ver el schema): estos bytes SON la única copia real,
+    // el barrido de retención no debe tocarlos jamás. Antes acá se mandaba
+    // safeToEvict: true por error, así que estas subidas se liberaban solas
+    // en el próximo barrido apenas dejaban de ser "el próximo a publicar" --
+    // pérdida de datos real y silenciosa para justo el caso que este flag
+    // existe para proteger (ver remote-library-video.model.ts).
     return RemoteLibraryVideoModel.create({
       userId: info.userId,
       contentId: info.contentId,
@@ -123,9 +133,9 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
       formato: info.formato,
       platforms: [],
       platformsDiscarded: [],
-      safeToEvict: true,
     });
   },
+  (userId, contentId) => ensureRemoteLibraryCapacity(userId, contentId),
 );
 
 // ── ALL /api/remote-library/tus(/:id) ─────────────────────────────────────────
@@ -179,8 +189,22 @@ export const importRemoteLibraryVideo = async (req: AuthRequest, res: Response):
     return;
   }
 
-  const fileName = sanitizeDisplayName(req.query.fileName as string, 'video.mp4');
   const contentId = (req.query.contentId as string) || undefined;
+
+  // Este endpoint solo lo llama ensureNextVideoInRemoteLibrary (local-backend)
+  // para precargar el "próximo a publicar" de una red -- si el cupo está lleno,
+  // intenta liberar el más viejo no protegido/evictable antes de rechazar (ver
+  // remote-library-quota.service.ts). Si no hay nada para liberar (los 5
+  // lugares son copias únicas subidas a mano), la precarga de ESTA red
+  // simplemente no se completa -- el caller (ensurePreloadForNextVideos) ya
+  // trata cualquier falla acá como best-effort, loguea y sigue con las demás.
+  const hasRoom = await ensureRemoteLibraryCapacity(userId, contentId);
+  if (!hasRoom) {
+    res.status(409).json({ error: 'Alcanzaste el límite de 5 videos en la nube.' });
+    return;
+  }
+
+  const fileName = sanitizeDisplayName(req.query.fileName as string, 'video.mp4');
   const durationSeconds = req.query.durationSeconds ? Number(req.query.durationSeconds) : undefined;
   const resolution = (req.query.resolution as string) || undefined;
   const formato = (req.query.formato as string) || undefined;

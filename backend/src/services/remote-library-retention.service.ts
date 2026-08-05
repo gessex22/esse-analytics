@@ -27,12 +27,15 @@ async function resolveNextFileName(userId: string, nextVideoId: string): Promise
   return byName?.file_name ?? null;
 }
 
-interface ProtectedFor {
+export interface ProtectedFor {
   ids: Set<string>;   // nextRemoteLibraryVideoId directo -- fuente de verdad, sin ambigüedad
   names: Set<string>; // fallback por fileName para configs viejas sin el id explícito todavía
 }
 
-async function protectedFor(userId: string): Promise<ProtectedFor> {
+// Exportada -- remote-library-quota.service.ts la reusa para decidir qué NO
+// tocar al liberar lugar on-demand (mismo criterio que el barrido periódico,
+// nunca se libera lo que hoy es "el próximo a publicar" de alguna red).
+export async function protectedFor(userId: string): Promise<ProtectedFor> {
   const db = mongoose.connection.db!;
   const configs = await db.collection('platform_config')
     .find({ userId, platform: { $in: PLATFORMS as readonly string[] as string[] } })
@@ -95,6 +98,16 @@ async function hardenIfHardlinked(userId: string, storedFileName: string, docId:
   return true;
 }
 
+// Un video es evictable si hay motivo para creer que no es la única copia:
+// otro hardlink real en disco (nlink > 1, ej. el archivo local del que se hizo
+// hardlink en la migración) o el flag explícito safeToEvict (copia deliberada
+// hecha a partir de un archivo local conocido). Mismo criterio que usa el
+// barrido de abajo -- exportada para que remote-library-quota.service.ts la
+// use al liberar lugar on-demand.
+export function isVideoEvictable(stat: fs.Stats, safeToEvict: boolean | undefined): boolean {
+  return stat.nlink > 1 || !!safeToEvict;
+}
+
 let sweepInProgress = false;
 
 // Corre periódico (no al instante en cada publish/cambio de calendario, ver
@@ -147,7 +160,7 @@ export async function runRemoteLibraryRetentionSweep(): Promise<RetentionSweepRe
         // nlink === 1 sin safeToEvict: acá sí podría ser la ÚNICA copia (ej.
         // subida directa por TUS desde el celular, sin archivo local en esta
         // PC) -- nunca se borra, sería una pérdida real y permanente.
-        if (stat.nlink > 1 || v.safeToEvict) {
+        if (isVideoEvictable(stat, v.safeToEvict)) {
           deleteRemoteLibraryFile(userId, v.storedFileName);
           // storedFileName a null -- así el listado (GET /api/remote-library/videos)
           // puede filtrar limpio por "todavía tiene bytes" sin tener que golpear

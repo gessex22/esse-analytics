@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   UploadCloud, Film, Trash2, Camera, X, Loader2, AlertCircle, Play, Link2, Check,
 } from "lucide-react";
-import { remoteLibraryService, RemoteLibraryVideo, RemoteLibraryPlatformLink, RemotePlatform } from "../services/api";
+import { remoteLibraryService, RemoteLibraryVideo, RemoteLibraryPlatformLink, RemotePlatform, MAX_REMOTE_LIBRARY_VIDEOS } from "../services/api";
 
 const PLATFORMS: { key: RemotePlatform; label: string; color: string }[] = [
   { key: "youtube",   label: "YouTube",   color: "text-red-500" },
@@ -174,6 +174,13 @@ export function RemoteLibraryView() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Total real de videos CON bytes en Nube (lo que ya filtra el backend en
+  // modo normal, ver listRemoteLibraryVideos) -- separado de videos.length
+  // porque la lista está paginada (PAGE_SIZE=10) y total no. Es lo que se
+  // compara contra MAX_REMOTE_LIBRARY_VIDEOS para el contador y el disable
+  // del botón; la fuente de verdad real sigue siendo el rechazo del server
+  // (ensureRemoteLibraryCapacity), esto es solo para no dejar ni intentar.
+  const [total, setTotal] = useState(0);
 
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const thumbInputRef = useRef<HTMLInputElement>(null);
@@ -182,7 +189,7 @@ export function RemoteLibraryView() {
   const load = () => {
     setError(null);
     remoteLibraryService.list({ skip: 0, limit: PAGE_SIZE })
-      .then(d => { setVideos(d.videos); setHasMore(d.hasMore); })
+      .then(d => { setVideos(d.videos); setHasMore(d.hasMore); setTotal(d.total); })
       .catch(e => setError(e.message || "Error al cargar la biblioteca"));
   };
 
@@ -190,14 +197,20 @@ export function RemoteLibraryView() {
     if (loadingMore || !hasMore) return;
     setLoadingMore(true);
     remoteLibraryService.list({ skip: videos?.length ?? 0, limit: PAGE_SIZE })
-      .then(d => { setVideos(prev => [...(prev ?? []), ...d.videos]); setHasMore(d.hasMore); })
+      .then(d => { setVideos(prev => [...(prev ?? []), ...d.videos]); setHasMore(d.hasMore); setTotal(d.total); })
       .catch(e => setError(e.message || "Error al cargar más videos"))
       .finally(() => setLoadingMore(false));
   };
 
   useEffect(() => { load(); }, []);
 
+  const atCapacity = total >= MAX_REMOTE_LIBRARY_VIDEOS;
+
   const startUpload = (file: File) => {
+    if (atCapacity) {
+      setError(`Alcanzaste el límite de ${MAX_REMOTE_LIBRARY_VIDEOS} videos en la nube. Borrá alguno para subir uno nuevo.`);
+      return;
+    }
     const taskId = `${Date.now()}-${Math.random()}`;
     setUploads(prev => [...prev, { id: taskId, fileName: file.name, progress: 0 }]);
 
@@ -208,6 +221,7 @@ export function RemoteLibraryView() {
       onSuccess: (video) => {
         setUploads(prev => prev.filter(u => u.id !== taskId));
         setVideos(prev => [video, ...(prev ?? [])]);
+        setTotal(t => t + 1);
       },
       onError: (err) => {
         setUploads(prev => prev.map(u => u.id === taskId ? { ...u, error: err.message } : u));
@@ -244,6 +258,7 @@ export function RemoteLibraryView() {
     try {
       await remoteLibraryService.remove(id);
       setVideos(prev => prev?.filter(v => v._id !== id) ?? null);
+      setTotal(t => Math.max(0, t - 1));
     } catch (e: any) {
       setError(e.message || "No se pudo borrar el video");
     } finally {
@@ -271,12 +286,19 @@ export function RemoteLibraryView() {
             Videos guardados en la nube — se suben directo desde acá, sin pasar por tu PC.
           </p>
         </div>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex-shrink-0"
-        >
-          <UploadCloud className="w-4 h-4" /> Subir video
-        </button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <span className={`text-xs font-mono ${atCapacity ? "text-amber-400" : "text-muted-foreground"}`}>
+            {total}/{MAX_REMOTE_LIBRARY_VIDEOS}
+          </span>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={atCapacity}
+            title={atCapacity ? `Alcanzaste el límite de ${MAX_REMOTE_LIBRARY_VIDEOS} videos en la nube. Borrá alguno para subir uno nuevo.` : undefined}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-primary"
+          >
+            <UploadCloud className="w-4 h-4" /> Subir video
+          </button>
+        </div>
         <input
           ref={fileInputRef} type="file" accept="video/*" multiple className="hidden"
           onChange={e => { onPickFiles(e.target.files); e.target.value = ""; }}

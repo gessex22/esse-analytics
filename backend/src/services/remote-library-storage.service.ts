@@ -75,6 +75,20 @@ function extFromMetadata(meta: Record<string, string | null> | undefined): strin
   return extFromFileName(meta?.filename);
 }
 
+// @tus/server, si un hook tira un Error común, arma el body de la respuesta
+// como "Something went wrong with that request\n" + error.message (ver
+// ERRORS.UNKNOWN_ERROR en @tus/utils) -- el cliente (tus-js-client en web,
+// TUSUploadClient en Android/iOS) terminaría mostrando ese prefijo genérico
+// pegado al mensaje real. Seteando .status_code/.body explícitos, @tus/server
+// los usa tal cual (ver server.js: `body = error.body || ...`), así que el
+// texto que llega al cliente es exactamente este, sin nada más.
+function tusError(statusCode: number, message: string): Error {
+  const err = new Error(message) as Error & { status_code: number; body: string };
+  err.status_code = statusCode;
+  err.body = `${message}\n`;
+  return err;
+}
+
 // Nombre para MOSTRAR (título en la lista, no el nombre en disco -- ese
 // siempre es un uuid). Normaliza separadores de path y le pone un tope de
 // largo -- esto es lo que se ve en LibraryPanel/listados, no puede venir
@@ -123,8 +137,15 @@ export async function optimizeThumbnail(buffer: Buffer): Promise<Buffer> {
 // de TUS. El archivo físico recién se mueve en POST_FINISH (después de
 // responder) -- moverlo antes deja el archivo bloqueado/abierto y el PATCH
 // final de TUS responde 500 (visto en server-multimedia-wyrruz).
+// `checkCapacity` -- igual que onFinished, la mecánica de storage no sabe de
+// Mongo/cupos: el controller inyecta remote-library-quota.service.ts acá. Se
+// llama ANTES de reservar storedFileName/aceptar bytes, para no gastar ancho
+// de banda en una subida que se va a rechazar. contentId puede venir vacío
+// (subida nativa desde el celular, sin archivo local conocido -- ver el fix
+// de safeToEvict en remote-library.controller.ts).
 export function buildRemoteLibraryTusServer(
   onFinished: (info: FinishedRemoteLibraryUpload) => Promise<unknown>,
+  checkCapacity: (userId: string, contentId?: string) => Promise<boolean>,
 ): Server {
   const tempDir = getRemoteLibraryTusTempDir();
   const datastore = new FileStore({ directory: tempDir });
@@ -160,7 +181,11 @@ export function buildRemoteLibraryTusServer(
       const auth = req.headers.get('authorization');
       const token = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
       const user = token ? decodeAuthToken(token) : null;
-      if (!user) throw new Error('Token requerido o inválido.');
+      if (!user) throw tusError(401, 'Token requerido o inválido.');
+
+      const contentId = upload.metadata?.contentId || undefined;
+      const hasRoom = await checkCapacity(user.id, contentId);
+      if (!hasRoom) throw tusError(403, 'Alcanzaste el límite de 5 videos en la nube. Borrá alguno para subir uno nuevo.');
 
       const storedFileName = `${randomUUID()}${extFromMetadata(upload.metadata ?? undefined)}`;
       return {
