@@ -18,6 +18,14 @@ export interface IUploadHistory extends Document {
   contentId?: string;
   title?: string;
   publishedAt: Date;
+  // UUID del LOTE de publicación que generó este evento (ver PublishBatchState
+  // en iOS/Android, Fase 2) -- opcional (deviceId ya identifica la instalación,
+  // esto además agrupa "estos N eventos salieron de la misma tanda"). No es
+  // parte de la clave de idempotencia: esa sigue siendo platform+platformId
+  // (el video/plataforma real), no la corrida que lo produjo -- un reintento
+  // de la MISMA plataforma trae un operationId distinto pero debe seguir
+  // actualizando el mismo registro, no duplicarlo.
+  operationId?: string;
 }
 
 const UploadHistorySchema = new Schema<IUploadHistory>({
@@ -31,6 +39,7 @@ const UploadHistorySchema = new Schema<IUploadHistory>({
   contentId:   { type: String },
   title:       { type: String },
   publishedAt: { type: Date, required: true },
+  operationId: { type: String },
 }, { timestamps: true });
 
 // Único por usuario+plataforma+id -- una republicación del mismo video (mismo
