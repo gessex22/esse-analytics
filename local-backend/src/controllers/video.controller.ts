@@ -8,6 +8,7 @@ import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { reportUploadEvent, reportUnlinkPlatform } from '../services/upload-history.service';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
+import { pushVideoToRemoteLibrary } from '../services/remote-library-preload.service';
 import fs from 'fs';
 import path from 'path';
 
@@ -174,6 +175,33 @@ export const updateVideoContentStatus = (req: Request, res: Response): void => {
   const updated = fileRepo.update(fileId, { content_status: status });
   if (!updated) { res.status(404).json({ message: 'Archivo no encontrado.' }); return; }
   res.json({ content_status: status });
+};
+
+// ── POST /api/videos/:fileId/push-to-cloud ───────────────────────────────────
+// Botón "Subir a la nube" en Videos -- sube ESTE video puntual a Biblioteca
+// remota, salteando por completo la cola del calendario (a diferencia de la
+// precarga automática de ensurePreloadForNextVideos, que solo sube "el
+// próximo a publicar" de cada red). Reusa el mismo camino de subida (normaliza
+// para Android si hace falta, TUS si pesa más de 80MB) -- pero acá, a
+// diferencia de la precarga, cualquier error (incluido el 409 de cupo lleno
+// de la central) se devuelve tal cual al botón, no se traga en un log.
+export const pushVideoToCloud = async (req: Request, res: Response): Promise<void> => {
+  const { fileId } = req.params;
+  const authHeader = req.headers.authorization;
+  if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
+
+  const file = fileRepo.findById(fileId);
+  if (!file) { res.status(404).json({ error: 'Archivo no encontrado.' }); return; }
+
+  try {
+    const remoteLibraryVideoId = await pushVideoToRemoteLibrary(authHeader, file);
+    res.json({ ok: true, remoteLibraryVideoId });
+  } catch (err: any) {
+    // err.message ya trae el texto legible de la central (tusError() /
+    // ensureRemoteLibraryCapacity, ver remote-library-storage.service.ts) --
+    // uploadToRemoteLibrary no propaga el status code real, solo el mensaje.
+    res.status(500).json({ error: err.message || 'No se pudo subir el video a la nube.' });
+  }
 };
 
 // ── PATCH /api/videos/:fileId/platforms ──────────────────────────────────────
@@ -401,6 +429,15 @@ export const updateVideosBulk = (req: Request, res: Response): void => {
   if (updated > 0 && targetPlatforms && targetPlatforms.length > 0 && platformState) {
     pushFilesToCloudInBackground(req.headers.authorization);
 
+    // Igual que la subida manual (youtube/instagram/tiktok-upload.controller.ts):
+    // avisa SIEMPRE, no solo cuando local tenía un override guardado que se
+    // invalidó. La central persiste el fallback dinámico como si fuera un
+    // override apenas lo calcula una vez (ver autocorrección en
+    // getCalendarConfig de backend/src/controllers/sync.controller.ts) -- así
+    // que local puede no tener nada fijado (next_video_id null) mientras la
+    // central sigue con un valor viejo "endurecido" de una lectura anterior.
+    // Chequear solo el estado local para decidir si hace falta avisar no
+    // alcanza; más barato avisar de más que quedar desincronizado de nuevo.
     const CALENDAR_PLATFORMS = ['youtube', 'tiktok', 'instagram'] as const;
     const affectedCalendarPlatforms = targetPlatforms.filter(
       (p): p is 'youtube' | 'tiktok' | 'instagram' => (CALENDAR_PLATFORMS as readonly string[]).includes(p),
@@ -408,12 +445,13 @@ export const updateVideosBulk = (req: Request, res: Response): void => {
     for (const platform of affectedCalendarPlatforms) {
       const cfg = configRepo.getPlatformConfig(platform);
       const storedNext = cfg?.next_video_id ? String(cfg.next_video_id) : null;
-      if (!storedNext) continue; // sin override fijado: el fallback dinámico ya se recalcula solo, ambos lados
-      const currentNextFile = (/^\d+$/.test(storedNext) ? fileRepo.findById(storedNext) : undefined)
-        ?? fileRepo.findByName(storedNext);
-      // El "próximo" fijado no es ninguno de los archivos tocados en este
-      // descarte: sigue siendo válido, no hay nada que corregir.
-      if (!currentNextFile || !fileIds.includes(String(currentNextFile.id))) continue;
+      const currentNextFile = storedNext
+        ? (/^\d+$/.test(storedNext) ? fileRepo.findById(storedNext) : undefined) ?? fileRepo.findByName(storedNext)
+        : undefined;
+      // Único caso seguro para no avisar: había un "próximo" fijado local Y
+      // sigue siendo válido (no es ninguno de los archivos tocados acá) --
+      // ahí sabemos con certeza que nada cambió, en cualquiera de los dos lados.
+      if (currentNextFile && !fileIds.includes(String(currentNextFile.id))) continue;
 
       const nextFile = fileRepo.findNextUnpublished(platform);
       configRepo.setPlatformConfig(platform, { next_video_id: nextFile ? String(nextFile.id) : null });

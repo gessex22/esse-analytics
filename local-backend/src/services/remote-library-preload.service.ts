@@ -248,23 +248,46 @@ export async function ensureNextVideoInRemoteLibrary(
   }
 }
 
+// Núcleo compartido por la precarga automática (best-effort, atrapa errores)
+// y el push manual (deja que el error suba tal cual hasta el botón que lo
+// disparó) -- mismos 3 pasos: ¿ya está en Nube?, ¿el archivo sigue en disco?,
+// subir. Tira en vez de devolver null cuando algo falla, así el caller
+// decide qué hacer con el mensaje real (incluido el 409 de cupo lleno de la
+// central, ver remote-library-quota.service.ts).
+async function resolveAndUpload(authHeader: string, file: DbFile): Promise<string | null> {
+  const existing = await lookupRemoteLibraryId(authHeader, file.content_id);
+  if (existing) return existing;
+
+  if (!fs.existsSync(file.file_path)) throw new Error('El archivo ya no está en el disco.');
+
+  setPreloadActivity({ title: file.file_name, phase: 'uploading' });
+  try {
+    return await uploadToRemoteLibrary(authHeader, file);
+  } finally {
+    clearPreloadActivity();
+  }
+}
+
 async function ensureNextVideoInRemoteLibraryOnce(
   authHeader: string,
   file: DbFile,
 ): Promise<string | null> {
-
   try {
-    const existing = await lookupRemoteLibraryId(authHeader, file.content_id);
-    if (existing) return existing;
-
-    if (!fs.existsSync(file.file_path)) return null; // el archivo ya no está en disco -- nada que subir
-
-    setPreloadActivity({ title: file.file_name, phase: 'uploading' });
-    const id = await uploadToRemoteLibrary(authHeader, file);
-    clearPreloadActivity();
-    return id;
+    return await resolveAndUpload(authHeader, file);
   } catch (err: any) {
     setPreloadError(file.file_name, err.message);
     return null;
   }
+}
+
+// Push manual -- dispara el botón "Subir a la nube" de un video puntual en
+// Videos (ver pushVideoToCloud en video.controller.ts). A diferencia de
+// ensureNextVideoInRemoteLibrary, esto NO es best-effort: el error real
+// (incluido "Alcanzaste el límite de 5 videos en la nube...") tiene que
+// llegar hasta el usuario que tocó el botón, no perderse en un log.
+export async function pushVideoToRemoteLibrary(authHeader: string, file: DbFile): Promise<string> {
+  if (!file.content_id) throw new Error('Este video no tiene un identificador válido para subir a la nube.');
+  const id = await resolveAndUpload(authHeader, file);
+  if (!id) throw new Error('No se pudo subir el video a la nube.');
+  return id;
 }
