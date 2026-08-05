@@ -901,7 +901,7 @@ export async function applyPlatformPublish(userId: string, data: {
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt } = req.body ?? {};
+    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt, operationId } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -920,6 +920,10 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
           contentId:   contentId   ?? null,
           title:       title       ?? null,
           publishedAt: publishedAtDate,
+          // Best-effort: iOS/Android todavía no lo mandan en todos los
+          // callers -- si no viene, no se pisa un operationId previo con null
+          // (ej. un reintento sin ese campo actualizando el mismo platformId).
+          ...(operationId ? { operationId } : {}),
         },
       },
       { upsert: true },
@@ -973,6 +977,7 @@ export async function getUploadHistory(req: AuthRequest, res: Response): Promise
       fileName:     h.fileName ?? null,
       deviceId:     h.deviceId ?? null,
       source:       h.source ?? null,
+      operationId:  h.operationId ?? null,
       linkedFileId: null, // concepto local (id de SQLite) -- no aplica en modo remoto
       matchStatus:  'manual',
     }));
