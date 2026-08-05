@@ -17,6 +17,7 @@ import {
   CalendarClock,
   Link2,
   Cloud,
+  UploadCloud,
   Database,
 } from "lucide-react";
 import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry } from "../services/api";
@@ -415,6 +416,12 @@ export function VideosView({
   const [deletingId,    setDeletingId]    = useState<string | null>(null);
   const [deleteError,   setDeleteError]   = useState<string | null>(null);
 
+  // Subir a la nube — botón puntual por video (ver videoService.pushToCloud).
+  // pushCloudError es un toast transitorio, no bloquea nada -- el error real
+  // (ej. límite de 5 en Nube) viene tal cual desde la central.
+  const [pushingCloudId, setPushingCloudId] = useState<string | null>(null);
+  const [pushCloudError, setPushCloudError] = useState<string | null>(null);
+
   // Reproductor modal
   const [playerVideo, setPlayerVideo] = useState<{ fileId: string; title: string } | null>(null);
 
@@ -682,6 +689,35 @@ export function VideosView({
       setDeleteError(err?.message || "Error al eliminar. Intenta de nuevo.");
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  // ── Subir a la nube ──────────────────────────────────────────────────────────
+  const handlePushToCloud = async (video: DashboardVideo) => {
+    if (!video.fileId || pushingCloudId) return;
+    setPushingCloudId(video.fileId);
+    setPushCloudError(null);
+    try {
+      await videoService.pushToCloud(video.fileId);
+      // Optimista -- el próximo poll de sync-status lo confirma, pero no hace
+      // falta esperarlo para que el badge de Nube aparezca ya mismo.
+      if (video.contentId) {
+        setSyncStatus(prev => ({
+          ...prev,
+          [video.contentId!]: {
+            contentId: video.contentId!,
+            metadataBackedUp: prev[video.contentId!]?.metadataBackedUp ?? true,
+            inRemoteLibrary: true,
+          },
+        }));
+      }
+    } catch (err: any) {
+      const message = err?.message || "No se pudo subir el video a la nube.";
+      setPushCloudError(message);
+      // Auto-dismiss -- si mientras tanto ya apareció un error más nuevo, no lo pisa.
+      setTimeout(() => setPushCloudError(prev => (prev === message ? null : prev)), 6000);
+    } finally {
+      setPushingCloudId(null);
     }
   };
 
@@ -1134,6 +1170,21 @@ export function VideosView({
                           >
                             <Link2 className="w-3 h-3" />
                           </button>
+                          {/* Ya subido: el badge de Cloud (línea de abajo) alcanza, no
+                              hace falta el botón de subir de nuevo. */}
+                          {!(video.contentId && syncStatus[video.contentId]?.inRemoteLibrary) && (
+                            <button
+                              onClick={() => handlePushToCloud(video)}
+                              disabled={!video.fileId || pushingCloudId === video.fileId}
+                              className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-emerald-400 transition-all flex-shrink-0 mt-px"
+                              title="Subir a la nube"
+                            >
+                              {pushingCloudId === video.fileId
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : <UploadCloud className="w-3 h-3" />
+                              }
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
@@ -1402,6 +1453,23 @@ export function VideosView({
           </button>
         </div>
       )}
+
+      {/* Toast transitorio -- error al subir un video puntual a la nube
+          (ej. límite de 5 en Nube, ver videoService.pushToCloud). */}
+      <AnimatePresence>
+        {pushCloudError && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}
+            className="fixed bottom-6 right-6 z-50 max-w-sm bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2 shadow-lg backdrop-blur-sm"
+          >
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-300">{pushCloudError}</p>
+            <button onClick={() => setPushCloudError(null)} className="ml-1 text-red-300/60 hover:text-red-300 flex-shrink-0">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

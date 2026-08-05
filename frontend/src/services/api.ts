@@ -472,6 +472,14 @@ export const videoService = {
     });
   },
 
+  // Sube ESTE video puntual a Biblioteca remota (Nube), salteando la cola del
+  // calendario -- a diferencia de "Subir" (que publica a una red), esto solo
+  // manda los bytes a la nube para poder publicarlo después desde el celular.
+  // Solo existe en local-backend (necesita fs para leer el archivo), por eso
+  // no vive bajo /api/remote-library/* como el resto del servicio de Nube.
+  pushToCloud: async (fileId: string): Promise<{ remoteLibraryVideoId: string }> =>
+    requestJson(`/api/videos/${fileId}/push-to-cloud`, { method: "POST" }),
+
   getVideoPlayerData: async (fileId: string): Promise<VideoPlayerData> => {
     return requestJson<VideoPlayerData>(`/api/videos/${fileId}/player-data`);
   },
