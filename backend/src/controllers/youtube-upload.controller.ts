@@ -10,6 +10,7 @@ import { applyPlatformPublish } from './backup.controller';
 import { markPlatformLinked } from '../models/user.model';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { recordAuditEvent } from '../services/audit.service';
 
 export const remoteUploadMiddleware = multer({
   dest: path.join(os.tmpdir(), 'esse-uploads'),
@@ -67,7 +68,13 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const oauth2 = getOAuth2Client();
   const origin = req.query.origin as string | undefined;
   const client = req.query.client as string | undefined;
-  const state = encodeState(req.user!.id, origin, client);
+  // Identidad del dispositivo (Fase 5, auditoría) -- viaja en el state porque
+  // el callback vuelve como redirect del navegador/webview, no como request
+  // directo del cliente (ver oauth-state.ts).
+  const installationId = req.query.installationId as string | undefined;
+  const deviceName     = req.query.deviceName as string | undefined;
+  const appVersion     = req.query.appVersion as string | undefined;
+  const state = encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -87,7 +94,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     return res.redirect(`${fallback}?youtube_auth=error`);
   }
 
-  const { userId, origin, client } = decodeState(state);
+  const { userId, origin, client, installationId, deviceName, appVersion } = decodeState(state);
   // Android/iOS no tienen una página web en `origin` que lea el query param —
   // vuelven por deep link directo en vez del redirect a `origin` de siempre.
   const redirectTo = (status: string) => client === 'android' || client === 'ios'
@@ -98,6 +105,10 @@ export const handleCallback = async (req: Request, res: Response) => {
     const oauth2 = getOAuth2Client();
     const { tokens } = await oauth2.getToken(code);
     await saveTokens(userId, tokens);
+    await recordAuditEvent({
+      userId, type: 'platform_connect', platform: 'youtube',
+      installationId, deviceName, source: client, appVersion,
+    });
     res.redirect(redirectTo('success'));
   } catch (err: any) {
     console.error('YouTube OAuth callback error:', err.message);
@@ -183,6 +194,16 @@ export const getChannelInfo = async (req: AuthRequest, res: Response) => {
 export const revokeAuth = async (req: AuthRequest, res: Response) => {
   const db = mongoose.connection.db!;
   await db.collection('oauth_tokens').deleteOne({ provider: 'youtube', userId: req.user!.id });
+  // A diferencia de connect (que viaja en el state de un redirect), desconectar
+  // es un DELETE directo del cliente -- la identidad del dispositivo viaja como
+  // query param normal.
+  await recordAuditEvent({
+    userId: req.user!.id, type: 'platform_disconnect', platform: 'youtube',
+    installationId: req.query.installationId as string | undefined,
+    deviceName: req.query.deviceName as string | undefined,
+    source: req.query.source as string | undefined,
+    appVersion: req.query.appVersion as string | undefined,
+  });
   res.json({ ok: true });
 };
 

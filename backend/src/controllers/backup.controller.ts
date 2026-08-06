@@ -10,6 +10,7 @@ import { BackupPlatformVideoModel } from '../models/backup-platform-video.model'
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
+import { recordAuditEvent } from '../services/audit.service';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -901,7 +902,7 @@ export async function applyPlatformPublish(userId: string, data: {
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
-    const { deviceId, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt, operationId } = req.body ?? {};
+    const { deviceId, deviceName, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt, operationId } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -933,6 +934,16 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
       platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title,
       deviceId, source,
       publishedAt: publishedAtDate, matchStatus: 'manual',
+    });
+
+    // Fase 5 (auditoría): a diferencia de UploadHistoryModel (que UPDATEA el
+    // registro por platform+platformId -- una republicación pisa el
+    // anterior), esto es un evento más en el log append-only, uno por cada
+    // llamada real a este endpoint, republicaciones incluidas.
+    await recordAuditEvent({
+      userId, type: 'publish_confirmed', platform,
+      installationId: deviceId, deviceName, source, operationId,
+      entity: { kind: 'platform_video', id: platformId, label: title || fileName || undefined },
     });
 
     res.json({ ok: true });

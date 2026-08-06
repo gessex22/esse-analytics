@@ -10,6 +10,7 @@ import { UploadHistoryModel } from '../models/upload-history.model';
 import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
+import { recordAuditEvent } from '../services/audit.service';
 
 // Facebook Login for Business: el Page Access Token (de una Página de Facebook
 // con una Cuenta de Instagram Business vinculada) sí soporta upload_type:
@@ -228,7 +229,10 @@ export const getToken = async (req: AuthRequest, res: Response) => {
 export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
   const client = req.query.client as string | undefined;
-  const state = encodeState(req.user!.id, origin, client);
+  const installationId = req.query.installationId as string | undefined;
+  const deviceName     = req.query.deviceName as string | undefined;
+  const appVersion     = req.query.appVersion as string | undefined;
+  const state = encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
   const configId = process.env.META_LOGIN_CONFIG_ID;
   const params = new URLSearchParams({
     client_id:     fbAppId(),
@@ -258,7 +262,7 @@ export const handleCallback = async (req: Request, res: Response) => {
   console.log('[Instagram] Callback recibido, code:', !!code, 'state:', !!state);
   if (!code || !state) return popupResult(res, 'error');
 
-  const { userId, origin, client } = decodeState(state);
+  const { userId, origin, client, installationId, deviceName, appVersion } = decodeState(state);
   if (!userId) return popupResult(res, 'error', origin, client);
 
   try {
@@ -326,6 +330,10 @@ export const handleCallback = async (req: Request, res: Response) => {
       meta_user_id:      metaUserId,
       authType:          'facebook_login_business',
     });
+    await recordAuditEvent({
+      userId, type: 'platform_connect', platform: 'instagram',
+      installationId, deviceName, source: client, appVersion,
+    });
     popupResult(res, 'success', origin, client);
   } catch (err: any) {
     console.error('Instagram OAuth error:', err.message);
@@ -350,6 +358,13 @@ export const getAuthStatus = async (req: AuthRequest, res: Response) => {
 export const revokeAuth = async (req: AuthRequest, res: Response) => {
   const db = mongoose.connection.db!;
   await db.collection('oauth_tokens').deleteOne({ provider: 'instagram', userId: req.user!.id });
+  await recordAuditEvent({
+    userId: req.user!.id, type: 'platform_disconnect', platform: 'instagram',
+    installationId: req.query.installationId as string | undefined,
+    deviceName: req.query.deviceName as string | undefined,
+    source: req.query.source as string | undefined,
+    appVersion: req.query.appVersion as string | undefined,
+  });
   res.json({ ok: true });
 };
 

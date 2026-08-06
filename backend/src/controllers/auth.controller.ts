@@ -6,8 +6,15 @@ import { UAParser } from 'ua-parser-js';
 import { UserModel } from '../models/user.model';
 import { LoginLogModel } from '../models/login-log.model';
 import { AuthRequest, isOwner } from '../middleware/auth.middleware';
+import { recordAuditEvent } from '../services/audit.service';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
+// Bug preexistente encontrado de paso (no relacionado con Fase 5): localResetPassword
+// y localDeactivate ya comparaban contra esta constante más abajo, pero nunca estaba
+// declarada -- ReferenceError en cuanto se invocara cualquiera de los dos endpoints.
+// Mismo nombre y mismo fallback de dev que ya usa local-backend/src/routes/auth-proxy.routes.ts
+// al mandar el header X-Client-Key, para que ambos lados coincidan sin configurar nada en dev.
+const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
 
 function getClientIp(req: Request): string {
   const forwarded = req.headers['x-forwarded-for'];
@@ -95,7 +102,17 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const login = async (req: Request, res: Response): Promise<void> => {
-  const { username, password } = req.body as { username?: string; password?: string };
+  const {
+    username, password,
+    // Identidad del dispositivo (Fase 5, auditoría) -- opcionales: clientes
+    // viejos que todavía no la mandan simplemente no generan evento de
+    // auditoría para este login, no rompen nada (recordAuditEvent es
+    // best-effort igual que LoginLogModel).
+    installationId, deviceName, source, appVersion,
+  } = req.body as {
+    username?: string; password?: string;
+    installationId?: string; deviceName?: string; source?: string; appVersion?: string;
+  };
   const ip = getClientIp(req);
   const ua = parseUA(req);
 
@@ -128,6 +145,12 @@ export const login = async (req: Request, res: Response): Promise<void> => {
     }
 
     await LoginLogModel.create({ username: user.username, success: true, ip, ...ua });
+    // Mismo criterio de await que LoginLogModel arriba (consistencia), pero
+    // recordAuditEvent nunca tira -- ver audit.service.ts.
+    await recordAuditEvent({
+      userId: String(user._id), type: 'login',
+      installationId, deviceName, source, appVersion, ip,
+    });
 
     const token = jwt.sign(
       {
@@ -294,6 +317,14 @@ export const deactivateMe = async (req: AuthRequest, res: Response): Promise<voi
       { new: true },
     ).select('-password');
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    const { installationId, deviceName, source } = req.body as
+      { installationId?: string; deviceName?: string; source?: string };
+    await recordAuditEvent({
+      userId: req.user!.id, type: 'account_setting_changed',
+      installationId, deviceName, source,
+      entity: { kind: 'account', id: req.user!.id, label: 'self_deactivated' },
+      detail: { setting: 'status', value: 'deleted' },
+    });
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al dar de baja la cuenta.', error: err.message });
@@ -327,6 +358,13 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
     }
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
+    await recordAuditEvent({
+      userId: String(user._id), type: 'account_setting_changed',
+      installationId: installId, source: 'desktop',
+      entity: { kind: 'account', id: String(user._id), label: 'password_reset' },
+      // NUNCA la contraseña -- solo qué tipo de cambio fue.
+      detail: { setting: 'password' },
+    });
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al resetear contraseña.', error: err.message });
@@ -370,6 +408,13 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
       const r = await db.collection('oauth_tokens').deleteMany({ userId: String(user._id) });
       revoked = r.deletedCount ?? 0;
     }
+
+    await recordAuditEvent({
+      userId: String(user._id), type: 'account_setting_changed',
+      installationId: installId, source: 'desktop',
+      entity: { kind: 'account', id: String(user._id), label: 'deactivated_via_local_reset' },
+      detail: { setting: 'status', value: 'deleted', revokedTokens: revoked },
+    });
 
     res.json({ ok: true, revokedTokens: revoked });
   } catch (err: any) {

@@ -8,23 +8,50 @@ interface StatePayload {
   u: string;   // userId
   o?: string;  // origin del frontend
   c?: string;  // client ("android") — si viene, el callback redirige a un deep link en vez del popup HTML
+  // Identidad del dispositivo (Fase 5, auditoría) -- el callback de OAuth es
+  // un redirect del NAVEGADOR/webview, no un request directo del cliente, así
+  // que la única forma de saber QUÉ instalación inició el connect es viajar
+  // esto en el state (igual que origin/client). Claves cortas a propósito:
+  // el state entero viaja en la URL de Google/Meta/TikTok.
+  i?: string;  // installationId
+  d?: string;  // deviceName
+  v?: string;  // appVersion
 }
 
-// Codifica userId + origin (+ client opcional) en un state opaco (base64url de JSON).
-export function encodeState(userId: string, origin?: string, client?: string): string {
+export interface DecodedState {
+  userId: string;
+  origin: string;
+  client?: string;
+  installationId?: string;
+  deviceName?: string;
+  appVersion?: string;
+}
+
+// Codifica userId + origin/client/identidad de dispositivo en un state opaco
+// (base64url de JSON).
+export function encodeState(
+  userId: string, origin?: string, client?: string,
+  device?: { installationId?: string; deviceName?: string; appVersion?: string },
+): string {
   const payload: StatePayload = { u: userId };
   if (origin) payload.o = origin;
   if (client) payload.c = client;
+  if (device?.installationId) payload.i = device.installationId;
+  if (device?.deviceName) payload.d = device.deviceName;
+  if (device?.appVersion) payload.v = device.appVersion;
   return Buffer.from(JSON.stringify(payload)).toString('base64url');
 }
 
 // Decodifica el state. Soporta el formato viejo (solo userId en base64url).
-export function decodeState(state: string): { userId: string; origin: string; client?: string } {
+export function decodeState(state: string): DecodedState {
   try {
     const raw = Buffer.from(state, 'base64url').toString();
     const parsed = JSON.parse(raw) as StatePayload;
     if (parsed && typeof parsed.u === 'string') {
-      return { userId: parsed.u, origin: safeOrigin(parsed.o), client: parsed.c };
+      return {
+        userId: parsed.u, origin: safeOrigin(parsed.o), client: parsed.c,
+        installationId: parsed.i, deviceName: parsed.d, appVersion: parsed.v,
+      };
     }
   } catch {
     // No es JSON → formato legacy (el state ERA el userId crudo)

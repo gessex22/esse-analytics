@@ -9,6 +9,7 @@ import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { applyPlatformPublish } from './backup.controller';
+import { recordAuditEvent } from '../services/audit.service';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -973,6 +974,22 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
       { $set: fields },
       { upsert: true }
     );
+
+    // Fase 5 (auditoría): este endpoint también lo pisan actualizaciones
+    // AUTOMÁTICAS después de cada publicación (lastPublishedDate/Title,
+    // lastVideoId) y al "pinnear" el próximo video (nextVideoId) -- loguear
+    // esas sería puro ruido, indistinguible de publish_confirmed. Solo
+    // intervalDays es una edición deliberada del usuario (slider de
+    // intervalo en PublishingQueue.tsx, ver SyncPanel/PublishingQueue) --
+    // es el único campo que se manda solo, nunca junto a los automáticos.
+    if (intervalDays !== undefined) {
+      await recordAuditEvent({
+        userId, type: 'calendar_config_updated', platform,
+        entity: { kind: 'calendar_config', id: platform },
+        detail: { intervalDays },
+      });
+    }
+
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
