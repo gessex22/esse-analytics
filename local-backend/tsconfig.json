@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // commonjs, no nodenext: el paquete no tiene "type": "module" y corre
+    // con tsx -- mismo criterio que backend/tsconfig.json, ver ahí el porqué.
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noEmit": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  // scripts/ son utilidades de migración/diagnóstico sueltas (ver CLAUDE.md),
+  // no parte del servidor que corre de verdad -- mismo criterio que
+  // backend/tsconfig.json.
+  "exclude": ["src/scripts/**"]
+}

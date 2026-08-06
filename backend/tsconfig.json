@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // commonjs (no nodenext/node16): el paquete no tiene "type": "module" en
+    // package.json y corre con tsx (que no exige extensión .js en los
+    // imports ni distingue CJS/ESM archivo por archivo en tiempo real) --
+    // nodenext generaba errores falsos (imports sin .js, top-level await en
+    // scripts sueltos) que no reflejan cómo el código realmente corre.
+    "module": "commonjs",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    // El código nunca se escribió pensando en modo estricto (sin tsconfig,
+    // sin tsc corriendo nunca -- ver Fase 6 del plan de estabilidad,
+    // 2026-08). Arranca en false a propósito para que el primer CI real
+    // muestre errores genuinos (tipos que no cierran, símbolos
+    // inexistentes) en vez de una avalancha de ruido de null-checks que no
+    // tiene que ver con si el código funciona. Endurecer más adelante es
+    // una decisión aparte, no algo para colar en este commit.
+    "strict": false,
+    "noEmit": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  // scripts/ son utilidades de migración/diagnóstico sueltas (ver CLAUDE.md),
+  // no parte del servidor que corre de verdad -- se quedan afuera del
+  // typecheck por ahora para no mezclar su deuda con la del código que sí
+  // está siempre corriendo. Sacar esta exclusión cuando alguien las revise.
+  "exclude": ["src/scripts/**"]
+}
