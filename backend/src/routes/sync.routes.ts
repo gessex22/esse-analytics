@@ -7,7 +7,7 @@ import {
   getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
-import { getUploadHistory, recordUploadEvent } from '../controllers/backup.controller';
+import { getUploadHistory, recordUploadEvent, updateFilePlatforms } from '../controllers/backup.controller';
 import { verifyToken, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -39,6 +39,9 @@ router.post('/api/sync/history',                    verifyToken, recordUploadEve
 // la app de iOS (no hay forma de compilarla/probarla desde esta máquina Windows).
 router.post('/api/sync/record-publish',             verifyToken, recordUploadEvent);
 router.delete('/api/sync/platform-link/:fileId/:platform', verifyToken, unlinkPlatform);
+// "Descartar" desde iOS/Android era 100% local -- ver comentario completo en
+// updateFilePlatforms (backup.controller.ts).
+router.post('/api/sync/file-platforms',             verifyToken, updateFilePlatforms);
 router.get ('/api/sync/calendar-config',           verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform',verifyToken, requireRole('todopoderoso'), updateCalendarConfig);
 router.post('/api/sync/calendar-config/:platform/skip-next', verifyToken, skipNextCalendarVideo);
