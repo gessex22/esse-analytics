@@ -53,18 +53,25 @@ export async function resolveTikTokVideoId(userId: string, platformIdOrPublishId
 // devuelve la API en `data.cursor` — hay que reenviarlo para seguir yendo hacia
 // atrás en el tiempo (TikTok suele publicar mucho más seguido que YouTube/IG,
 // así que sin paginar real nunca se llega a la misma fecha que las otras ruedas).
+//
+// Fallos reales (sin token, token vencido, error de la API de TikTok) TIENEN
+// que tirar -- no devolver {items:[], nextCursor:null} como si fuera "no hay
+// más resultados". Antes se devolvía silencioso acá y el cliente (SlotPicker
+// en desktop, "Cargar más" en iOS/Android) no podía distinguir un error real
+// de una lista terminada -- ver getPlatformRecent en sync.controller.ts, que
+// traduce estos throws a HTTP claro en vez de tragárselos.
 export async function getRecentTikTokVideos(userId: string, limit: number, cursor?: string): Promise<PlatformRecentPage> {
-  let token: { access_token: string; open_id: string };
-  try {
-    token = await getValidToken(userId);
-  } catch {
-    return { items: [], nextCursor: null };
-  }
+  // getValidToken ya tira 'NO_AUTH' si no hay conexión -- no atajarlo acá,
+  // que suba tal cual (antes un catch mudo lo convertía en página vacía).
+  const token = await getValidToken(userId);
 
   // OJO: el campo de miniatura es cover_image_url (NO video_cover_url, que da
   // invalid_params y tumba toda la request) — confirmado en local-backend.
   const fields = 'id,video_description,cover_image_url,share_url,like_count,view_count,comment_count,share_count,create_time';
   const body: Record<string, any> = { max_count: limit };
+  // El cursor de TikTok es un timestamp -- la API lo exige numérico en el
+  // body, pero de punta a punta (sync.controller.ts, clientes iOS/Android) se
+  // sigue tratando como string opaca, nunca se inspecciona ni se genera acá.
   if (cursor) body.cursor = Number(cursor);
 
   const res = await fetch(`${TK_BASE}/video/list/?fields=${fields}`, {
@@ -75,8 +82,12 @@ export async function getRecentTikTokVideos(userId: string, limit: number, curso
     },
     body: JSON.stringify(body),
   });
-  if (!res.ok) return { items: [], nextCursor: null };
+  if (!res.ok) throw new Error(`TikTok API error ${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
+  // La v2 de TikTok devuelve 200 con { error: { code: "ok", ... } } incluso
+  // en éxito -- mismo chequeo que ya usa tiktok-upload.controller.ts para
+  // init/info de subida.
+  if (data.error?.code !== 'ok') throw new Error(data.error?.message || `TikTok API error: ${data.error?.code}`);
   const videos = data.data?.videos ?? [];
 
   const items: PlatformRecentItem[] = videos.map((v: any) => ({

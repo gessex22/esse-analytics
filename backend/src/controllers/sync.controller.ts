@@ -202,8 +202,24 @@ export const getPlatformRecent = async (req: AuthRequest, res: Response): Promis
     }).select('platformId').lean();
     const excluded = new Set(already.map(d => d.platformId));
 
-    res.json({ items: items.filter(i => !excluded.has(i.platformId)), nextCursor });
+    // Red de seguridad contra loops: si la plataforma devolviera el MISMO
+    // cursor recibido (bug de su lado) o una página vacía que igual dice
+    // "hay más", se corta acá tratándolo como fin de lista -- así el cliente
+    // (iOS/Android/desktop) nunca entra en un "Cargar más" que no avanza.
+    const safeNextCursor = (nextCursor && nextCursor !== cursor && items.length > 0) ? nextCursor : null;
+
+    res.json({ items: items.filter(i => !excluded.has(i.platformId)), nextCursor: safeNextCursor });
   } catch (err: any) {
+    // NO_AUTH (sin token, token vencido) -- mismo código que el resto de los
+    // endpoints de youtube/instagram/tiktok-upload.controller.ts, así el
+    // cliente puede distinguirlo de un error genérico y ofrecer reconectar
+    // en vez de solo "Reintentar". Cualquier otro fallo real (API caída,
+    // error de la plataforma) sigue como 500 -- ninguno de los dos casos se
+    // convierte en {items:[], nextCursor:null} como pasaba antes.
+    if (err.message === 'NO_AUTH') {
+      res.status(401).json({ error: 'NO_AUTH', message: 'Conectá la cuenta de esta plataforma primero' });
+      return;
+    }
     res.status(500).json({ message: err.message });
   }
 };
