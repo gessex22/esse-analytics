@@ -689,6 +689,91 @@ async function syncCalendarAfterPublish(
   }
 }
 
+// Resuelve (o crea, si no existe todavía) el FileModel correspondiente a un
+// archivo local -- por content_id (estable ante renombres/reimportado en otro
+// dispositivo) o file_name como fallback, con el mismo criterio de búsqueda
+// case-insensitive y de resolver por Biblioteca remota si hace falta.
+// Extraído de applyPlatformPublish para reusar exactamente la misma lógica de
+// matching desde updateFilePlatforms (descartar, ver abajo) -- antes solo
+// "publicar" llegaba a la central; "descartar" desde iOS/Android era 100%
+// local y nunca resolvía ni tocaba este mismo archivo.
+async function resolveOrCreateFile(
+  userId: string,
+  data: { fileName?: string | null; contentId?: string | null; remoteLibraryVideoId?: string | null },
+) {
+  const { fileName, contentId, remoteLibraryVideoId } = data;
+  if (!fileName) return null;
+  const remote = remoteLibraryVideoId
+    ? await RemoteLibraryVideoModel.findOne({ _id: remoteLibraryVideoId, userId })
+        .select('contentId fileName')
+        .lean()
+    : null;
+  const stableContentId = contentId ?? remote?.contentId;
+  let file = stableContentId
+    ? await FileModel.findOne({ userId, content_id: stableContentId })
+    : await FileModel.findOne({ userId, file_name: fileName });
+  if (!file) {
+    const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    file = await FileModel.findOne({ userId, file_name: { $regex: `^${escaped}$`, $options: 'i' } });
+  }
+  // El nombre puede cambiar al clonar/importar el video en otro dispositivo;
+  // el ID de Biblioteca remota/contentId es la identidad real.
+  if (!file && remote?.fileName && remote.fileName !== fileName) {
+    file = await FileModel.findOne({ userId, file_name: remote.fileName });
+  }
+  // Si no hay ningún archivo local con ese nombre (ej. video publicado/
+  // descartado directo desde el celular, sin pasar antes por el catálogo),
+  // se crea un registro mínimo -- si no, Estadísticas/el pull del PC no
+  // tienen de dónde sacarlo y queda invisible hasta que alguien lo vincule a
+  // mano en Videos (escritorio).
+  if (!file) {
+    file = await FileModel.findOneAndUpdate(
+      { userId, file_name: fileName },
+      { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+      { upsert: true, new: true },
+    );
+  }
+  return file;
+}
+
+// POST /api/sync/file-platforms — sincroniza el estado COMPLETO de
+// publicado/descartado por plataforma de un archivo hacia la central. Manda
+// los arrays enteros (no un delta) -- mismo shape que ya usa
+// RemoteLibraryAPI.updatePlatforms (iOS)/updatePlatforms (Android) para
+// Biblioteca remota, así el caller (que ya tiene platforms/platformsDiscarded
+// calculados localmente tras el toggle) no tiene que decidir $addToSet vs
+// $pull, solo mandar el estado final.
+//
+// Hasta este endpoint, "publicar" SÍ llegaba a la central (recordUploadEvent
+// -> applyPlatformPublish, más abajo) pero "descartar" era 100% local en
+// SwiftData/Room -- solo sincronizaba a RemoteLibraryVideoModel si el archivo
+// pasaba por Biblioteca remota. GET /api/backup/files ya mergea FileModel por
+// encima de BackupFileModel (ver el comentario ahí, incidente de julio 2026),
+// así que alcanza con escribir FileModel acá: el pull() de desktop ya sabe
+// traer esto de vuelta a SQLite sin ningún cambio del lado del pull.
+export async function updateFilePlatforms(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.user!.id;
+    const { fileName, contentId, remoteLibraryVideoId, platforms, platformsDiscarded } = req.body ?? {};
+    if (!fileName || !Array.isArray(platforms) || !Array.isArray(platformsDiscarded)) {
+      res.status(400).json({ message: 'fileName, platforms[] y platformsDiscarded[] son requeridos.' });
+      return;
+    }
+    const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId });
+    if (!file) {
+      res.status(404).json({ message: 'No se pudo resolver el archivo.' });
+      return;
+    }
+    await FileModel.updateOne(
+      { _id: file._id },
+      { $set: { platforms, platforms_discarded: platformsDiscarded } },
+    );
+    res.json({ ok: true, fileId: file._id });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+}
+
 // Punto único que representa "esto se publicó de verdad en esta plataforma" --
 // hasta hoy cada entry point (Sincronizar, subida real por celular/central,
 // Editar links del escritorio, marcar publicado desde Nube) actualizaba un
@@ -711,6 +796,10 @@ export async function applyPlatformPublish(userId: string, data: {
   source?: string | null;
   fileName?: string | null;
   contentId?: string | null;
+  // Bug preexistente encontrado de paso (no de esta tarea): faltaba en el
+  // tipo aunque varios callers ya lo mandaban y el cuerpo de la función ya
+  // lo usaba -- tsc lo marcaba como "no existe en el tipo" en 3 lugares.
+  remoteLibraryVideoId?: string | null;
   title?: string | null;
   publishedAt?: Date;
   matchStatus?: string;
@@ -758,44 +847,17 @@ export async function applyPlatformPublish(userId: string, data: {
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
   if (fileName) {
-    const remote = data.remoteLibraryVideoId
-      ? await RemoteLibraryVideoModel.findOne({ _id: data.remoteLibraryVideoId, userId })
-          .select('contentId fileName')
-          .lean()
-      : null;
-    const stableContentId = contentId ?? remote?.contentId;
-    let file = stableContentId
-      ? await FileModel.findOne({ userId, content_id: stableContentId })
-      : await FileModel.findOne({ userId, file_name: fileName });
-    if (!file && fileName) {
-      const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      file = await FileModel.findOne({ userId, file_name: { $regex: `^${escaped}$`, $options: 'i' } });
+    const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId: data.remoteLibraryVideoId });
+    if (file) {
+      linkedFileId = file._id;
+      if (!file.platforms.includes(platform)) {
+        await FileModel.updateOne(
+          { _id: file._id },
+          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
+        );
+      }
+      publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
     }
-    // El nombre puede cambiar al clonar/importar el video en otro dispositivo;
-    // el ID de Biblioteca remota/contentId es la identidad real.
-    if (!file && remote?.fileName && remote.fileName !== fileName) {
-      file = await FileModel.findOne({ userId, file_name: remote.fileName });
-    }
-    // Si no hay ningún archivo local con ese nombre (ej. video publicado
-    // directo desde el celular, sin pasar antes por el catálogo), se crea un
-    // registro mínimo -- si no, Estadísticas (getGroupStats) no tiene de
-    // dónde sacarlo y queda sin ver el video hasta que alguien lo vincule a
-    // mano en Videos (escritorio).
-    if (!file) {
-      file = await FileModel.findOneAndUpdate(
-        { userId, file_name: fileName },
-        { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
-        { upsert: true, new: true },
-      );
-    }
-    linkedFileId = file._id;
-    if (!file.platforms.includes(platform)) {
-      await FileModel.updateOne(
-        { _id: file._id },
-        { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
-      );
-    }
-    publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
   }
 
   // Si el shortcode no se pudo resolver arriba y ya existe un registro con el
