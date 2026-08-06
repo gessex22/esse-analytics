@@ -30,18 +30,25 @@ function clip(s: string | null | undefined, max = 90): string {
 // página anterior para poder seguir yendo hacia atrás en el tiempo (necesario
 // porque cada plataforma publica a un ritmo distinto: IG/TikTok pueden ir muy
 // adelante de YouTube y con un solo lote fijo nunca se llega a la misma fecha).
+//
+// Fallos reales (sin token, token vencido, error de Graph API) TIENEN que
+// tirar -- no devolver {items:[], nextCursor:null} como si fuera "no hay más
+// resultados". Antes se devolvía silencioso acá y el cliente (SlotPicker en
+// desktop, "Cargar más" en iOS/Android) no podía distinguir un error real de
+// una lista terminada -- ver getPlatformRecent en sync.controller.ts, que
+// traduce estos throws a HTTP claro en vez de tragárselos.
 export async function getRecentInstagramMedia(userId: string, limit: number, after?: string): Promise<PlatformRecentPage> {
   const tokens = await loadTokens(userId);
-  if (!isUsableInstagramConnection(tokens)) return { items: [], nextCursor: null };
+  if (!isUsableInstagramConnection(tokens)) throw new Error('NO_AUTH');
 
   const fields = 'id,caption,media_type,media_product_type,permalink,thumbnail_url,timestamp,like_count,comments_count';
   const url = `${FB_GRAPH}/${tokens!.instagram_user_id}/media?fields=${fields}&limit=${limit}`
     + (after ? `&after=${encodeURIComponent(after)}` : '')
     + `&access_token=${tokens!.access_token}`;
   const res = await fetch(url);
-  if (!res.ok) return { items: [], nextCursor: null };
+  if (!res.ok) throw new Error(`Instagram API error ${res.status}: ${await res.text()}`);
   const data = await res.json() as any;
-  if (data.error) return { items: [], nextCursor: null };
+  if (data.error) throw new Error(data.error.message ?? 'Instagram API error');
 
   const items = (data.data ?? [])
     .filter((m: any) => m.media_product_type === 'REELS' || m.media_type === 'VIDEO')
