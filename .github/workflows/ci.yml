@@ -1,0 +1,72 @@
+name: CI
+
+# Fase 6 del plan de estabilidad (2026-08): ninguno de los 3 paquetes de Node
+# tenía tsconfig.json ni un typecheck automático -- backend/local-backend se
+# verificaron toda la sesión con invocaciones de tsc ad-hoc (sin config real,
+# sin correr en CI); frontend solo tenía "vite build" (que no chequea tipos,
+# los strippea nomás) más un build-mac.yml manual que empaqueta Electron, no
+# valida código en cada push. Este workflow corre en cada push/PR a main.
+#
+# backend/local-backend: typecheck NO bloqueante a propósito. tsc real reveló
+# deuda de tipos preexistente considerable (31 errores en backend, 50 en
+# local-backend -- src/scripts/** excluido del typecheck en ambos, ver sus
+# tsconfig.json -- ninguno introducido en esta sesión, en su mayoría fricción
+# de tipos de Mongoose/Express con versiones nuevas, ej. req.query como
+# string|string[] pasado donde se espera string). Tirar el CI abajo por deuda
+# que nadie pidió arreglar hoy sería peor que no tener typecheck -- así que
+# queda visible (el job falla y se ve en la lista de checks) pero no bloquea
+# el merge. Sacar continue-on-error cuando se pague esa deuda.
+#
+# frontend: SÍ bloqueante -- lint y build ya pasan limpios hoy, así que
+# quedarse así es la barra correcta desde el día uno.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: backend
+        run: npm ci
+      - name: tsc --noEmit
+        working-directory: backend
+        continue-on-error: true
+        run: npx tsc --noEmit
+
+  local-backend-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: local-backend
+        run: npm ci
+      - name: tsc --noEmit
+        working-directory: local-backend
+        continue-on-error: true
+        run: npx tsc --noEmit
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Build
+        working-directory: frontend
+        run: npm run build
