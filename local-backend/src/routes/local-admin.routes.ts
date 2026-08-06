@@ -1,5 +1,6 @@
 import { Router, Response } from 'express';
 import { randomUUID } from 'crypto';
+import os from 'os';
 import jwt from 'jsonwebtoken';
 import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { configRepo } from '../db/config.repo';
@@ -20,6 +21,38 @@ export function getOrCreateInstallId(): string {
   }
   return id;
 }
+
+// Nombre editable de este dispositivo (Fase 5, auditoría) -- default al
+// hostname de la PC, el usuario lo puede cambiar después (ver PUT abajo).
+// A diferencia de install_id (secreto, nunca sale de SQLite/el proxy), este
+// SÍ es seguro de mostrar/editar desde el frontend -- no autoriza nada.
+export function getOrCreateDeviceName(): string {
+  let name = configRepo.get('device_name');
+  if (!name) {
+    name = os.hostname() || 'Mi PC';
+    configRepo.set('device_name', name);
+  }
+  return name;
+}
+
+// GET /api/local/device-name — para mostrar/editar en Ajustes o en la vista
+// de Actividad ("qué nombre tiene ESTA instalación").
+router.get('/api/local/device-name', (_req, res) => {
+  res.json({ deviceName: getOrCreateDeviceName() });
+});
+
+// PUT /api/local/device-name — renombrar. Requiere sesión (no es un secreto,
+// pero sí una preferencia de la cuenta que usa esta instalación).
+router.put('/api/local/device-name', verifyToken, (req: AuthRequest, res: Response) => {
+  const { deviceName } = req.body as { deviceName?: string };
+  const trimmed = (deviceName ?? '').trim();
+  if (!trimmed || trimmed.length > 60) {
+    res.status(400).json({ message: 'deviceName requerido (máx. 60 caracteres).' });
+    return;
+  }
+  configRepo.set('device_name', trimmed);
+  res.json({ ok: true, deviceName: trimmed });
+});
 
 // POST /api/local/wipe — limpia todas las tablas locales.
 // Cualquier usuario autenticado de ESTA instalación puede limpiarla (p.ej. al cerrar
