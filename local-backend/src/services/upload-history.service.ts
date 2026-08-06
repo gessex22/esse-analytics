@@ -1,4 +1,5 @@
 import { configRepo } from '../db/config.repo';
+import { getOrCreateDeviceName } from '../routes/local-admin.routes';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 
@@ -30,6 +31,7 @@ export async function reportUploadEvent(
       headers: { 'Content-Type': 'application/json', Authorization: authHeader },
       body: JSON.stringify({
         deviceId,
+        deviceName:  getOrCreateDeviceName(),
         source:      data.source ?? 'pc',
         platform:    data.platform,
         platformId:  data.platformId,

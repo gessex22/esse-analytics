@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { configRepo } from '../db/config.repo';
+import { getOrCreateInstallId, getOrCreateDeviceName } from './local-admin.routes';
 
 const router = Router();
 
@@ -11,8 +12,41 @@ const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-r
 // Rutas destructivas que exigen el secreto de instalación de esta máquina.
 const INSTALL_SECRET_ROUTES = ['/api/auth/local-reset', '/api/auth/local-deactivate'];
 
+// Fase 5 (auditoría): estas rutas necesitan saber QUÉ instalación las llama
+// para que la central pueda armar el evento con installationId/deviceName.
+// Se inyecta acá, en el proxy -- nunca en el frontend -- mismo criterio que
+// install_id para las rutas destructivas de arriba (aunque deviceName/source
+// no son secretos, mantenerlos en un solo lugar evita que cada vista del
+// frontend tenga que saber de esto). getAuthUrl es GET (installationId viaja
+// en el state de OAuth, ver oauth-state.ts en el backend); revokeAuth es
+// DELETE (sin body real); login es POST normal.
+const DEVICE_IDENTITY_QUERY_ROUTES = [
+  '/api/youtube/auth/url', '/api/youtube/auth' /* DELETE = revoke */,
+  '/api/instagram/auth/url', '/api/instagram/auth',
+  '/api/tiktok/auth/url', '/api/tiktok/auth',
+];
+
+function withDeviceIdentityQuery(url: string): string {
+  const u = new URL(url);
+  u.searchParams.set('installationId', getOrCreateInstallId());
+  u.searchParams.set('deviceName', getOrCreateDeviceName());
+  u.searchParams.set('source', 'desktop');
+  return u.toString();
+}
+
 async function proxyToCentral(req: Request, res: Response, _next: NextFunction) {
-  const url = `${CENTRAL}${req.originalUrl}`;
+  let url = `${CENTRAL}${req.originalUrl}`;
+  // req.originalUrl trae querystring (origin/client que ya manda el cliente
+  // para getAuthUrl) -- se compara solo la parte de path, y EXACTA (no
+  // startsWith) para no capturar /auth/callback ni /auth/status, que no
+  // necesitan esto.
+  const requestPath = req.originalUrl.split('?')[0];
+  if (
+    (req.method === 'GET' && DEVICE_IDENTITY_QUERY_ROUTES.some(r => r.endsWith('/url') && requestPath === r)) ||
+    (req.method === 'DELETE' && DEVICE_IDENTITY_QUERY_ROUTES.some(r => !r.endsWith('/url') && requestPath === r))
+  ) {
+    url = withDeviceIdentityQuery(url);
+  }
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -26,6 +60,13 @@ async function proxyToCentral(req: Request, res: Response, _next: NextFunction) 
       const body = { ...req.body };
       if (INSTALL_SECRET_ROUTES.some(r => req.originalUrl.startsWith(r))) {
         body.installId = configRepo.get('install_id') ?? undefined;
+      }
+      // Identidad de dispositivo para el evento de auditoría de login (Fase 5)
+      // -- mismo criterio que arriba, nunca la manda el frontend.
+      if (requestPath === '/api/auth/login') {
+        body.installationId = getOrCreateInstallId();
+        body.deviceName = getOrCreateDeviceName();
+        body.source = 'desktop';
       }
       init.body = JSON.stringify(body);
     }
