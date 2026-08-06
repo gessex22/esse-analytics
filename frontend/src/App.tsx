@@ -23,6 +23,7 @@ import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
 import { DashboardView } from "./components/DashboardView";
 import { HistoryView } from "./components/HistoryView";
+import { ActivityView } from "./components/ActivityView";
 import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
 import logoImg from "./assets/esseAnalytics.png";
@@ -507,6 +508,7 @@ export default function App() {
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
                   : effectiveNav === 9 ? <HistoryView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 10 ? <RemoteLibraryView />
+                  : effectiveNav === 11 ? <ActivityView />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }
               </main>

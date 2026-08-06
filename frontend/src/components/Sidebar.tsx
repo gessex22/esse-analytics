@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 import {
   Settings, BarChart2, Film, Users, Upload, TrendingUp, Wrench,
-  CalendarDays, Gem, History, Cloud,
+  CalendarDays, Gem, History, Cloud, ShieldCheck,
 } from "lucide-react";
 import logoImg from "../assets/esseAnalytics.png";
 
@@ -20,9 +20,12 @@ export const navItems = [
   // NO es local-only: vive tanto en el cliente de Electron como en acceso remoto
   // (ver LOCAL_ONLY_NAV / isNavVisible en App.tsx, que la deja afuera de ese set).
   { icon: Cloud,         label: "Nube"          },
+  // Auditoría central de dispositivos (Fase 5) -- tampoco es local-only: lee
+  // GET /api/audit-events directo de la central, funciona igual en remoto.
+  { icon: ShieldCheck,   label: "Actividad"     },
 ];
 
-export const ACTIVE_VIEWS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+export const ACTIVE_VIEWS = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 export const MOBILE_NAV   = [1, 2, 7, 5, 6, 10];
 
 // Orden de visualización del sidebar (por importancia). Son índices de `navItems`;
@@ -30,8 +33,9 @@ export const MOBILE_NAV   = [1, 2, 7, 5, 6, 10];
 // orden en pantalla. Pipeline de contenido arriba; administración (Usuarios, Ajustes) al fondo.
 // Estadísticas (4) va justo debajo de Dashboard (0). Historial (9) junto a Calendario (7),
 // ambos sobre el registro de publicaciones. Nube (10) al lado de Videos (1), mismo concepto
-// de biblioteca.
-export const NAV_ORDER = [0, 4, 1, 10, 2, 7, 9, 5, 8, 3, 6];
+// de biblioteca. Actividad (11) al fondo del todo, junto a Ajustes -- es la vista de
+// auditoría/seguridad, mismo criterio de "administración" que Usuarios/Ajustes.
+export const NAV_ORDER = [0, 4, 1, 10, 2, 7, 9, 5, 8, 3, 6, 11];
 
 interface SidebarProps {
   effectiveNav: number;
