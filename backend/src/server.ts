@@ -16,6 +16,7 @@ import scanRouter            from './routes/scan.routes';
 import componentsRouter      from './routes/components.routes';
 import backupRouter          from './routes/backup.routes';
 import remoteLibraryRouter   from './routes/remote-library.routes';
+import auditRouter           from './routes/audit.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
 import { runRemoteLibraryRetentionSweep } from './services/remote-library-retention.service';
 
@@ -76,6 +77,7 @@ app.use(scanRouter);
 app.use(componentsRouter);
 app.use(backupRouter);
 app.use(remoteLibraryRouter);
+app.use(auditRouter);
 
 const REMOTE_LIBRARY_RETENTION_INTERVAL_MS = 60 * 60 * 1000; // 1h
 
