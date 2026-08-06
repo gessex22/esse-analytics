@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
@@ -73,6 +73,93 @@ function ColoresPanel() {
   );
 }
 
+// Nombre editable de ESTA instalación (Fase 5, auditoría) -- GET/PUT
+// /api/local/device-name en local-backend, generado la primera vez a partir
+// del hostname (getOrCreateDeviceName en local-admin.routes.ts). A diferencia
+// de install_id (secreto, nunca sale de SQLite) esto sí es seguro de mostrar/
+// editar acá: es solo la etiqueta que va a aparecer en Actividad para
+// identificar qué PC hizo cada evento.
+function DeviceNamePanel() {
+  const { token } = useAuth();
+  const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [draft, setDraft]           = useState("");
+  const [editing, setEditing]       = useState(false);
+  const [saving, setSaving]         = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/local/device-name`)
+      .then(r => r.json())
+      .then(d => { setDeviceName(d.deviceName ?? null); setDraft(d.deviceName ?? ""); })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/local/device-name`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ deviceName: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
+      setDeviceName(data.deviceName);
+      setEditing(false);
+    } catch (err: any) {
+      setError(err?.message || "No se pudo guardar el nombre.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (deviceName === null) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card/40 p-4 space-y-2">
+      <p className="text-sm font-semibold text-foreground">Nombre de esta PC</p>
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Así identificás esta instalación en la pestaña Actividad, entre tus otros dispositivos.
+      </p>
+      {editing ? (
+        <div className="flex gap-2 pt-1">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={60}
+            className="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-secondary/50 border border-border text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          <button
+            onClick={save}
+            disabled={saving || !draft.trim()}
+            className="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Guardar"}
+          </button>
+          <button
+            onClick={() => { setEditing(false); setDraft(deviceName); setError(null); }}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg border border-border text-sm text-muted-foreground hover:text-foreground"
+          >
+            Cancelar
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-sm text-foreground">{deviceName}</span>
+          <button onClick={() => setEditing(true)} className="text-xs text-primary hover:underline">
+            Cambiar
+          </button>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </div>
+  );
+}
+
 function DatosPanel() {
   const { token, logout } = useAuth();
   const [confirm, setConfirm] = useState(false);
@@ -105,6 +192,8 @@ function DatosPanel() {
           Gestiona la información almacenada en esta instalación
         </p>
       </div>
+
+      <DeviceNamePanel />
 
       <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 space-y-4">
         <div className="flex items-start gap-3">

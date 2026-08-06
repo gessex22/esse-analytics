@@ -818,6 +818,48 @@ export const syncService = {
 };
 
 // ==========================================
+// AUDITORÍA (Fase 5, plan de estabilidad) — GET /api/audit-events
+// ==========================================
+
+export type AuditEventType =
+  | "login" | "platform_connect" | "platform_disconnect"
+  | "publish_confirmed" | "calendar_config_updated" | "account_setting_changed";
+
+export interface AuditEvent {
+  id: string;
+  type: AuditEventType;
+  platform: string | null;
+  installationId: string | null;
+  deviceName: string | null;
+  source: string | null;
+  appVersion: string | null;
+  operationId: string | null;
+  entity: { kind: string; id: string; label?: string } | null;
+  detail: Record<string, unknown> | null;
+  at: string;
+}
+
+export interface AuditEventsPage {
+  items: AuditEvent[];
+  total: number;
+  // installationId -> nombre visto en esta página -- atajo para poblar el
+  // filtro "por dispositivo" sin pedir un endpoint aparte (ver audit.controller.ts).
+  devices: Record<string, string>;
+}
+
+export const activityService = {
+  getEvents: (opts: { limit?: number; offset?: number; type?: AuditEventType; platform?: string; installationId?: string } = {}): Promise<AuditEventsPage> => {
+    const params = new URLSearchParams();
+    params.set("limit", String(opts.limit ?? 30));
+    params.set("offset", String(opts.offset ?? 0));
+    if (opts.type) params.set("type", opts.type);
+    if (opts.platform) params.set("platform", opts.platform);
+    if (opts.installationId) params.set("installationId", opts.installationId);
+    return requestJson(`/api/audit-events?${params.toString()}`);
+  },
+};
+
+// ==========================================
 // BACKUP SERVICE
 // ==========================================
 
