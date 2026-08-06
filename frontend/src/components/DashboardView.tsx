@@ -231,6 +231,20 @@ function PodiumGadget({
   );
 }
 
+// Caché a nivel de módulo -- mismo patrón que calendarCache en
+// PublishingQueue.tsx. App.tsx navega por índice con un ternario (no hay
+// router), así que cambiar de pestaña DESMONTA el componente entero; sin
+// esto, cada vez que volvías a Dashboard arrancaba de items/upcoming vacíos
+// y se veía "Todavía no hay publicaciones" un instante antes de que load()
+// trajera de nuevo lo mismo que ya se había visto segundos antes.
+interface DashboardCache {
+  items: GroupStatsItem[];
+  upcoming: UpcomingSlot[];
+  latestHistory: HistoryItem | null;
+  demoMode: boolean;
+}
+let dashboardCache: DashboardCache | null = null;
+
 export function DashboardView({
   onOpenVideo,
   onOpenCalendar,
@@ -238,14 +252,14 @@ export function DashboardView({
   onOpenVideo?: (fileId: string, title: string) => void;
   onOpenCalendar?: () => void;
 }) {
-  const [items, setItems] = useState<GroupStatsItem[]>([]);
-  const [upcoming, setUpcoming] = useState<UpcomingSlot[]>([]);
-  const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(null);
+  const [items, setItems] = useState<GroupStatsItem[]>(dashboardCache?.items ?? []);
+  const [upcoming, setUpcoming] = useState<UpcomingSlot[]>(dashboardCache?.upcoming ?? []);
+  const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(dashboardCache?.latestHistory ?? null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
   const [localFileId, setLocalFileId] = useState<string | null>(null);
   const [localThumbnailFailed, setLocalThumbnailFailed] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [demoMode, setDemoMode] = useState(false);
+  const [loading, setLoading] = useState(!dashboardCache);
+  const [demoMode, setDemoMode] = useState(dashboardCache?.demoMode ?? false);
   // 'simple' cross-postea a las 3 a la vez, así que combinar sus métricas en
   // la tarjeta tiene sentido -- 'avanzado' publica plataforma por plataforma,
   // y mostrar siempre las 3 sumadas sin decir cuál se publicó de verdad
@@ -264,31 +278,40 @@ export function DashboardView({
         syncService.getCalendarConfig(),
         syncService.getHistory({ limit: 1 }),
       ]);
+      const newUpcoming = calendarConfig
+        .filter(
+          (cfg): cfg is typeof cfg & { nextVideo: NonNullable<typeof cfg.nextVideo> } =>
+            PLATFORMS.includes(cfg.platform as Platform) && !!cfg.nextVideo,
+        )
+        .map((cfg) => ({
+          platform: cfg.platform as Platform,
+          title: cfg.nextVideo.title,
+          fileId: cfg.nextVideo.fileId,
+          date: cfg.lastPublishedDate
+            ? calcNextDate(cfg.lastPublishedDate.slice(0, 10), cfg.intervalDays)
+            : new Date().toISOString().slice(0, 10),
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .slice(0, 3);
+      const newLatestHistory = history.items[0] ?? null;
+      const newDemoMode = stats.items.length === 0 && history.items.length === 0;
+
       setItems(stats.items);
-      setUpcoming(
-        calendarConfig
-          .filter(
-            (cfg): cfg is typeof cfg & { nextVideo: NonNullable<typeof cfg.nextVideo> } =>
-              PLATFORMS.includes(cfg.platform as Platform) && !!cfg.nextVideo,
-          )
-          .map((cfg) => ({
-            platform: cfg.platform as Platform,
-            title: cfg.nextVideo.title,
-            fileId: cfg.nextVideo.fileId,
-            date: cfg.lastPublishedDate
-              ? calcNextDate(cfg.lastPublishedDate.slice(0, 10), cfg.intervalDays)
-              : new Date().toISOString().slice(0, 10),
-          }))
-          .sort((a, b) => a.date.localeCompare(b.date))
-          .slice(0, 3),
-      );
-      setLatestHistory(history.items[0] ?? null);
-      setDemoMode(stats.items.length === 0 && history.items.length === 0);
+      setUpcoming(newUpcoming);
+      setLatestHistory(newLatestHistory);
+      setDemoMode(newDemoMode);
+      dashboardCache = { items: stats.items, upcoming: newUpcoming, latestHistory: newLatestHistory, demoMode: newDemoMode };
     } catch {
-      setItems([]);
-      setUpcoming([]);
-      setLatestHistory(null);
-      setDemoMode(true);
+      // Si ya había datos cacheados (de una carga anterior), un refresco que
+      // falla (red caída un instante al cambiar de pestaña, etc.) no debe
+      // borrarlos -- mejor mostrar lo último bueno que romper a un estado
+      // vacío. Solo cae a demoMode si esta es la primera carga real.
+      if (!dashboardCache) {
+        setItems([]);
+        setUpcoming([]);
+        setLatestHistory(null);
+        setDemoMode(true);
+      }
     } finally {
       setLoading(false);
     }

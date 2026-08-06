@@ -261,24 +261,44 @@ function GroupStatsCard({ item, localFileId, onOpenVideo }: {
   );
 }
 
+// Caché a nivel de módulo -- mismo patrón que calendarCache en
+// PublishingQueue.tsx. App.tsx navega por índice con un ternario (no hay
+// router), así que cambiar de pestaña DESMONTA el componente entero; sin
+// esto, cada vez que volvías a Estadísticas arrancaba de cero (items: [],
+// loading: true) y se veía el spinner de nuevo aunque los datos ya se
+// hubieran cargado hace 5 segundos. Con la caché, el segundo mount arranca
+// mostrando lo último que se vio mientras load() refresca en silencio atrás.
+interface StatsCache {
+  items: GroupStatsItem[];
+  localIds: Record<string, string | null>;
+}
+let statsCache: StatsCache | null = null;
+
 // Estadísticas grupales — misma vista para modo simple y avanzado (el matching
 // entre plataformas es siempre por archivo, no depende de workflow_mode). Solo
 // muestra los últimos videos que ya tienen las 3 plataformas vinculadas
 // (ver Ajustes → Sincronización → "Emparejar entre plataformas" para completar
 // los que falten).
 export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, title: string) => void } = {}) {
-  const [items, setItems] = useState<GroupStatsItem[]>([]);
-  const [localIds, setLocalIds] = useState<Record<string, string | null>>({});
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<GroupStatsItem[]>(statsCache?.items ?? []);
+  const [localIds, setLocalIds] = useState<Record<string, string | null>>(statsCache?.localIds ?? {});
+  // Solo arranca en loading si no hay nada cacheado todavía -- con caché, el
+  // refresco de fondo no debe tapar el contenido ya visible (ver el gate de
+  // renderizado más abajo, que ya no depende solo de `loading`).
+  const [loading, setLoading] = useState(!statsCache);
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await syncService.getGroupStats(5);
       setItems(res.items);
+      statsCache = { items: res.items, localIds: statsCache?.localIds ?? {} };
       if (res.items.length > 0) {
         videoService.resolveByNames(res.items.map(i => i.fileName))
-          .then(setLocalIds)
+          .then((map) => {
+            setLocalIds(map);
+            statsCache = { items: res.items, localIds: map };
+          })
           .catch(() => {});
       }
     } finally {
@@ -307,7 +327,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         </button>
       </div>
 
-      {loading ? (
+      {loading && items.length === 0 ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
         </div>
