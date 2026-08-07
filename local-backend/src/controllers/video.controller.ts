@@ -266,7 +266,7 @@ export const resolvePublicationSelection = (req: Request, res: Response): void =
 // el ID real para /video/query/), así que para links acortados de TikTok
 // (vm.tiktok.com, tiktok.com/t/...) seguimos el redirect antes de extraer.
 const TIKTOK_ID_PATTERN = /tiktok\.com\/@[^/]+\/video\/(\d+)/;
-const TIKTOK_SHORT_LINK = /(?:vm\.tiktok\.com\/|tiktok\.com\/t\/)/i;
+const TIKTOK_SHORT_LINK = /(?:vm\.tiktok\.com\/|vt\.tiktok\.com\/|tiktok\.com\/t\/)/i;
 
 async function extractPlatformId(platform: string, url: string): Promise<string> {
   const patterns: Record<string, RegExp> = {
@@ -336,6 +336,11 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     res.status(400).json({ message: 'El link debe empezar con http:// o https://' }); return;
   }
 
+  // Una fila previa es una corrección de link, no una nueva publicación. Su
+  // fecha es la única fuente local fiable para que record-publish no vuelva a
+  // mover el video al presente en Historial ni en el calendario central.
+  const previousPublication = platformVideoRepo.findByFileAndPlatform(String(fileId), String(platform));
+  const publishedAt = previousPublication?.published_at;
   const platformId = await extractPlatformId(platform, trimmed);
   platformVideoRepo.upsert({
     platform,
@@ -355,7 +360,7 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
   // mismo que ya hace cada subida real) cierra ese hueco sin duplicar lógica.
     await reportUploadEvent(req.headers.authorization, {
       platform, platformId, platformUrl: trimmed,
-      source: 'pc',
+      source: 'pc', publishedAt,
       fileName: file.file_name, contentId: file.content_id, title: file.file_name,
     });
     // La confirmación manual por link equivale a una publicación real:
@@ -363,7 +368,7 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     // siguiente video y fijar su ID remoto de forma inmediata.
     const nextFile = fileRepo.findNewerAdjacent(file, platform as Platform);
     await syncNextVideoToCentral(req.headers.authorization, platform as any, {
-      lastPublishedDate: new Date().toISOString().slice(0, 10),
+      lastPublishedDate: (publishedAt ? new Date(publishedAt) : new Date()).toISOString().slice(0, 10),
       lastPublishedTitle: file.file_name,
       nextFile,
     });
