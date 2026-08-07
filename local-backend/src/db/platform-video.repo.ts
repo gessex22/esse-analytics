@@ -6,7 +6,11 @@ export interface GroupStatsCandidate {
   fileId: number;
   fileName: string;
   fechaCreacion: string | null;
-  platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }>;
+  // `rowId` = id real de la fila en platform_videos (no el fileId de arriba, que
+  // para YouTube/Instagram/TikTok puede ser el id del archivo local vinculado).
+  // Hace falta para poder persistir un platform_id resuelto más tarde sin crear
+  // una fila nueva (ver resolvePendingLocalTikTokIds en sync.controller.ts).
+  platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null; rowId?: number }>;
 }
 
 export interface DbPlatformVideo {
@@ -151,6 +155,17 @@ export const platformVideoRepo = {
     return this.findByPlatformAndId(data.platform, data.platform_id)!;
   },
 
+  // Actualiza el platform_id de una fila puntual PRESERVANDO su id (a diferencia
+  // de upsert, que resuelve por platform+platform_id -- si se le pasa el nuevo id
+  // ya resuelto, no encuentra la fila vieja y crea una fila nueva en vez de
+  // corregir la existente). Se usa para persistir el id real de TikTok una vez
+  // resuelto (ver resolvePendingLocalTikTokIds en sync.controller.ts) y que las
+  // próximas consultas ya no dependan de volver a resolverlo en cada request.
+  updatePlatformId(rowId: number, platformId: string): void {
+    db.prepare(`UPDATE platform_videos SET platform_id = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(platformId, rowId);
+  },
+
   deleteAll(): number {
     return db.prepare('DELETE FROM platform_videos').run().changes;
   },
@@ -205,6 +220,11 @@ export const platformVideoRepo = {
     // no los archivos emparejados. Así se respetan los últimos publicados de
     // cada red, incluso cuando todavía no tienen las tres plataformas.
     if (platform) {
+      // Se trae de más (varias veces `limit`) porque el mismo archivo puede tener
+      // MÁS de una fila para esta plataforma (reintentos de subida, o un pull de
+      // backup que trajo de vuelta un registro viejo con el publish_id crudo sin
+      // resolver todavía) -- deduplicar ANTES del LIMIT evitaría que un archivo
+      // duplicado le robe el lugar a videos realmente distintos.
       const rows = db.prepare(`
         SELECT pv.id, pv.platform, pv.platform_id, pv.platform_url, pv.title,
                pv.linked_file_id, COALESCE(pv.published_at, pv.created_at) AS published_at,
@@ -215,14 +235,33 @@ export const platformVideoRepo = {
           AND (f.id IS NULL OR f.status != 'ELIMINADO_DISCO')
         ORDER BY COALESCE(pv.published_at, pv.created_at) DESC
         LIMIT ?
-      `).all(platform, limit) as { id: number; platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number | null; published_at: string; file_name: string | null }[];
+      `).all(platform, limit * 4) as { id: number; platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number | null; published_at: string; file_name: string | null }[];
 
-      return rows.map(row => ({
+      // Un mismo archivo (linked_file_id) nunca debe aportar dos tarjetas: se
+      // queda la fila con platform_id numérico (resuelto, con métricas reales)
+      // por sobre una con publish_id/URL sin resolver -- y entre dos igual de
+      // resueltas, la más reciente. Filas sin linked_file_id no tienen forma de
+      // saber si son el mismo video, así que se dejan pasar tal cual (por su id).
+      const isResolved = (id: string) => /^\d+$/.test(id);
+      const byDedupeKey = new Map<string, typeof rows[number]>();
+      for (const row of rows) {
+        const key = row.linked_file_id != null ? `file:${row.linked_file_id}` : `row:${row.id}`;
+        const prev = byDedupeKey.get(key);
+        if (!prev) { byDedupeKey.set(key, row); continue; }
+        const prevResolved = isResolved(prev.platform_id);
+        const rowResolved = isResolved(row.platform_id);
+        if (rowResolved && !prevResolved) byDedupeKey.set(key, row);
+      }
+      const deduped = [...byDedupeKey.values()]
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+        .slice(0, limit);
+
+      return deduped.map(row => ({
         fileId: row.linked_file_id ?? row.id,
         fileName: row.file_name ?? row.title ?? row.platform_id,
         fechaCreacion: row.published_at,
         platforms: {
-          [platform]: { platformId: row.platform_id, platformUrl: row.platform_url, title: row.title },
+          [platform]: { platformId: row.platform_id, platformUrl: row.platform_url, title: row.title, rowId: row.id },
         },
       }));
     }
@@ -235,10 +274,10 @@ export const platformVideoRepo = {
     `).all() as { id: number; file_name: string; fecha_creacion: string | null; platforms: string }[];
 
     const pvRows = db.prepare(`
-      SELECT platform, platform_id, platform_url, title, linked_file_id
+      SELECT id, platform, platform_id, platform_url, title, linked_file_id
       FROM platform_videos
       WHERE linked_file_id IS NOT NULL AND platform IN ('youtube', 'instagram', 'tiktok')
-    `).all() as { platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number }[];
+    `).all() as { id: number; platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number }[];
     const pvByFile = new Map<number, typeof pvRows>();
     for (const pv of pvRows) pvByFile.set(pv.linked_file_id, [...(pvByFile.get(pv.linked_file_id) ?? []), pv]);
 
@@ -249,9 +288,15 @@ export const platformVideoRepo = {
       try { badges = JSON.parse(f.platforms || '[]'); } catch { badges = []; }
       if (!['youtube', 'instagram', 'tiktok'].every(p => badges.includes(p))) continue;
 
-      const platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }> = {};
+      // Igual que en la rama por plataforma: un archivo puede tener más de una
+      // fila para la misma plataforma (reintentos, pull de backup con un registro
+      // viejo) -- sin preferir la resuelta, la última insertada podía pisar a la
+      // que sí tenía el platform_id numérico y dejar la tarjeta en cero.
+      const platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null; rowId?: number }> = {};
       for (const pv of pvByFile.get(f.id) ?? []) {
-        platforms[pv.platform] = { platformId: pv.platform_id, platformUrl: pv.platform_url, title: pv.title };
+        const current = platforms[pv.platform];
+        if (current && /^\d+$/.test(current.platformId) && !/^\d+$/.test(pv.platform_id)) continue;
+        platforms[pv.platform] = { platformId: pv.platform_id, platformUrl: pv.platform_url, title: pv.title, rowId: pv.id };
       }
       // Un badge manual sin vínculo real no debe entrar en Estadísticas: no
       // existe un platformId al que pedirle métricas y produciría tarjetas con

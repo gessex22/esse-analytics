@@ -112,7 +112,14 @@ export async function getRecentTikTokVideos(userId: string, limit: number, curso
 // vía /v2/video/query/ — a diferencia de /video/list/ (que trae "los últimos N"),
 // este permite pedir videos puntuales por id.
 export async function getVideoStatsByIds(userId: string, videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; shares: number; thumbnail?: string }>> {
-  if (videoIds.length === 0) return {};
+  // /video/query/ exige ids numéricos reales -- un solo publish_id o URL crudo
+  // sin resolver mezclado en la lista (siempre puede quedar alguno: ver
+  // resolveTikTokVideoId más arriba) hace que TikTok rechace el batch COMPLETO
+  // con invalid_params, dejando en cero hasta los videos que sí tenían id
+  // válido. Se filtran acá para que un id sin resolver no le robe las métricas
+  // al resto.
+  const validIds = videoIds.filter(id => /^\d+$/.test(id));
+  if (validIds.length === 0) return {};
   let token: { access_token: string };
   try {
     token = await getValidToken(userId);
@@ -129,7 +136,7 @@ export async function getVideoStatsByIds(userId: string, videoIds: string[]): Pr
         Authorization: `Bearer ${token.access_token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ filters: { video_ids: videoIds } }),
+      body: JSON.stringify({ filters: { video_ids: validIds } }),
     });
     if (!res.ok) return {};
     const data = await res.json() as any;

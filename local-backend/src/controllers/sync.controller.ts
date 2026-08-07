@@ -15,7 +15,7 @@ const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instag
 // Un publish_id de TikTok (v_pub_...) identifica la operación de subir, no el
 // video público. Se resuelve antes de pedir métricas para que el historial local
 // no quede en cero mientras la central termina de sincronizar ese registro.
-async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string; title?: string | null }> }[]): Promise<void> {
+async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string; title?: string | null; rowId?: number }> }[]): Promise<void> {
   const pending = [...new Set(candidates
     .map(candidate => candidate.platforms.tiktok?.platformId)
     .filter((id): id is string => !!id && !/^\d+$/.test(id)))];
@@ -62,7 +62,13 @@ async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { pl
     }
     for (const candidate of candidates) {
       const slot = candidate.platforms.tiktok;
-      if (slot && resolved.has(slot.platformId)) slot.platformId = resolved.get(slot.platformId)!;
+      if (!slot || !resolved.has(slot.platformId)) continue;
+      const newId = resolved.get(slot.platformId)!;
+      // Se persiste en la MISMA fila (por rowId) -- nunca vía upsert con el id
+      // nuevo, que resolvería a "no existe" y crearía una fila duplicada más
+      // (el mismo bug que dejó tarjetas fantasma para videos ya publicados).
+      if (slot.rowId != null) platformVideoRepo.updatePlatformId(slot.rowId, newId);
+      slot.platformId = newId;
     }
   } catch { /* se reintenta en el próximo refresh */ }
 }

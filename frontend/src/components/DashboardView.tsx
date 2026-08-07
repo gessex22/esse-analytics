@@ -186,19 +186,19 @@ function PodiumGadget({
 }) {
   return (
     <section className="rounded-2xl border border-border bg-card p-4 sm:p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div>
+      <div className="flex items-center justify-between mb-3 gap-2">
+        <div className="min-w-0">
           <h2 className="text-sm font-semibold text-foreground">
             Plataforma líder
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{mode === 'combined' ? 'Videos publicados en las 3 redes' : 'Últimos 5 publicados de cada red'}</p>
+          <p className="text-xs text-muted-foreground mt-0.5 truncate">{mode === 'combined' ? 'Videos publicados en las 3 redes' : 'Últimos 5 publicados de cada red'}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex rounded-md bg-secondary p-0.5 text-[9px]">
-            <button onClick={() => onModeChange('combined')} className={`rounded-sm px-1.5 py-0.5 ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
-            <button onClick={() => onModeChange('individual')} className={`rounded-sm px-1.5 py-0.5 ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
-          </div>
-          <TrendingUp className="w-4 h-4 text-primary" />
+        <TrendingUp className="w-4 h-4 text-primary flex-shrink-0" />
+      </div>
+      <div className="flex justify-end mb-1">
+        <div className="flex rounded-md bg-secondary p-0.5 text-[9px] flex-shrink-0">
+          <button onClick={() => onModeChange('combined')} className={`rounded-sm px-1.5 py-0.5 whitespace-nowrap ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
+          <button onClick={() => onModeChange('individual')} className={`rounded-sm px-1.5 py-0.5 whitespace-nowrap ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
         </div>
       </div>
       <div className="flex items-end justify-center gap-3 py-2">
