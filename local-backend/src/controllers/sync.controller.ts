@@ -288,7 +288,12 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     const ids = {
       youtube:   candidates.map(c => c.platforms.youtube?.platformId).filter((x): x is string => !!x),
       instagram: candidates.map(c => c.platforms.instagram?.platformId).filter((x): x is string => !!x),
-      tiktok:    candidates.map(c => c.platforms.tiktok?.platformId).filter((x): x is string => !!x),
+      // Solo ids YA resueltos (numéricos) -- la central (según versión) puede
+      // rechazar el batch COMPLETO de TikTok si viene un solo publish_id/URL
+      // sin resolver mezclado adentro, dejando en cero hasta los videos con id
+      // válido. Filtrar acá antes de mandar protege a esta PC de esa versión
+      // vieja sin depender de que la central ya tenga el fix desplegado.
+      tiktok:    candidates.map(c => c.platforms.tiktok?.platformId).filter((x): x is string => !!x && /^\d+$/.test(x)),
     };
 
     let stats: Record<'youtube' | 'instagram' | 'tiktok', Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> =
