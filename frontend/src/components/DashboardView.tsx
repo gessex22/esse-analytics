@@ -196,9 +196,13 @@ function PodiumGadget({
         <TrendingUp className="w-4 h-4 text-primary flex-shrink-0" />
       </div>
       <div className="flex justify-end mb-1">
-        <div className="flex rounded-md bg-secondary p-0.5 text-[9px] flex-shrink-0">
-          <button onClick={() => onModeChange('combined')} className={`rounded-sm px-1.5 py-0.5 whitespace-nowrap ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
-          <button onClick={() => onModeChange('individual')} className={`rounded-sm px-1.5 py-0.5 whitespace-nowrap ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
+        <div className="flex rounded-md bg-secondary p-0.5 flex-shrink-0">
+          {/* text-[9px] va en cada <button>, no alcanza con ponerlo en el div
+              contenedor -- a diferencia de un <span>, los <button> no heredan
+              font-size del padre por defecto, así que sin esto caían al
+              tamaño base del navegador (~16px) y el selector se veía enorme. */}
+          <button onClick={() => onModeChange('combined')} className={`rounded-sm px-1.5 py-0.5 text-[9px] leading-none whitespace-nowrap ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
+          <button onClick={() => onModeChange('individual')} className={`rounded-sm px-1.5 py-0.5 text-[9px] leading-none whitespace-nowrap ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
         </div>
       </div>
       <div className="flex items-end justify-center gap-3 py-2">
