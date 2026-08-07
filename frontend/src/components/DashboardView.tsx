@@ -176,9 +176,13 @@ function PlatformRow({
 function PodiumGadget({
   ranking,
   demoMode,
+  mode,
+  onModeChange,
 }: {
   ranking: { platform: Platform; views: number; videos: number }[];
   demoMode: boolean;
+  mode: 'combined' | 'individual';
+  onModeChange: (mode: 'combined' | 'individual') => void;
 }) {
   return (
     <section className="rounded-2xl border border-border bg-card p-4 sm:p-5">
@@ -187,11 +191,15 @@ function PodiumGadget({
           <h2 className="text-sm font-semibold text-foreground">
             Plataforma líder
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Podio de vistas recientes
-          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">{mode === 'combined' ? 'Videos publicados en las 3 redes' : 'Últimos 5 publicados de cada red'}</p>
         </div>
-        <TrendingUp className="w-4 h-4 text-primary" />
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg bg-secondary p-0.5 text-[10px]">
+            <button onClick={() => onModeChange('combined')} className={`rounded-md px-2 py-1 ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
+            <button onClick={() => onModeChange('individual')} className={`rounded-md px-2 py-1 ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
+          </div>
+          <TrendingUp className="w-4 h-4 text-primary" />
+        </div>
       </div>
       <div className="flex items-end justify-center gap-3 py-2">
         {ranking.slice(0, 3).map((entry, index) => {
@@ -224,7 +232,7 @@ function PodiumGadget({
         })}
       </div>
       <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
-        <span>Comparativa reciente</span>
+        <span>{mode === 'combined' ? 'Comparativa conjunta' : 'Comparativa individual'}</span>
         <span>{demoMode ? "Demo" : "Actualizado"}</span>
       </div>
     </section>
@@ -239,6 +247,7 @@ function PodiumGadget({
 // trajera de nuevo lo mismo que ya se había visto segundos antes.
 interface DashboardCache {
   items: GroupStatsItem[];
+  individualItems: Partial<Record<Platform, GroupStatsItem[]>>;
   upcoming: UpcomingSlot[];
   latestHistory: HistoryItem | null;
   demoMode: boolean;
@@ -253,6 +262,8 @@ export function DashboardView({
   onOpenCalendar?: () => void;
 }) {
   const [items, setItems] = useState<GroupStatsItem[]>(dashboardCache?.items ?? []);
+  const [individualItems, setIndividualItems] = useState<Partial<Record<Platform, GroupStatsItem[]>>>(dashboardCache?.individualItems ?? {});
+  const [rankingMode, setRankingMode] = useState<'combined' | 'individual'>('combined');
   const [upcoming, setUpcoming] = useState<UpcomingSlot[]>(dashboardCache?.upcoming ?? []);
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(dashboardCache?.latestHistory ?? null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);
@@ -273,11 +284,13 @@ export function DashboardView({
   const load = async () => {
     setLoading(true);
     try {
-      const [stats, calendarConfig, history] = await Promise.all([
+      const [stats, calendarConfig, history, individual] = await Promise.all([
         syncService.getGroupStats(5),
         syncService.getCalendarConfig(),
         syncService.getHistory({ limit: 1 }),
+        Promise.all(PLATFORMS.map(platform => syncService.getGroupStats(5, platform))),
       ]);
+      const newIndividualItems = Object.fromEntries(PLATFORMS.map((platform, index) => [platform, individual[index].items])) as Partial<Record<Platform, GroupStatsItem[]>>;
       const newUpcoming = calendarConfig
         .filter(
           (cfg): cfg is typeof cfg & { nextVideo: NonNullable<typeof cfg.nextVideo> } =>
@@ -297,10 +310,11 @@ export function DashboardView({
       const newDemoMode = stats.items.length === 0 && history.items.length === 0;
 
       setItems(stats.items);
+      setIndividualItems(newIndividualItems);
       setUpcoming(newUpcoming);
       setLatestHistory(newLatestHistory);
       setDemoMode(newDemoMode);
-      dashboardCache = { items: stats.items, upcoming: newUpcoming, latestHistory: newLatestHistory, demoMode: newDemoMode };
+      dashboardCache = { items: stats.items, individualItems: newIndividualItems, upcoming: newUpcoming, latestHistory: newLatestHistory, demoMode: newDemoMode };
     } catch {
       // Si ya había datos cacheados (de una carga anterior), un refresco que
       // falla (red caída un instante al cambiar de pestaña, etc.) no debe
@@ -455,8 +469,8 @@ export function DashboardView({
     ? { views: focusStats?.views ?? 0, likes: focusStats?.likes ?? 0, comments: focusStats?.comments ?? 0 }
     : totals;
   const ranking = useMemo(() => {
-    const source = demoMode ? [DEMO_ITEM] : items;
     return PLATFORMS.map((platform) => {
+      const source = demoMode ? [DEMO_ITEM] : rankingMode === 'individual' ? individualItems[platform] ?? [] : items;
       const values = source
         .map((entry) => entry.platforms[platform])
         .filter(Boolean) as {
@@ -474,7 +488,7 @@ export function DashboardView({
         videos: values.length,
       };
     }).sort((a, b) => b.views - a.views);
-  }, [demoMode, items]);
+  }, [demoMode, items, individualItems, rankingMode]);
   const LeaderLogo = ranking[0] ? PLATFORM_CFG[ranking[0].platform].Logo : null;
 
   return (
@@ -527,7 +541,7 @@ export function DashboardView({
       )}
 
       <div className="dashboard-top-grid grid grid-cols-1 lg:grid-cols-[1.35fr_0.65fr] gap-4 items-stretch">
-        <PodiumGadget ranking={ranking} demoMode={demoMode} />
+        <PodiumGadget ranking={ranking} demoMode={demoMode} mode={rankingMode} onModeChange={setRankingMode} />
         <section className="rounded-2xl border border-border bg-card p-4 sm:p-6">
           <div className="flex items-center mb-4">
             <div>

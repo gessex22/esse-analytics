@@ -760,11 +760,23 @@ export const getStatsByIds = async (req: AuthRequest, res: Response): Promise<vo
     const instagram = clamp(body.instagram);
     const tiktok    = clamp(body.tiktok);
 
-    const [ytStats, igStats, tkStats] = await Promise.all([
+    // TikTok puede devolver inicialmente un publish_id (v_pub_...) en vez del
+    // id numérico del video. Resolverlo acá permite a Electron pedir métricas
+    // de su historial local sin tener que esperar otro sync completo.
+    const resolvedTikTok = await Promise.all(tiktok.map(async requestedId => ({
+      requestedId,
+      resolvedId: await resolveTikTokVideoId(userId, requestedId).catch(() => null) ?? requestedId,
+    })));
+
+    const [ytStats, igStats, rawTkStats] = await Promise.all([
       getYoutubeVideoStats(youtube).catch(() => ({} as Record<string, any>)),
       getMediaStats(userId, instagram).catch(() => ({} as Record<string, any>)),
-      getTiktokVideoStats(userId, tiktok).catch(() => ({} as Record<string, any>)),
+      getTiktokVideoStats(userId, [...new Set(resolvedTikTok.map(entry => entry.resolvedId))]).catch(() => ({} as Record<string, any>)),
     ]);
+    const tkStats = Object.fromEntries(resolvedTikTok.flatMap(({ requestedId, resolvedId }) => {
+      const stats = rawTkStats[resolvedId];
+      return stats ? [[requestedId, stats]] : [];
+    }));
 
     res.json({ youtube: ytStats, instagram: igStats, tiktok: tkStats });
   } catch (err: any) {

@@ -6,9 +6,43 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const TIKTOK_API = 'https://open.tiktokapis.com/v2';
 
 // Intervalo por defecto por plataforma cuando no hay nada configurado.
 const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instagram: 3 };
+
+// Un publish_id de TikTok (v_pub_...) identifica la operación de subir, no el
+// video público. Se resuelve antes de pedir métricas para que el historial local
+// no quede en cero mientras la central termina de sincronizar ese registro.
+async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string }> }[]): Promise<void> {
+  const pending = [...new Set(candidates
+    .map(candidate => candidate.platforms.tiktok?.platformId)
+    .filter((id): id is string => !!id && !/^\d+$/.test(id)))];
+  if (pending.length === 0) return;
+
+  try {
+    const tokenResponse = await fetch(`${CENTRAL}/api/tiktok/token`, { headers: { Authorization: authHeader } });
+    if (!tokenResponse.ok) return;
+    const { access_token } = await tokenResponse.json() as { access_token?: string };
+    if (!access_token) return;
+
+    const resolved = new Map<string, string>();
+    await Promise.all(pending.map(async publishId => {
+      const response = await fetch(`${TIKTOK_API}/post/publish/status/fetch/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ publish_id: publishId }),
+      });
+      if (!response.ok) return;
+      const match = (await response.text()).match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
+      if (match) resolved.set(publishId, match[1]);
+    }));
+    for (const candidate of candidates) {
+      const slot = candidate.platforms.tiktok;
+      if (slot && resolved.has(slot.platformId)) slot.platformId = resolved.get(slot.platformId)!;
+    }
+  } catch { /* se reintenta en el próximo refresh */ }
+}
 
 function fmtDuration(secs?: number): string {
   if (!secs) return '';
@@ -204,6 +238,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
 
   try {
     const candidates = platformVideoRepo.findGroupStatsCandidates(limit, platform as 'youtube' | 'instagram' | 'tiktok' | undefined);
+    await resolvePendingLocalTikTokIds(authHeader, candidates);
     const ids = {
       youtube:   candidates.map(c => c.platforms.youtube?.platformId).filter((x): x is string => !!x),
       instagram: candidates.map(c => c.platforms.instagram?.platformId).filter((x): x is string => !!x),
