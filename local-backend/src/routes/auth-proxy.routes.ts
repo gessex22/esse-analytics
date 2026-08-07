@@ -120,4 +120,10 @@ router.use('/api/sync/cross-match',     proxyToCentral);
 router.use('/api/sync/group-stats',     proxyToCentral);
 router.use('/api/sync/file-stats',      proxyToCentral);
 
+// Auditoría (Fase 5) — el log de eventos vive en Mongo/central (es cross-
+// dispositivo), no en SQLite. Sin esto cae en el catch-all de frontend
+// estático y ActivityView revienta con "Unexpected token '<'" al parsear
+// HTML como si fuera JSON (mismo bug que ya pasó con /api/sync/*).
+router.use('/api/audit-events', proxyToCentral);
+
 export default router;
