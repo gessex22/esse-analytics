@@ -1,11 +1,12 @@
 import { useState, useEffect, type ReactNode } from "react";
-import { Check, Palette, ShieldCheck, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft } from "lucide-react";
+import { Check, Palette, ShieldCheck, Activity, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
 import { SyncPanel } from "./SyncPanel";
 import { LibraryPanel } from "./LibraryPanel";
 import { FriedenPanel } from "./FriedenPanel";
 import { AccountsPanel } from "./AccountsPanel";
+import { ActivityView } from "./ActivityView";
 import { useAuth } from "../hooks/useAuth";
 import { API_BASE } from "../config";
 
@@ -14,6 +15,13 @@ const ALL_SECTIONS = [
   { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false, description: "Flujo de publicación y carpeta de videos" },
   { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true,  description: "Cuentas conectadas de YouTube, Instagram y TikTok" },
   { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false, description: "Seguridad de la cuenta" },
+  // Auditoría central de dispositivos (Fase 5) -- antes ítem propio del sidebar
+  // (índice 11), movida acá para no ocupar un slot de nav por una vista de
+  // "consultar de vez en cuando" (mismo patrón que Settings > Security log en
+  // otros productos), y de paso queda alcanzable en mobile vía Ajustes. No es
+  // local-only: lee GET /api/audit-events directo de la central. roles replica
+  // el filtro que tenía antes en App.tsx (isNavVisible): todo el mundo salvo editor.
+  { id: "actividad",  label: "Actividad",      icon: Activity,    roles: ["todopoderoso", "visitante"], localOnly: false, description: "Inicios de sesión, conexiones y publicaciones de tu cuenta" },
   { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false, description: "Emparejar entre plataformas y vincular con archivo local" },
   { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true,  description: "Acceso remoto y respaldo en la nube" },
   { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true,  description: "Gestioná los datos guardados en esta instalación" },
@@ -307,6 +315,7 @@ export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }:
     biblioteca: <LibraryPanel />,
     cuentas:    <AccountsPanel />,
     seguridad:  <SecurityPanel />,
+    actividad:  <ActivityView />,
     sync:       <SyncPanel onOpenVideo={onOpenVideo} />,
     frieden:    <FriedenPanel isPremium={!!isPremium} />,
     datos:      <DatosPanel />,
