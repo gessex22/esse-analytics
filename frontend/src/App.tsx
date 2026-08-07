@@ -23,7 +23,6 @@ import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
 import { DashboardView } from "./components/DashboardView";
 import { HistoryView } from "./components/HistoryView";
-import { ActivityView } from "./components/ActivityView";
 import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
 import logoImg from "./assets/esseAnalytics.png";
@@ -500,7 +499,7 @@ export default function App() {
               >
                 {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => setActiveNav(7)} />
                   : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
-                  : effectiveNav === 2 ? <UploadView />
+                  : effectiveNav === 2 ? <UploadView onOpenHistory={() => setActiveNav(9)} />
                   : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
@@ -508,7 +507,6 @@ export default function App() {
                   : effectiveNav === 8 ? <GemsPanel isLocal={isLocal} userTier={user.isOwner ? "premium" : user.tier} />
                   : effectiveNav === 9 ? <HistoryView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 10 ? <RemoteLibraryView />
-                  : effectiveNav === 11 ? <ActivityView />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
                 }
               </main>
