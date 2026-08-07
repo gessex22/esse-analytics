@@ -15,7 +15,7 @@ const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instag
 // Un publish_id de TikTok (v_pub_...) identifica la operación de subir, no el
 // video público. Se resuelve antes de pedir métricas para que el historial local
 // no quede en cero mientras la central termina de sincronizar ese registro.
-async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string }> }[]): Promise<void> {
+async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string; title?: string | null }> }[]): Promise<void> {
   const pending = [...new Set(candidates
     .map(candidate => candidate.platforms.tiktok?.platformId)
     .filter((id): id is string => !!id && !/^\d+$/.test(id)))];
@@ -38,6 +38,28 @@ async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { pl
       const match = (await response.text()).match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
       if (match) resolved.set(publishId, match[1]);
     }));
+    // Algunas publicaciones quedan con PUBLISH_COMPLETE pero TikTok demora en
+    // exponer publicaly_available_post_id. Como respaldo, su lista de videos sí
+    // trae el id y las métricas reales; se identifica por la descripción que la
+    // propia app acabó de guardar como título.
+    const unresolved = pending.filter(id => !resolved.has(id));
+    if (unresolved.length > 0) {
+      const recentResponse = await fetch(`${TIKTOK_API}/video/list/?fields=id,video_description&max_count=20`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_count: 20 }),
+      });
+      if (recentResponse.ok) {
+        const recent = (await recentResponse.json() as any).data?.videos ?? [];
+        const normalise = (text: string | null | undefined) => String(text ?? '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+        for (const candidate of candidates) {
+          const slot = candidate.platforms.tiktok;
+          if (!slot || !unresolved.includes(slot.platformId) || !slot.title) continue;
+          const match = recent.find((video: any) => normalise(video.video_description) === normalise(slot.title));
+          if (match?.id) resolved.set(slot.platformId, String(match.id));
+        }
+      }
+    }
     for (const candidate of candidates) {
       const slot = candidate.platforms.tiktok;
       if (slot && resolved.has(slot.platformId)) slot.platformId = resolved.get(slot.platformId)!;
