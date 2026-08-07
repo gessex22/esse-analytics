@@ -460,17 +460,20 @@ function buildFilePlatforms(pvs: {
   platform: string; platformId: string; platformUrl: string; title: string; thumbnail: string;
   views: number; likes: number; comments: number; publishedAt: Date; lastSyncedAt: Date;
 }[]) {
-  // Un mismo video de Instagram puede tener más de un documento (shortcode
-  // del link pegado a mano vs. media id numérico real -- ver
-  // applyPlatformPublish); el shortcode nunca tiene stats porque Graph API
-  // no lo acepta para pedirlas. Ante un duplicado por plataforma se
-  // prefiere el platformId numérico y, si empatan, el sincronizado más
-  // reciente -- si no, cuál "gana" quedaba a merced del orden de Mongo.
+  // Un mismo video de Instagram o TikTok puede tener más de un documento
+  // (shortcode/publish_id sin resolver de un intento viejo vs. el id numérico
+  // real -- ver applyPlatformPublish y resolvePendingTikTokIds). El sin
+  // resolver nunca tiene stats reales (Graph API no acepta shortcodes; TikTok
+  // rechaza ids no numéricos). Ante un duplicado por plataforma se prefiere el
+  // platformId numérico y, si empatan, el sincronizado más reciente -- si no,
+  // cuál "gana" quedaba a merced del orden de Mongo (bug real confirmado con
+  // un video de TikTok que quedó mostrando 0 vistas para siempre porque el
+  // doc viejo sin resolver se sincronizó después que el bueno).
   const bestByPlatform = new Map<string, (typeof pvs)[number]>();
   for (const pv of pvs) {
     const current = bestByPlatform.get(pv.platform);
     if (!current) { bestByPlatform.set(pv.platform, pv); continue; }
-    if (pv.platform === 'instagram') {
+    if (pv.platform === 'instagram' || pv.platform === 'tiktok') {
       const currentNumeric = /^\d+$/.test(current.platformId);
       const candidateNumeric = /^\d+$/.test(pv.platformId);
       if (candidateNumeric && !currentNumeric) { bestByPlatform.set(pv.platform, pv); continue; }
