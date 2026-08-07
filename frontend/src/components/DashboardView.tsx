@@ -194,9 +194,9 @@ function PodiumGadget({
           <p className="text-xs text-muted-foreground mt-0.5">{mode === 'combined' ? 'Videos publicados en las 3 redes' : 'Últimos 5 publicados de cada red'}</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex rounded-lg bg-secondary p-0.5 text-[10px]">
-            <button onClick={() => onModeChange('combined')} className={`rounded-md px-2 py-1 ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
-            <button onClick={() => onModeChange('individual')} className={`rounded-md px-2 py-1 ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
+          <div className="flex rounded-md bg-secondary p-0.5 text-[9px]">
+            <button onClick={() => onModeChange('combined')} className={`rounded-sm px-1.5 py-0.5 ${mode === 'combined' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Conjunto</button>
+            <button onClick={() => onModeChange('individual')} className={`rounded-sm px-1.5 py-0.5 ${mode === 'individual' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}>Individual</button>
           </div>
           <TrendingUp className="w-4 h-4 text-primary" />
         </div>
@@ -264,6 +264,10 @@ export function DashboardView({
   const [items, setItems] = useState<GroupStatsItem[]>(dashboardCache?.items ?? []);
   const [individualItems, setIndividualItems] = useState<Partial<Record<Platform, GroupStatsItem[]>>>(dashboardCache?.individualItems ?? {});
   const [rankingMode, setRankingMode] = useState<'combined' | 'individual'>('combined');
+  useEffect(() => {
+    const interval = window.setInterval(() => setRankingMode(mode => mode === 'combined' ? 'individual' : 'combined'), 8_000);
+    return () => window.clearInterval(interval);
+  }, []);
   const [upcoming, setUpcoming] = useState<UpcomingSlot[]>(dashboardCache?.upcoming ?? []);
   const [latestHistory, setLatestHistory] = useState<HistoryItem | null>(dashboardCache?.latestHistory ?? null);
   const [fallbackStats, setFallbackStats] = useState<GroupStatsItem | null>(null);

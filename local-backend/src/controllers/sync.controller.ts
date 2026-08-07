@@ -7,6 +7,7 @@ import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 
 const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
 const TIKTOK_API = 'https://open.tiktokapis.com/v2';
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 // Intervalo por defecto por plataforma cuando no hay nada configurado.
 const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instagram: 3 };
@@ -42,6 +43,23 @@ async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { pl
       if (slot && resolved.has(slot.platformId)) slot.platformId = resolved.get(slot.platformId)!;
     }
   } catch { /* se reintenta en el próximo refresh */ }
+}
+
+// Respaldo local para que Electron no quede sin métricas si la central demora o
+// falla al refrescar YouTube. La clave se inyecta solamente en el bundle desktop.
+async function getLocalYoutubeStats(videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> {
+  if (!YOUTUBE_API_KEY || videoIds.length === 0) return {};
+  try {
+    const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${encodeURIComponent(videoIds.join(','))}&key=${YOUTUBE_API_KEY}`);
+    if (!response.ok) return {};
+    const data = await response.json() as any;
+    return Object.fromEntries((data.items ?? []).map((video: any) => [video.id, {
+      views: Number(video.statistics?.viewCount ?? 0),
+      likes: Number(video.statistics?.likeCount ?? 0),
+      comments: Number(video.statistics?.commentCount ?? 0),
+      thumbnail: video.snippet?.thumbnails?.maxres?.url ?? video.snippet?.thumbnails?.high?.url ?? video.snippet?.thumbnails?.medium?.url,
+    }]));
+  } catch { return {}; }
 }
 
 function fmtDuration(secs?: number): string {
@@ -255,6 +273,10 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       });
       if (upstream.ok) stats = await upstream.json();
     } catch { /* sin stats en vivo, se devuelven los videos igual con 0 */ }
+    const missingYoutubeIds = ids.youtube.filter(id => !stats.youtube[id]);
+    if (missingYoutubeIds.length > 0) {
+      stats.youtube = { ...stats.youtube, ...await getLocalYoutubeStats(missingYoutubeIds) };
+    }
 
     const items = candidates.map(c => {
       const platforms: Record<string, any> = {};
