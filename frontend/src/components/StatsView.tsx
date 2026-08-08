@@ -350,35 +350,45 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         })}
       </div>
 
-      {loading && items.length === 0 ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-        </div>
-      ) : items.length === 0 ? (
-        <div className="text-center py-16 space-y-2">
-          <BarChart2 className="w-8 h-8 text-muted-foreground mx-auto" />
-          <p className="text-sm text-foreground font-medium">{filter === 'all' ? 'Todavía no hay videos matcheados en las 3 redes' : `Todavía no hay videos publicados en ${PLATFORM_CFG[filter].label}`}</p>
-          <p className="text-xs text-muted-foreground">
-            {filter === 'all' ? 'Completá los links en Ajustes → Sincronización → "Emparejar entre plataformas".' : 'Publicá un video o sincronizá el historial de esta plataforma.'}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <StatsChart items={items} platform={filter === 'all' ? undefined : filter} />
-          <StatsTotalsCard items={items} platform={filter === 'all' ? undefined : filter} />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {items.map(item => (
-            <GroupStatsCard
-              key={item.fileId}
-              item={item}
-              localFileId={localIds[item.fileName] ?? null}
-              onOpenVideo={onOpenVideo}
-              platform={filter === 'all' ? undefined : filter}
-            />
-          ))}
+      {/* Transición CSS pura (opacity), sin Framer Motion -- se probó con
+          AnimatePresence y dio dos bugs reales: mode="wait" se trababa con
+          StrictMode (dos load() superpuestos dejaban el contenido en
+          opacity:0 para siempre) y sin mode="wait" el contenido viejo y el
+          nuevo quedaban apilados uno debajo del otro (ninguno de los dos
+          estaba con position:absolute). Atenuar in-place, sin desmontar
+          nada, evita ambos problemas y ya alcanza para que no se sienta como
+          un corte seco al cambiar de pestaña. */}
+      <div className={`transition-opacity duration-150 ${loading ? 'opacity-40' : 'opacity-100'}`}>
+        {items.length === 0 && !loading ? (
+          <div className="text-center py-16 space-y-2">
+            <BarChart2 className="w-8 h-8 text-muted-foreground mx-auto" />
+            <p className="text-sm text-foreground font-medium">{filter === 'all' ? 'Todavía no hay videos matcheados en las 3 redes' : `Todavía no hay videos publicados en ${PLATFORM_CFG[filter].label}`}</p>
+            <p className="text-xs text-muted-foreground">
+              {filter === 'all' ? 'Completá los links en Ajustes → Sincronización → "Emparejar entre plataformas".' : 'Publicá un video o sincronizá el historial de esta plataforma.'}
+            </p>
           </div>
-        </div>
-      )}
+        ) : items.length === 0 ? (
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <StatsChart items={items} platform={filter === 'all' ? undefined : filter} />
+            <StatsTotalsCard items={items} platform={filter === 'all' ? undefined : filter} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {items.map(item => (
+              <GroupStatsCard
+                key={item.fileId}
+                item={item}
+                localFileId={localIds[item.fileName] ?? null}
+                onOpenVideo={onOpenVideo}
+                platform={filter === 'all' ? undefined : filter}
+              />
+            ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
