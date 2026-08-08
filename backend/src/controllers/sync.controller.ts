@@ -512,40 +512,87 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       res.status(400).json({ message: 'Plataforma no válida' }); return;
     }
 
-    const files = await FileModel.find({
-      userId,
-      ...(platform ? {} : { platforms: { $all: ['youtube', 'instagram', 'tiktok'] } }),
-      status: { $ne: 'ELIMINADO_DISCO' },
-    })
-      .sort({ fecha_creacion: -1 })
-      .select('file_name fecha_creacion')
-      .lean();
+    let files: { _id: any; file_name: string; fecha_creacion?: Date | null }[];
+    let linked: any[];
 
-    const fileIds = files.map(f => f._id);
-    // La vista compara solo las 3 redes con stats propias — los registros de
-    // 'facebook' (crossposting) quedan afuera para no inflar el conteo de "3
-    // plataformas vinculadas" ni pedir stats que Facebook no expone acá.
-    const linked = await PlatformVideoModel.find({
-      userId, linkedFileId: { $in: fileIds }, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
-    })
-      .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
-      .lean();
-    await resolvePendingTikTokIds(userId, linked);
+    if (platform) {
+      // Arranca DESDE PlatformVideoModel, no desde FileModel. Antes se
+      // enumeraba FileModel primero y recién después se buscaba qué
+      // PlatformVideoModel estaba linkeado a esos ids -- un mismo video
+      // puede tener MÁS de un documento en FileModel (duplicados que deja
+      // resolveOrCreateFile por sus distintos caminos de resolución: por
+      // content_id, por file_name exacto, por regex case-insensitive, por
+      // nombre de Biblioteca remota, o el upsert de última instancia). Si el
+      // doc que aparecía en la enumeración NO era el mismo al que apunta
+      // PlatformVideoModel.linkedFileId, el video quedaba afuera de
+      // Estadísticas para esa plataforma aunque sí tuviera el link real y
+      // funcionara bien vía /api/sync/file-stats (que sí resuelve por
+      // linkedFileId directo). Bug real confirmado: "final - denuvo1.mp4"
+      // nunca aparecía en la pestaña TikTok pese a tener vistas reales.
+      const rawLinked = await PlatformVideoModel.find({
+        userId, platform: platform as 'youtube' | 'instagram' | 'tiktok', platformId: { $ne: '' }, linkedFileId: { $ne: null },
+      })
+        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+        .sort({ publishedAt: -1 })
+        .limit(limit * 4)
+        .lean();
+
+      // Mismo criterio que ya usa buildFilePlatforms para Instagram/TikTok:
+      // si el mismo archivo tiene más de un documento para esta plataforma
+      // (reintento de subida, link corregido a mano), se prefiere el
+      // platformId numérico (resuelto) por sobre uno crudo sin resolver.
+      const isResolved = (id: string) => /^\d+$/.test(id);
+      const byLinkedFile = new Map<string, typeof rawLinked[number]>();
+      for (const pv of rawLinked) {
+        const key = String(pv.linkedFileId);
+        const current = byLinkedFile.get(key);
+        if (!current) { byLinkedFile.set(key, pv); continue; }
+        if (isResolved(pv.platformId) && !isResolved(current.platformId)) byLinkedFile.set(key, pv);
+      }
+      linked = [...byLinkedFile.values()].sort(
+        (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
+      );
+      await resolvePendingTikTokIds(userId, linked);
+
+      // El orden de `files` decide qué `limit` entran más abajo -- se arma
+      // en el MISMO orden que `linked` (ya deduplicado y ordenado por fecha
+      // real de publicación en esta plataforma), no en el orden que devuelva
+      // Mongo para un $in (no lo garantiza).
+      const orderedFileIds = linked.map(pv => String(pv.linkedFileId));
+      const filesById = new Map(
+        (await FileModel.find({ userId, _id: { $in: orderedFileIds }, status: { $ne: 'ELIMINADO_DISCO' } })
+          .select('file_name fecha_creacion')
+          .lean())
+          .map(f => [String(f._id), f]),
+      );
+      files = orderedFileIds
+        .map(id => filesById.get(id))
+        .filter((f): f is NonNullable<typeof f> => !!f);
+    } else {
+      files = await FileModel.find({
+        userId,
+        platforms: { $all: ['youtube', 'instagram', 'tiktok'] },
+        status: { $ne: 'ELIMINADO_DISCO' },
+      })
+        .sort({ fecha_creacion: -1 })
+        .select('file_name fecha_creacion')
+        .lean();
+      const fileIds = files.map(f => f._id);
+      // La vista compara solo las 3 redes con stats propias — los registros de
+      // 'facebook' (crossposting) quedan afuera para no inflar el conteo de "3
+      // plataformas vinculadas" ni pedir stats que Facebook no expone acá.
+      linked = await PlatformVideoModel.find({
+        userId, linkedFileId: { $in: fileIds }, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
+      })
+        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+        .lean();
+      await resolvePendingTikTokIds(userId, linked);
+    }
+
     const byFile = new Map<string, typeof linked>();
     for (const pv of linked) {
       const key = String(pv.linkedFileId);
       byFile.set(key, [...(byFile.get(key) ?? []), pv]);
-    }
-    // El modo individual es un historial de publicaciones: se ordena por la
-    // fecha real de subida de ESA red, no por la fecha en que nació el archivo
-    // ni por el orden en que se hizo el cross-match.
-    if (platform) {
-      files.sort((a, b) => {
-        const latest = (file: typeof a) => Math.max(...(byFile.get(String(file._id)) ?? [])
-          .filter(pv => pv.platform === platform)
-          .map(pv => new Date(pv.publishedAt).getTime()), -Infinity);
-        return latest(b) - latest(a);
-      });
     }
 
     // Biblioteca remota es otra colección (storage en la nube), sin id en común
