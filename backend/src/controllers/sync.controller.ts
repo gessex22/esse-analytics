@@ -6,6 +6,7 @@ import { syncYouTubeChannel, getYouTubeVideos, getRecentYouTubeVideosLive, getVi
 import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../services/instagram.service';
 import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats, resolveTikTokVideoId } from '../services/tiktok.service';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
+import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { applyPlatformPublish } from './backup.controller';
@@ -446,6 +447,16 @@ async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; 
         { userId, platform: 'tiktok', platformId: oldId },
         { $set: { platformId: resolved } },
       );
+      // UploadHistoryModel es una colección aparte (el log que lee Historial
+      // en mobile/web remoto) -- sin esto, se queda con el publish_id crudo
+      // para siempre aunque PlatformVideoModel ya se haya corregido, y
+      // clientes SIN merge local (mobile/web, a diferencia de desktop que
+      // dedupea por fileName como respaldo) terminan mostrando un link roto
+      // que nunca se arregla solo.
+      await UploadHistoryModel.updateOne(
+        { userId, platform: 'tiktok', platformId: oldId },
+        { $set: { platformId: resolved } },
+      ).catch(() => { /* duplicado (ya existe un doc con ese id real) -- no es crítico, Historial ya lo dedupea por fileName del lado desktop */ });
     } catch { /* duplicado (ya existe un doc con ese id real) o falla de red -- se reintenta en el próximo refresh */ }
   }));
 }
