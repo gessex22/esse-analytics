@@ -244,12 +244,25 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
           const remote = await upstream.json() as { items: typeof localItems };
           // Dedup por platform+platformId -- una subida hecha desde ESTA PC
           // también llega a la central (record-publish), así que sin esto
-          // saldría dos veces en la lista fusionada.
-          const seen = new Set(localItems.map(i => `${i.platform}:${i.platformId}`));
+          // saldría dos veces en la lista fusionada. PERO el platformId de
+          // TikTok puede resolverse acá (SQLite local, ver
+          // resolvePendingLocalTikTokIds) sin que la central se entere -- su
+          // propio historial (UploadHistoryModel) se queda con el publish_id
+          // crudo viejo para siempre, así que el id ya NO matchea aunque sea
+          // la misma subida. Se agrega platform+fileName como segunda clave
+          // (más estable ante ese resolve) para no duplicar en ese caso.
+          const seenByPlatformId = new Set(localItems.map(i => `${i.platform}:${i.platformId}`));
+          const seenByFileName = new Set(
+            localItems.filter(i => i.fileName).map(i => `${i.platform}:${i.fileName}`),
+          );
           const merged = [...localItems];
           for (const r of remote.items ?? []) {
-            const key = `${r.platform}:${r.platformId}`;
-            if (!seen.has(key)) { seen.add(key); merged.push(r); }
+            const idKey = `${r.platform}:${r.platformId}`;
+            const nameKey = r.fileName ? `${r.platform}:${r.fileName}` : null;
+            if (seenByPlatformId.has(idKey) || (nameKey && seenByFileName.has(nameKey))) continue;
+            seenByPlatformId.add(idKey);
+            if (nameKey) seenByFileName.add(nameKey);
+            merged.push(r);
           }
           items = merged
             .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
