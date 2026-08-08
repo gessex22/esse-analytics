@@ -117,7 +117,9 @@ router.use('/api/sync/review',          proxyToCentral);
 router.use('/api/sync/youtube',         proxyToCentral);
 router.use('/api/sync/platform-recent', proxyToCentral);
 router.use('/api/sync/cross-match',     proxyToCentral);
-router.use('/api/sync/group-stats',     proxyToCentral);
+// Estadísticas se resuelven en SQLite local (sync.routes se registra después):
+// así las pestañas individuales usan el historial más reciente de publicaciones
+// de esta PC. Si se proxya antes, la central responde solo grupos matcheados.
 router.use('/api/sync/file-stats',      proxyToCentral);
 
 // Auditoría (Fase 5) — el log de eventos vive en Mongo/central (es cross-
