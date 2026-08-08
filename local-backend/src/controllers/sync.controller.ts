@@ -197,9 +197,13 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
   const authHeader = req.headers.authorization;
   if (!authHeader) { res.status(401).json({ message: 'Token requerido' }); return; }
   const limit = Math.min(parseInt(req.query.limit as string) || 5, 20);
+  const platform = typeof req.query.platform === 'string' ? req.query.platform : undefined;
+  if (platform && !['youtube', 'instagram', 'tiktok'].includes(platform)) {
+    res.status(400).json({ message: 'Plataforma no válida' }); return;
+  }
 
   try {
-    const candidates = platformVideoRepo.findGroupStatsCandidates(limit);
+    const candidates = platformVideoRepo.findGroupStatsCandidates(limit, platform as 'youtube' | 'instagram' | 'tiktok' | undefined);
     const ids = {
       youtube:   candidates.map(c => c.platforms.youtube?.platformId).filter((x): x is string => !!x),
       instagram: candidates.map(c => c.platforms.instagram?.platformId).filter((x): x is string => !!x),

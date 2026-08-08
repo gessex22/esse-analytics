@@ -794,9 +794,10 @@ export const syncService = {
       body: JSON.stringify(data),
     }),
 
-  // Últimos N videos ya matcheados en las 3 plataformas, con stats de cada una.
-  getGroupStats: (limit = 5): Promise<{ items: GroupStatsItem[] }> =>
-    requestJson(`/api/sync/group-stats?limit=${limit}`),
+  // Sin filtro compara videos matcheados en las 3 redes; con plataforma muestra
+  // los últimos publicados en esa red, aunque todavía no estén crossposteados.
+  getGroupStats: (limit = 5, platform?: 'youtube' | 'instagram' | 'tiktok'): Promise<{ items: GroupStatsItem[] }> =>
+    requestJson(`/api/sync/group-stats?limit=${limit}${platform ? `&platform=${platform}` : ''}`),
 
   // Stats en vivo de UN archivo puntual (por fileId de Mongo o por fileName),
   // sin exigir que esté cross-posteado a las 3 plataformas -- para el card de

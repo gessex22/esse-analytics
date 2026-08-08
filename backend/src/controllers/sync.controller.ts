@@ -504,10 +504,14 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
   try {
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 5, 20);
+    const platform = typeof req.query.platform === 'string' ? req.query.platform : undefined;
+    if (platform && !['youtube', 'instagram', 'tiktok'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' }); return;
+    }
 
     const files = await FileModel.find({
       userId,
-      platforms: { $all: ['youtube', 'instagram', 'tiktok'] },
+      ...(platform ? {} : { platforms: { $all: ['youtube', 'instagram', 'tiktok'] } }),
       status: { $ne: 'ELIMINADO_DISCO' },
     })
       .sort({ fecha_creacion: -1 })
@@ -570,12 +574,20 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       // files.platforms también puede contener badges puestos manualmente sin
       // URL. Esos videos no tienen una identidad consultable ni métricas reales;
       // solo entran cuando las tres plataformas tienen PlatformVideoModel.
-      const complete = ['youtube', 'instagram', 'tiktok'].every(platform =>
-        pvs.some(pv => pv.platform === platform && !!pv.platformId)
-      );
+      const complete = platform
+        ? pvs.some(pv => pv.platform === platform && !!pv.platformId)
+        : ['youtube', 'instagram', 'tiktok'].every(name => pvs.some(pv => pv.platform === name && !!pv.platformId));
       if (!complete) continue;
 
       const { platforms, stale } = buildFilePlatforms(pvs);
+      if (platform) {
+        for (const name of ['youtube', 'instagram', 'tiktok']) {
+          if (name !== platform) {
+            delete platforms[name];
+            delete stale[name as 'youtube' | 'instagram' | 'tiktok'];
+          }
+        }
+      }
       if (stale.youtube) toRefresh.youtube.push(stale.youtube);
       if (stale.instagram) toRefresh.instagram.push(stale.instagram);
       if (stale.tiktok) toRefresh.tiktok.push(stale.tiktok);

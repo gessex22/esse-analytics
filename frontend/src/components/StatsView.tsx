@@ -15,20 +15,20 @@ const PLATFORM_CFG: Record<PlatformKey, { label: string; Logo: (p: { className?:
 };
 const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
 
-function statsChartData(items: GroupStatsItem[]) {
+function statsChartData(items: GroupStatsItem[], platform?: PlatformKey) {
   const sorted = [...items].sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime());
   return sorted.map((item, index) => {
     const point: Record<string, string | number> = { video: `V${index + 1}` };
-    for (const platform of PLATFORMS) {
-      point[platform] = item.platforms[platform]?.views ?? 0;
+    for (const name of platform ? [platform] : PLATFORMS) {
+      point[name] = item.platforms[name]?.views ?? 0;
     }
     return point;
   });
 }
 
-function chartMax(items: GroupStatsItem[]): number {
+function chartMax(items: GroupStatsItem[], platform?: PlatformKey): number {
   const maxValue = items.reduce((max, item) => {
-    return Math.max(max, ...PLATFORMS.map(platform => Number(item.platforms[platform]?.views ?? 0)));
+    return Math.max(max, ...(platform ? [platform] : PLATFORMS).map(name => Number(item.platforms[name]?.views ?? 0)));
   }, 0);
   if (maxValue <= 0) return 1;
 
@@ -46,8 +46,9 @@ function chartMax(items: GroupStatsItem[]): number {
   return Math.ceil(paddedValue / tickStep) * tickStep;
 }
 
-function StatsChart({ items }: { items: GroupStatsItem[] }) {
-  const yMax = chartMax(items);
+function StatsChart({ items, platform }: { items: GroupStatsItem[]; platform?: PlatformKey }) {
+  const yMax = chartMax(items, platform);
+  const visiblePlatforms = platform ? [platform] : PLATFORMS;
   return (
     <div className="p-4 rounded-2xl border border-border bg-card">
       <div className="flex items-center justify-between mb-2">
@@ -56,7 +57,7 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
       </div>
       <div className="h-56 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={statsChartData(items)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <LineChart data={statsChartData(items, platform)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
             <XAxis dataKey="video" tick={{ fontSize: 11 }} />
             <YAxis
@@ -69,9 +70,9 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
             />
             <Tooltip formatter={(value) => formatNum(Number(value))} />
             <Legend wrapperStyle={{ fontSize: 11 }} />
-            <Line type="monotone" dataKey="youtube" name="YouTube" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />
-            <Line type="monotone" dataKey="instagram" name="Instagram" stroke="#a855f7" strokeWidth={2} dot={{ r: 3 }} />
-            <Line type="monotone" dataKey="tiktok" name="TikTok" stroke="#ec4899" strokeWidth={2} dot={{ r: 3 }} />
+            {visiblePlatforms.map(name => (
+              <Line key={name} type="monotone" dataKey={name} name={PLATFORM_CFG[name].label} stroke={PLATFORM_CFG[name].hex} strokeWidth={2} dot={{ r: 3 }} />
+            ))}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -79,9 +80,9 @@ function StatsChart({ items }: { items: GroupStatsItem[] }) {
   );
 }
 
-function StatsTotalsCard({ items }: { items: GroupStatsItem[] }) {
+function StatsTotalsCard({ items, platform }: { items: GroupStatsItem[]; platform?: PlatformKey }) {
   const total = (key: "views" | "likes" | "comments") =>
-    items.reduce((sum, item) => sum + PLATFORMS.reduce((subtotal, platform) => subtotal + (item.platforms[platform]?.[key] ?? 0), 0), 0);
+    items.reduce((sum, item) => sum + (platform ? [platform] : PLATFORMS).reduce((subtotal, name) => subtotal + (item.platforms[name]?.[key] ?? 0), 0), 0);
 
   return (
     <div className="grid grid-cols-3 gap-3 p-4 rounded-2xl border border-border bg-card">
@@ -179,14 +180,16 @@ function formatDate(iso: string) {
   return new Intl.DateTimeFormat("es", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(iso));
 }
 
-function GroupStatsCard({ item, localFileId, onOpenVideo }: {
+function GroupStatsCard({ item, localFileId, onOpenVideo, platform }: {
   item: GroupStatsItem;
   localFileId: string | null;
   onOpenVideo?: (fileId: string, title: string) => void;
+  platform?: PlatformKey;
 }) {
-  const totalViews    = PLATFORMS.reduce((sum, p) => sum + (item.platforms[p]?.views ?? 0), 0);
-  const totalLikes    = PLATFORMS.reduce((sum, p) => sum + (item.platforms[p]?.likes ?? 0), 0);
-  const totalComments = PLATFORMS.reduce((sum, p) => sum + (item.platforms[p]?.comments ?? 0), 0);
+  const visiblePlatforms = platform ? [platform] : PLATFORMS;
+  const totalViews    = visiblePlatforms.reduce((sum, p) => sum + (item.platforms[p]?.views ?? 0), 0);
+  const totalLikes    = visiblePlatforms.reduce((sum, p) => sum + (item.platforms[p]?.likes ?? 0), 0);
+  const totalComments = visiblePlatforms.reduce((sum, p) => sum + (item.platforms[p]?.comments ?? 0), 0);
   const canPreview = !!localFileId;
 
   return (
@@ -227,7 +230,7 @@ function GroupStatsCard({ item, localFileId, onOpenVideo }: {
       </div>
 
       <div className="flex flex-col gap-2">
-        {PLATFORMS.map(p => {
+        {visiblePlatforms.map(p => {
           const slot = item.platforms[p];
           const cfg  = PLATFORM_CFG[p];
           const Logo = cfg.Logo;
@@ -272,32 +275,36 @@ interface StatsCache {
   items: GroupStatsItem[];
   localIds: Record<string, string | null>;
 }
-let statsCache: StatsCache | null = null;
+type StatsFilter = 'all' | PlatformKey;
+let statsCache: Partial<Record<StatsFilter, StatsCache>> = {};
 
 // Estadísticas grupales — misma vista para modo simple y avanzado (el matching
-// entre plataformas es siempre por archivo, no depende de workflow_mode). Solo
-// muestra los últimos videos que ya tienen las 3 plataformas vinculadas
-// (ver Ajustes → Sincronización → "Emparejar entre plataformas" para completar
-// los que falten).
+// entre plataformas es siempre por archivo, no depende de workflow_mode). La
+// pestaña Comparadas exige las 3 plataformas vinculadas; cada pestaña individual
+// muestra su propio historial publicado.
 export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, title: string) => void } = {}) {
-  const [items, setItems] = useState<GroupStatsItem[]>(statsCache?.items ?? []);
-  const [localIds, setLocalIds] = useState<Record<string, string | null>>(statsCache?.localIds ?? {});
+  const [filter, setFilter] = useState<StatsFilter>('all');
+  const [items, setItems] = useState<GroupStatsItem[]>(statsCache.all?.items ?? []);
+  const [localIds, setLocalIds] = useState<Record<string, string | null>>(statsCache.all?.localIds ?? {});
   // Solo arranca en loading si no hay nada cacheado todavía -- con caché, el
   // refresco de fondo no debe tapar el contenido ya visible (ver el gate de
   // renderizado más abajo, que ya no depende solo de `loading`).
-  const [loading, setLoading] = useState(!statsCache);
+  const [loading, setLoading] = useState(!statsCache.all);
 
   const load = async () => {
+    const cached = statsCache[filter];
+    setItems(cached?.items ?? []);
+    setLocalIds(cached?.localIds ?? {});
     setLoading(true);
     try {
-      const res = await syncService.getGroupStats(5);
+      const res = await syncService.getGroupStats(5, filter === 'all' ? undefined : filter);
       setItems(res.items);
-      statsCache = { items: res.items, localIds: statsCache?.localIds ?? {} };
+      statsCache[filter] = { items: res.items, localIds: cached?.localIds ?? {} };
       if (res.items.length > 0) {
         videoService.resolveByNames(res.items.map(i => i.fileName))
           .then((map) => {
             setLocalIds(map);
-            statsCache = { items: res.items, localIds: map };
+            statsCache[filter] = { items: res.items, localIds: map };
           })
           .catch(() => {});
       }
@@ -306,7 +313,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [filter]);
 
   return (
     <div className="space-y-5 max-w-3xl">
@@ -314,7 +321,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         <div>
           <h2 className="text-xl font-semibold text-foreground">Estadísticas</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Los últimos videos publicados en las 3 redes, comparados lado a lado.
+            {filter === 'all' ? 'Los últimos videos publicados en las 3 redes, comparados lado a lado.' : `Los últimos 5 videos publicados en ${PLATFORM_CFG[filter].label}.`}
           </p>
         </div>
         <button
@@ -327,6 +334,22 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         </button>
       </div>
 
+      <div className="flex flex-wrap gap-2" aria-label="Filtrar estadísticas por plataforma">
+        {(['all', ...PLATFORMS] as StatsFilter[]).map(option => {
+          const active = filter === option;
+          const label = option === 'all' ? 'Comparadas' : PLATFORM_CFG[option].label;
+          return (
+            <button
+              key={option}
+              onClick={() => setFilter(option)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${active ? 'bg-primary text-primary-foreground' : 'bg-secondary text-foreground hover:bg-secondary/80'}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
       {loading && items.length === 0 ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
@@ -334,15 +357,15 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
       ) : items.length === 0 ? (
         <div className="text-center py-16 space-y-2">
           <BarChart2 className="w-8 h-8 text-muted-foreground mx-auto" />
-          <p className="text-sm text-foreground font-medium">Todavía no hay videos matcheados en las 3 redes</p>
+          <p className="text-sm text-foreground font-medium">{filter === 'all' ? 'Todavía no hay videos matcheados en las 3 redes' : `Todavía no hay videos publicados en ${PLATFORM_CFG[filter].label}`}</p>
           <p className="text-xs text-muted-foreground">
-            Completá los links en Ajustes → Sincronización → "Emparejar entre plataformas".
+            {filter === 'all' ? 'Completá los links en Ajustes → Sincronización → "Emparejar entre plataformas".' : 'Publicá un video o sincronizá el historial de esta plataforma.'}
           </p>
         </div>
       ) : (
         <div className="space-y-4">
-          <StatsChart items={items} />
-          <StatsTotalsCard items={items} />
+          <StatsChart items={items} platform={filter === 'all' ? undefined : filter} />
+          <StatsTotalsCard items={items} platform={filter === 'all' ? undefined : filter} />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {items.map(item => (
             <GroupStatsCard
@@ -350,6 +373,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
               item={item}
               localFileId={localIds[item.fileName] ?? null}
               onOpenVideo={onOpenVideo}
+              platform={filter === 'all' ? undefined : filter}
             />
           ))}
           </div>
