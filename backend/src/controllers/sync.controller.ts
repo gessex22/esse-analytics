@@ -533,6 +533,17 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       const key = String(pv.linkedFileId);
       byFile.set(key, [...(byFile.get(key) ?? []), pv]);
     }
+    // El modo individual es un historial de publicaciones: se ordena por la
+    // fecha real de subida de ESA red, no por la fecha en que nació el archivo
+    // ni por el orden en que se hizo el cross-match.
+    if (platform) {
+      files.sort((a, b) => {
+        const latest = (file: typeof a) => Math.max(...(byFile.get(String(file._id)) ?? [])
+          .filter(pv => pv.platform === platform)
+          .map(pv => new Date(pv.publishedAt).getTime()), -Infinity);
+        return latest(b) - latest(a);
+      });
+    }
 
     // Biblioteca remota es otra colección (storage en la nube), sin id en común
     // con FileModel — el único cruce posible hoy es por fileName. Ya viene
@@ -601,7 +612,9 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         fileName: f.file_name,
         remoteLibraryVideoId: remoteMatch?.id ?? null,
         thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
-        fecha_creacion: f.fecha_creacion,
+        fecha_creacion: platform
+          ? pvs.filter(pv => pv.platform === platform).sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0]?.publishedAt ?? f.fecha_creacion
+          : f.fecha_creacion,
         platforms,
       });
     }

@@ -201,6 +201,32 @@ export const platformVideoRepo = {
   // el link de alguna: exigir las 3 YA linkeadas acá dejaba afuera todo lo publicado
   // desde esta misma app sin pasar por el cross-match central (que no corre solo).
   findGroupStatsCandidates(limit: number, platform?: 'youtube' | 'instagram' | 'tiktok'): GroupStatsCandidate[] {
+    // En las pestañas individuales la fuente es el historial real de subidas,
+    // no los archivos emparejados. Así se respetan los últimos publicados de
+    // cada red, incluso cuando todavía no tienen las tres plataformas.
+    if (platform) {
+      const rows = db.prepare(`
+        SELECT pv.id, pv.platform, pv.platform_id, pv.platform_url, pv.title,
+               pv.linked_file_id, COALESCE(pv.published_at, pv.created_at) AS published_at,
+               f.file_name AS file_name
+        FROM platform_videos pv
+        LEFT JOIN files f ON f.id = pv.linked_file_id
+        WHERE pv.platform = ? AND pv.platform_id != ''
+          AND (f.id IS NULL OR f.status != 'ELIMINADO_DISCO')
+        ORDER BY COALESCE(pv.published_at, pv.created_at) DESC
+        LIMIT ?
+      `).all(platform, limit) as { id: number; platform: string; platform_id: string; platform_url: string | null; title: string | null; linked_file_id: number | null; published_at: string; file_name: string | null }[];
+
+      return rows.map(row => ({
+        fileId: row.linked_file_id ?? row.id,
+        fileName: row.file_name ?? row.title ?? row.platform_id,
+        fechaCreacion: row.published_at,
+        platforms: {
+          [platform]: { platformId: row.platform_id, platformUrl: row.platform_url, title: row.title },
+        },
+      }));
+    }
+
     const fileRows = db.prepare(`
       SELECT id, file_name, fecha_creacion, platforms
       FROM files
@@ -221,22 +247,17 @@ export const platformVideoRepo = {
       if (result.length >= limit) break;
       let badges: string[];
       try { badges = JSON.parse(f.platforms || '[]'); } catch { badges = []; }
-      if (platform
-        ? !badges.includes(platform) && !(pvByFile.get(f.id) ?? []).some(pv => pv.platform === platform && !!pv.platform_id)
-        : !['youtube', 'instagram', 'tiktok'].every(p => badges.includes(p))) continue;
+      if (!['youtube', 'instagram', 'tiktok'].every(p => badges.includes(p))) continue;
 
       const platforms: Record<string, { platformId: string; platformUrl: string | null; title: string | null }> = {};
       for (const pv of pvByFile.get(f.id) ?? []) {
-        if (platform && pv.platform !== platform) continue;
         platforms[pv.platform] = { platformId: pv.platform_id, platformUrl: pv.platform_url, title: pv.title };
       }
       // Un badge manual sin vínculo real no debe entrar en Estadísticas: no
       // existe un platformId al que pedirle métricas y produciría tarjetas con
       // ceros que parecen datos válidos. El matching manual es el que completa
       // estos tres registros.
-      if (platform
-        ? !platforms[platform]?.platformId
-        : !['youtube', 'instagram', 'tiktok'].every(p => platforms[p]?.platformId)) continue;
+      if (!['youtube', 'instagram', 'tiktok'].every(p => platforms[p]?.platformId)) continue;
       result.push({ fileId: f.id, fileName: f.file_name, fechaCreacion: f.fecha_creacion, platforms });
     }
     return result;
