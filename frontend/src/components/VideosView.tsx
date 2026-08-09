@@ -351,6 +351,7 @@ export function VideosView({
   onAutoOpenConsumed?: () => void;
 }) {
   const [videos, setVideos]           = useState<DashboardVideo[]>(videosCache?.videos ?? []);
+  const [recentPublished, setRecentPublished] = useState<DashboardVideo[]>([]);
   const [info, setInfo]               = useState<PaginationInfo | null>(videosCache?.info ?? null);
   const [videosDir, setVideosDir]     = useState<string | null | undefined>(undefined); // undefined = cargando
   const [catalog, setCatalog]         = useState<any[] | null>(null);
@@ -453,8 +454,15 @@ export function VideosView({
         const filters: { tipo?: string; content_status?: string } = {};
         if (tipo)   filters.tipo           = tipo;
         if (status) filters.content_status = status;
-        const result = await videoService.getAllVideos(page, LIMIT, filters);
-        setVideos(result.videos);
+        const [result, recent] = await Promise.all([
+          videoService.getAllVideos(page, LIMIT, filters),
+          videoService.getAllVideos(1, 5, { content_status: "completo", order: "published" }),
+        ]);
+        // La cola principal contiene los pendientes y, al final, una referencia
+        // de los cinco últimos completos. Comparten el mismo renderer para que
+        // muestren exactamente los mismos datos y badges.
+        setVideos([...result.videos, ...recent.videos.filter((v) => !result.videos.some((pending) => pending._id === v._id))]);
+        setRecentPublished(recent.videos);
         setInfo(result.info);
         setCurrentPage(page);
         videosCache = { page, tipo: tipoKey, status: statusKey, videos: result.videos, info: result.info };
@@ -850,7 +858,7 @@ export function VideosView({
       {/* ── Cabecera ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-foreground font-semibold text-lg">Todos los videos</h2>
+          <h2 className="text-foreground font-semibold text-lg">Cola de videos</h2>
           {info && (
             <p className="text-muted-foreground text-xs mt-0.5 font-mono">
               {info.totalRecords} registros · página {info.currentPage}/{info.totalPages}
@@ -1059,6 +1067,7 @@ export function VideosView({
             const isEditing = editingId === video._id;
             const isSaving  = savingId  === video._id;
             const isSelected = selectedIds.includes(video._id);
+            const isRecentPublished = recentPublished.some((published) => published._id === video._id);
 
             return (
               <motion.div
@@ -1070,6 +1079,7 @@ export function VideosView({
                   ${isFirst ? "rounded-t-xl" : ""}
                   ${isLast  ? "rounded-b-xl" : ""}
                   ${isSelected ? "bg-primary/5" : ""}
+                  ${isRecentPublished ? "opacity-50 grayscale" : ""}
                 `}
               >
                 {/* Checkbox selección */}

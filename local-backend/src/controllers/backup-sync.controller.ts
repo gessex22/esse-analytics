@@ -4,8 +4,9 @@ import { configRepo } from '../db/config.repo';
 import { transcriptRepo } from '../db/transcript.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { ensurePreloadForNextVideos } from '../services/calendar-sync.service';
+import { CENTRAL_API } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 
 // Lee todo el SQLite y lo sube al espejo central. Reutilizable desde el endpoint
 // y desde los controllers de subida (push inmediato tras publicar).

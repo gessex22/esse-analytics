@@ -10,12 +10,14 @@ import { normalizeForMeta, trimToMaxDuration, appendDebugLog } from '../services
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
+import { CENTRAL_API, LAB_MODE } from '../config';
+import { simulateMockUpload, MockUploadError, MockUploadMode, mockPlatformId, mockPlatformUrl } from '../services/mock-upload.service';
 
 // Facebook Login for Business: central entrega un Page Access Token (de una
 // Página con una Cuenta de Instagram Business vinculada), válido contra
 // graph.facebook.com y compatible con upload_type: resumable para Reels.
 const FB_GRAPH = 'https://graph.facebook.com/v22.0';
-const CENTRAL  = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL  = CENTRAL_API;
 
 export type UploadStage = 'original' | 'recorte-60s' | 'recorte-60s+normalizado';
 
@@ -209,7 +211,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
   if (!fs.existsSync(fileDoc.file_path))   { appendDebugLog(`[trace] ${fileDoc.file_name} no existe físicamente en ${fileDoc.file_path}`); res.status(400).json({ error: 'Archivo físico no encontrado' }); return; }
 
   appendDebugLog(`[trace] ${fileDoc.file_name} pasó validaciones — pidiendo token a la central`);
-  let tokenData: { access_token: string; instagram_user_id: string };
+  let tokenData: { access_token: string; instagram_user_id: string; page_id?: string | null };
   try {
     tokenData = await fetchToken(req.headers.authorization!);
   } catch (err: any) {
@@ -254,38 +256,67 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
   let usedStage: UploadStage = 'original';
   let usedPath: string = fileDoc.file_path; // el archivo que IG aceptó — Facebook recibe ese mismo
   let lastErr: any = null;
+  // En Laboratorio, este es el resultado ya resuelto (nunca se llama a Meta) --
+  // ver mock-upload.service.ts. `containerId` queda en un sentinel no-null
+  // solo para reusar el `if (!containerId) throw` de abajo sin duplicar lógica.
+  let labResult: { platformId: string; platformUrl: string } | null = null;
 
-  for (const stage of stages) {
+  if (LAB_MODE) {
     try {
-      const candidatePath = await stage.getPath();
-      appendDebugLog(`[trace] intentando etapa "${stage.label}" con ${candidatePath}`);
-      containerId = await createAndWaitContainer(candidatePath, ctx, reportProgress);
-      usedStage = stage.label;
-      usedPath = candidatePath;
-      break;
+      labResult = await simulateMockUpload('instagram', (req.body.labSimulate as MockUploadMode) ?? 'success',
+        (percent, phase) => reportProgress(phase, percent));
+      containerId = 'lab-mock-container';
     } catch (err: any) {
-      lastErr = err;
-      appendDebugLog(`[trace] etapa "${stage.label}" falló: ${err.message}`);
+      if (err instanceof MockUploadError && err.code === 'NO_AUTH') {
+        res.status(401).json({ error: 'NO_AUTH', message: err.message });
+        return;
+      }
+      appendDebugLog(`[trace] subida mock de Laboratorio falló: ${err.message}`);
+      setUploadError(jobId, { platform: 'instagram', title: fullCaption, message: err.message });
+      res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });
+      return;
+    }
+  } else {
+    for (const stage of stages) {
+      try {
+        const candidatePath = await stage.getPath();
+        appendDebugLog(`[trace] intentando etapa "${stage.label}" con ${candidatePath}`);
+        containerId = await createAndWaitContainer(candidatePath, ctx, reportProgress);
+        usedStage = stage.label;
+        usedPath = candidatePath;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        appendDebugLog(`[trace] etapa "${stage.label}" falló: ${err.message}`);
+      }
     }
   }
 
   try {
     if (!containerId) throw lastErr ?? new Error('No se pudo subir el video a Instagram');
 
-    // Publicar (una sola vez, con el intento que sí funcionó)
-    const publishData = await igPost(`/${instagram_user_id}/media_publish`, {
-      creation_id: containerId,
-      access_token,
-    });
-    if (!publishData.id) throw new Error(publishData.error?.message ?? 'Error al publicar');
-
-    const mediaData = await igGet(`/${publishData.id}?fields=permalink`, access_token);
-    const postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
+    // Publicar (una sola vez, con el intento que sí funcionó) -- en Laboratorio
+    // ya está resuelto (labResult), nunca se llama a Meta.
+    let mediaId: string;
+    let postUrl: string;
+    if (LAB_MODE && labResult) {
+      mediaId = labResult.platformId;
+      postUrl = labResult.platformUrl;
+    } else {
+      const publishData = await igPost(`/${instagram_user_id}/media_publish`, {
+        creation_id: containerId,
+        access_token,
+      });
+      if (!publishData.id) throw new Error(publishData.error?.message ?? 'Error al publicar');
+      const mediaData = await igGet(`/${publishData.id}?fields=permalink`, access_token);
+      mediaId = publishData.id;
+      postUrl = (mediaData.permalink as string | undefined) ?? 'https://www.instagram.com/';
+    }
 
     // Guardar en SQLite local
     platformVideoRepo.upsert({
       platform:       'instagram',
-      platform_id:    publishData.id,
+      platform_id:    mediaId,
       platform_url:   postUrl,
       published_at:   new Date(),
       linked_file_id: Number(fileId),
@@ -293,7 +324,7 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
       title:          fullCaption.slice(0, 300) || undefined,
     });
     await reportUploadEvent(req.headers.authorization, {
-      platform: 'instagram', platformId: publishData.id, platformUrl: postUrl,
+      platform: 'instagram', platformId: mediaId, platformUrl: postUrl,
       fileName: fileDoc.file_name, contentId: fileDoc.content_id, title: fullCaption,
     });
     // Crossposting robusto: el mismo archivo que IG aceptó se publica como Reel
@@ -302,11 +333,14 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     let facebookUrl: string | null = null;
     let facebookError: string | null = null;
     if (crossPostFacebook) {
-      if (!page_id) {
+      if (!page_id && !LAB_MODE) {
         facebookError = 'La conexión no tiene una Página de Facebook asociada — reconectá Instagram desde Subir.';
       } else {
         try {
-          const fb = await publishReelToFacebookPage(usedPath, page_id, access_token, fullCaption);
+          // Laboratorio: nunca se llama a Meta -- mismo criterio que arriba.
+          const fb = LAB_MODE
+            ? (() => { const id = mockPlatformId('facebook'); return { videoId: id, url: mockPlatformUrl('facebook', id) }; })()
+            : await publishReelToFacebookPage(usedPath, page_id!, access_token, fullCaption);
           facebookUrl = fb.url;
           platformVideoRepo.upsert({
             platform:       'facebook',
@@ -345,8 +379,12 @@ export const uploadToInstagram = async (req: Request, res: Response): Promise<vo
     pushFilesToCloudInBackground(req.headers.authorization);
 
     clearUploadProgress(jobId);
-    res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!facebookUrl, facebookUrl, facebookError, uploadStage: usedStage });
+    res.json({ ok: true, mediaId, postUrl, crossPostedFacebook: !!facebookUrl, facebookUrl, facebookError, uploadStage: usedStage });
   } catch (err: any) {
+    if (err instanceof MockUploadError && err.code === 'NO_AUTH') {
+      res.status(401).json({ error: 'NO_AUTH', message: err.message });
+      return;
+    }
     appendDebugLog(`[trace] FALLARON las 3 etapas: ${err.message} | stack: ${err.stack}`);
     console.error('Error al subir a Instagram:', err.message);
     setUploadError(jobId, { platform: 'instagram', title: fullCaption, message: err.message });

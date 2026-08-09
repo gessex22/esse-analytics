@@ -8,8 +8,20 @@ let bonjour: InstanceType<typeof Bonjour> | null = null;
 let announcedService: ReturnType<InstanceType<typeof Bonjour>['publish']> | null = null;
 const PORT = 4000;
 
+// Ver electron/package.json (script "dev:lab") y local-backend/src/config.ts.
+// SOLO se activa si quien lanzó `electron .` ya tenía ESSENALYTICS_LAB_MODE=1
+// en el entorno (heredado del shell) -- nunca hay una preferencia de la app
+// que lo prenda, y un build distribuido (npm run dist:win, sin pasar por
+// dev:lab) jamás lo ve seteado. server.cjs (el bundle de local-backend) hace
+// exactamente el mismo chequeo por su cuenta; esto es solo para loguear y
+// diferenciar el nombre del servicio Bonjour/el título de ventana.
+const LAB_MODE = process.env.ESSENALYTICS_LAB_MODE === '1';
+
 function setupEnv() {
-  // SQLite DB va a la carpeta de datos del usuario del sistema operativo
+  // SQLite DB va a la carpeta de datos del usuario del sistema operativo.
+  // El nombre de archivo (esse_local.db vs esse_lab.db) lo decide
+  // local-backend/src/db/database.ts según ESSENALYTICS_LAB_MODE -- nunca hay
+  // que crear una carpeta distinta a mano para que queden aisladas.
   process.env.SQLITE_DIR = app.getPath('userData');
 
   // Archivos estáticos del frontend
@@ -24,6 +36,15 @@ function setupEnv() {
   // YOUTUBE_API_KEY y CLIENT_REGISTER_KEY se inyectan en build-time dentro del bundle
   // (server.cjs) desde electron/.env.build — NO viven en el código fuente.
   process.env.CENTRAL_API = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+
+  if (LAB_MODE) {
+    // Reenviado explícito (ya llega heredado del shell, esto es solo defensivo
+    // y documenta la intención) -- local-backend/src/config.ts lo lee para
+    // dejar de hablar con CENTRAL_API y hablar con LAB_API en su lugar.
+    process.env.ESSENALYTICS_LAB_MODE = '1';
+    process.env.LAB_API = process.env.LAB_API || 'http://127.0.0.1:5055';
+    console.log(`[electron] ESSENALYTICS_LAB_MODE=1 -- Laboratorio en ${process.env.LAB_API}, SQLite aislada, uploaders mock.`);
+  }
 }
 
 function startServer() {
@@ -33,12 +54,15 @@ function startServer() {
   // sin pedir al usuario que escriba la IP. La URL manual sigue siendo el
   // respaldo para redes que bloquean multicast.
   bonjour = new Bonjour();
+  // Prefijo "[Laboratorio]" en el nombre del servicio -- para que quien esté
+  // eligiendo una PC por descubrimiento LAN desde iOS/Android no confunda esta
+  // instancia (datos simulados) con su PC real si ambas están prendidas a la vez.
   announcedService = bonjour.publish({
-    name: `EsseAnalytics PC (${require('os').hostname()})`,
+    name: `${LAB_MODE ? '[Laboratorio] ' : ''}EsseAnalytics PC (${require('os').hostname()})`,
     type: 'esseanalytics',
     port: PORT,
     protocol: 'tcp',
-    txt: { version: app.getVersion(), service: 'esseanalytics' },
+    txt: { version: app.getVersion(), service: 'esseanalytics', labMode: LAB_MODE ? '1' : '0' },
   });
 }
 
@@ -48,7 +72,7 @@ function createWindow() {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: 'EsseAnalytics',
+    title: LAB_MODE ? 'EsseAnalytics — Laboratorio' : 'EsseAnalytics',
     // Fondo oscuro del tema → sin flash blanco al abrir. Barra de título NATIVA
     // (la integrada tapaba botones en Windows y se veía mal en Mac).
     backgroundColor: '#0c0c14',
@@ -56,6 +80,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
     // Sin barra de menú nativa
     autoHideMenuBar: true,
@@ -125,6 +150,18 @@ app.whenReady().then(() => {
 
   // Permite que el frontend pregunte la versión actual
   ipcMain.handle('app:version', () => app.getVersion());
+
+  // Diálogo nativo de carpeta -- ver preload.ts (contextBridge) y
+  // frontend/src/components/LibraryPanel.tsx ("Elegir carpeta"). Antes el
+  // único modo era tipear la ruta a mano; esto la reemplaza sin sacar el
+  // campo (sigue siendo el fallback cuando el mismo frontend corre fuera de
+  // Electron, LAN/túnel sin la app de escritorio).
+  ipcMain.handle('dialog:selectFolder', async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
 });
 
 app.on('window-all-closed', () => {

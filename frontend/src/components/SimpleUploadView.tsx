@@ -86,7 +86,13 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
   const loadNextVideo = () => {
     setLoadingNext(true);
-    return Promise.all([syncService.getCalendarConfig(), videoService.getSlimList().catch(() => [] as SlimVideo[])])
+    // El catálogo local ya conoce las plataformas publicadas. Si el calendario
+    // compartido tarda o falla, no debemos dejar en pantalla el mismo video
+    // recién publicado: usamos la cola local como respaldo y lo retiramos.
+    return Promise.all([
+      syncService.getCalendarConfig().catch(() => [] as Awaited<ReturnType<typeof syncService.getCalendarConfig>>),
+      videoService.getSlimList().catch(() => [] as SlimVideo[]),
+    ])
       .then(([configs, slim]) => {
         // En modo simple las 3 colas deberían coincidir (avanzan siempre juntas) —
         // se toma la plataforma que de verdad avanzó última como la canónica,
@@ -222,13 +228,28 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
 
     setPublishing(true);
     setResults(IDLE_RESULTS);
-    await videoService.resolvePublicationSelection(video.fileId, platformsToSubmit);
-    for (const p of platformsToSubmit) {
-      // eslint-disable-next-line no-await-in-loop
-      await uploadOne(p);
+    try {
+      await syncService.resolvePublicationSelection(video.fileId, platformsToSubmit);
+      for (const p of platformsToSubmit) {
+        // eslint-disable-next-line no-await-in-loop
+        await uploadOne(p);
+      }
+    } catch (err: any) {
+      // La preparación ocurre antes de crear un job de subida. Si falla (por
+      // ejemplo, sesión expirada), antes quedaba `publishing` en true para
+      // siempre y la UI parecía estar subiendo aunque no hubiera ningún job.
+      const message = err.message || "No se pudo preparar la publicación";
+      setResults(prev => {
+        const next = { ...prev };
+        for (const p of platformsToSubmit) {
+          if (next[p].status === "idle") next[p] = { status: "error", message };
+        }
+        return next;
+      });
+    } finally {
+      setPublishing(false);
+      loadNextVideo();
     }
-    setPublishing(false);
-    loadNextVideo();
   };
 
   const allDone = platformsToSubmit.length > 0 && platformsToSubmit.every(p => results[p].status === "success" || results[p].status === "error");

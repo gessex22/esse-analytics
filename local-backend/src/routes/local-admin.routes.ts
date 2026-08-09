@@ -6,11 +6,11 @@ import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { configRepo } from '../db/config.repo';
 import { db } from '../db/database';
 import { fileRepo } from '../db/file.repo';
+import { CENTRAL_API, JWT_SECRET, LAB_MODE } from '../config';
 
 const router = Router();
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
-const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
+const CENTRAL = CENTRAL_API;
 
 // Devuelve el secreto de instalación, generándolo la primera vez.
 export function getOrCreateInstallId(): string {
@@ -256,9 +256,11 @@ router.get('/api/local/session', (_req, res) => {
   }
 });
 
-// GET /api/local/health
+// GET /api/local/health -- el frontend ya lo pega en cada carga para decidir
+// modo local/central (useBackendType); labMode viaja acá para no agregar un
+// segundo request solo para la etiqueta "Laboratorio · Datos simulados".
 router.get('/api/local/health', (_req, res) => {
-  res.json({ local: true, db: 'sqlite' });
+  res.json({ local: true, db: 'sqlite', labMode: LAB_MODE });
 });
 
 // POST /api/local/admin/import-calendar — recupera platform_config (último publicado,

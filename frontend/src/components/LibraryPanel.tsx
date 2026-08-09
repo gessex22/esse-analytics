@@ -194,6 +194,22 @@ export function LibraryPanel() {
             placeholder="C:\Users\TuUsuario\Videos\publicados"
             className="flex-1 px-3 py-2.5 bg-secondary/40 border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors font-mono"
           />
+          {/* window.electronAPI solo existe empaquetado en Electron (ver
+              electron/src/preload.ts) -- servido por LAN/túnel sin la app de
+              escritorio, este botón no aparece y el input de arriba sigue
+              siendo la única forma de indicar la carpeta. */}
+          {window.electronAPI && (
+            <button
+              onClick={async () => {
+                const picked = await window.electronAPI!.selectFolder();
+                if (picked) setFolder(picked);
+              }}
+              className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm bg-secondary/60 border border-border text-foreground hover:bg-secondary transition-colors flex-shrink-0"
+            >
+              <Folder className="w-4 h-4" />
+              Elegir carpeta
+            </button>
+          )}
           <button
             onClick={saveFolder}
             disabled={saving || !folder.trim()}

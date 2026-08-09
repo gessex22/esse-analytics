@@ -4,8 +4,9 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { CENTRAL_API, LAB_MODE } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 const TIKTOK_API = 'https://open.tiktokapis.com/v2';
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
@@ -16,6 +17,11 @@ const DEFAULT_INTERVAL: Record<string, number> = { youtube: 4, tiktok: 3, instag
 // video público. Se resuelve antes de pedir métricas para que el historial local
 // no quede en cero mientras la central termina de sincronizar ese registro.
 async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { platforms: Record<string, { platformId: string; title?: string | null; rowId?: number }> }[]): Promise<void> {
+  // En Laboratorio esto pegaría a open.tiktokapis.com de verdad con el token
+  // mock del lab-backend (que SÍ resuelve un access_token válido si la cuenta
+  // está "conectada") -- los platformId `lab_tt_...` nunca van a resolver
+  // nada real, así que ni vale la pena intentarlo.
+  if (LAB_MODE) return;
   const pending = [...new Set(candidates
     .map(candidate => candidate.platforms.tiktok?.platformId)
     .filter((id): id is string => !!id && !/^\d+$/.test(id)))];
@@ -76,7 +82,9 @@ async function resolvePendingLocalTikTokIds(authHeader: string, candidates: { pl
 // Respaldo local para que Electron no quede sin métricas si la central demora o
 // falla al refrescar YouTube. La clave se inyecta solamente en el bundle desktop.
 async function getLocalYoutubeStats(videoIds: string[]): Promise<Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> {
-  if (!YOUTUBE_API_KEY || videoIds.length === 0) return {};
+  // Mismo criterio que arriba -- nunca pegarle a googleapis.com en Laboratorio,
+  // sin depender de que YOUTUBE_API_KEY esté vacía por accidente en .env.
+  if (LAB_MODE || !YOUTUBE_API_KEY || videoIds.length === 0) return {};
   try {
     const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${encodeURIComponent(videoIds.join(','))}&key=${YOUTUBE_API_KEY}`);
     if (!response.ok) return {};

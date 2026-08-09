@@ -64,3 +64,6 @@ Thumbs.db
 # ─── Datos locales / debug (nunca versionar) ───────────────────────
 *.db
 backend/resp.json
+
+# ─── Store del Laboratorio (mock, se regenera con /api/lab/reset) ──
+lab-backend/lab-data/

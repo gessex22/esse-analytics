@@ -27,7 +27,7 @@ export const getVideos = (req: Request, res: Response) => {
     // Sin filtro explícito del frontend → oculta por defecto los completos en las 3 plataformas
     content_status: (content_status as string | undefined) || 'no_completo',
     tipo:           tipo as string | undefined,
-    order:          (order === 'asc' ? 'asc' : 'desc'),
+    order:          (order === 'asc' || order === 'published' ? order : 'desc'),
     limit,
     offset,
   });

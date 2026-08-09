@@ -68,9 +68,15 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "msw": "^2.15.0",
     "postcss": "^8.5.15",
     "sharp": "^0.35.2",
     "tailwindcss": "^4.3.1",
     "vite": "^8.0.12"
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }

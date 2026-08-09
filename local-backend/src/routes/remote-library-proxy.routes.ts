@@ -1,6 +1,7 @@
 import { createProxyMiddleware } from 'http-proxy-middleware';
+import { CENTRAL_API } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 
 // La Biblioteca remota (Premium + storage en la nube) vive ENTERA en la central
 // -- bytes de video, Mongo, todo -- nunca en SQLite. A diferencia de auth-proxy.routes.ts
