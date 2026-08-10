@@ -5,7 +5,7 @@ contenido (videos cortos) en YouTube, Instagram y TikTok. Modelo freemium: el n�
 corre **local** en la PC del usuario (videos físicos + SQLite, sin coste de
 almacenamiento), con una **central** en la nube para auth, dominio y tokens OAuth.
 
-## Arquitectura (monorepo, 5 paquetes)
+## Arquitectura (monorepo, 6 paquetes)
 
 | Carpeta         | Qué es                          | Stack                                          | Puerto |
 |-----------------|---------------------------------|------------------------------------------------|--------|
@@ -13,9 +13,38 @@ almacenamiento), con una **central** en la nube para auth, dominio y tokens OAut
 | `local-backend/`| Backend que corre en la PC      | Express 5, **better-sqlite3**, tsx             | 4000   |
 | `backend/`      | "Central" en la nube            | Express 5, **Mongoose/MongoDB Atlas**, googleapis | 4000 |
 | `electron/`     | Empaqueta frontend+local-backend en app de escritorio | Electron 35, electron-builder | — |
+| `lab-backend/`  | Backend de **Laboratorio** (mock, dev-only) compartido con iOS/Android — ver abajo | Express 5, store JSON propio, tsx | 5055 |
 | `sync/`         | Scripts Python auxiliares       | esse_transcrip, match_youtube, restore_to_local | — |
 
 > No hay `package.json` raíz: cada paquete se instala/ejecuta por separado.
+
+### Modo Laboratorio (dev-only, mock compartido con iOS/Android)
+
+Todo cambio que afecte contratos compartidos debe seguir
+../LAB_FEATURE_PROMPT.md, incluyendo escenario mock, paridad móvil y
+actualización de ../FEATURES.md.
+
+`lab-backend/` es un backend separado (nunca Mongo, nunca `esse_local.db`) que
+implementa el mismo contrato de rutas que la central real, pero 100% mock —
+sin llamar nunca a YouTube/Instagram/TikTok reales. Sirve para probar el mismo
+usuario/escenario desde Electron, iOS y Android a la vez. Ver `lab-backend/README.md`
+para el detalle completo (escenarios predefinidos, panel admin, alcance).
+
+- `ESSENALYTICS_LAB_MODE=1` es el único interruptor — sin esa env var, `lab-backend`
+  se niega a arrancar y `local-backend`/Electron se comportan exactamente como siempre.
+- Con el flag activo, `local-backend` usa una SQLite separada (`esse_lab.db`, nunca
+  `esse_local.db`), sus 3 uploaders (`youtube/instagram/tiktok-upload.controller.ts`)
+  simulan la subida en vez de llamar a las APIs reales (ver
+  `local-backend/src/services/mock-upload.service.ts`), y todo lo que antes hablaba
+  con `CENTRAL_API` pasa a hablar con `LAB_API` (un solo punto de redirección:
+  `local-backend/src/config.ts`).
+- El frontend muestra un banner persistente "🧪 Laboratorio · Datos simulados"
+  cuando el backend activo reporta `labMode: true` (`useBackendType.ts`).
+- `electron/npm run dev:lab` levanta todo con el flag puesto.
+- ⚠️ Trampa de entorno ya confirmada: en Windows, el `fetch` nativo de Node
+  resuelve `localhost` a `::1` primero — si el otro server solo escucha en
+  `0.0.0.0` (como estos), da `ECONNREFUSED` aunque curl/el navegador conecten
+  bien. Por eso `LAB_API` usa `127.0.0.1` por default, no `localhost`.
 
 ### Cómo encajan las piezas
 - **El frontend es uno solo.** Decide a quién hablar en runtime — ver `frontend/src/config.ts`:
@@ -81,13 +110,18 @@ cd backend && npm start
 # Electron (app de escritorio)
 cd electron && npm run dev          # build server+main y abre Electron
 cd electron && npm run dist:win     # instalador Windows → C:/esse-release
+cd electron && npm run dev:lab      # ídem, pero con ESSENALYTICS_LAB_MODE=1
+
+# Backend de Laboratorio (mock, dev-only) — ver lab-backend/README.md
+cd lab-backend && npm install && cp .env.example .env && npm run dev
 ```
 No hay tests configurados (`backend test` es un no-op).
 
 ## Deploy / infra
 - Frontend público: **Cloudflare Pages/Workers** (`wrangler.toml`, assets = `frontend/dist`)
   en `esse-analytics.com`.
-- Central: corre en la PC en `:5000`/`:4000`, expuesta vía **Cloudflare Tunnel** como
+- Central: corre en la PC en `:5001` (el código conserva `4000` como puerto
+  configurable por defecto), expuesta vía **Cloudflare Tunnel** como
   `api.esse-analytics.com`. El login depende de central+túnel vivos.
 - Desktop: electron-builder publica releases en GitHub (`gessex22/esse-analytics`),
   autoupdate vía `electron-updater`. Secretos (YouTube API key, CLIENT_REGISTER_KEY)

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EsseAnalytics · Laboratorio</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 980px; margin: 2rem auto; padding: 0 1rem; line-height: 1.4; }
+  h1 { margin-bottom: .2rem; }
+  .badge { display: inline-block; background: #7c3aed; color: #fff; font-size: .75rem; padding: .15rem .5rem; border-radius: 999px; font-weight: 600; }
+  section { border: 1px solid #8884; border-radius: 10px; padding: 1rem 1.25rem; margin: 1.25rem 0; }
+  h2 { font-size: 1.05rem; margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #8882; vertical-align: top; }
+  button { cursor: pointer; border: 1px solid #8884; background: transparent; border-radius: 6px; padding: .3rem .6rem; font-size: .82rem; }
+  button:hover { background: #8882; }
+  input, select { padding: .3rem; border-radius: 6px; border: 1px solid #8884; background: transparent; color: inherit; font-size: .85rem; }
+  form.inline { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; margin-bottom: .75rem; }
+  .muted { opacity: .65; font-size: .8rem; }
+  pre { background: #8881a; padding: .5rem; border-radius: 8px; overflow: auto; font-size: .78rem; }
+  .conn { font-size: .75rem; padding: .1rem .4rem; border-radius: 6px; }
+  .conn.connected { background: #16a34a33; }
+  .conn.expired { background: #dc262633; }
+  .conn.disconnected { background: #8884; }
+</style>
+</head>
+<body>
+<h1>🧪 Laboratorio EsseAnalytics <span class="badge">Datos simulados</span></h1>
+<p class="muted">Backend mock compartido entre iOS, Android y Electron. Nunca toca datos/usuarios/tokens reales.</p>
+
+<section>
+  <h2>Escenarios predefinidos</h2>
+  <form class="inline" id="apply-form">
+    <select id="scenario-key"></select>
+    <input id="apply-username" placeholder="username" required />
+    <input id="apply-password" placeholder="password (default: laboratorio123)" />
+    <button type="submit">Aplicar escenario → crear/reemplazar usuario</button>
+  </form>
+  <div id="scenario-list" class="muted"></div>
+</section>
+
+<section>
+  <h2>Rate limit</h2>
+  <p class="muted">Bloqueos recientes. El reset solo libera la IP desde la que abriste este panel.</p>
+  <button id="refresh-rate-limits">Refrescar</button>
+  <button id="reset-rate-limits" style="color:#dc2626">Liberar mi IP</button>
+  <div id="rate-limits-table"></div>
+</section>
+
+<section>
+  <h2>Usuarios mock</h2>
+  <button id="refresh-users">Refrescar</button>
+  <button id="reset-lab" style="color:#dc2626">Reset total del Laboratorio</button>
+  <div id="users-table"></div>
+</section>
+
+<section>
+  <h2>Crear / editar usuario a mano</h2>
+  <form class="inline" id="edit-form">
+    <input id="e-username" placeholder="username" required />
+    <input id="e-password" placeholder="password" />
+    <select id="e-role"><option value="editor">editor</option><option value="todopoderoso">todopoderoso</option><option value="visitante">visitante</option></select>
+    <select id="e-tier"><option value="free">free</option><option value="premium">premium</option></select>
+    <label><input type="checkbox" id="e-owner" /> isOwner</label>
+    <label><input type="checkbox" id="e-cloud" /> canUseCloudStorage</label>
+    <select id="e-workflow"><option value="simple">simple</option><option value="avanzado">avanzado</option></select>
+    <button type="submit">Guardar</button>
+  </form>
+</section>
+
+<section>
+  <h2>Publish jobs (uploads simulados en curso)</h2>
+  <button id="refresh-jobs">Refrescar</button>
+  <div id="jobs-table"></div>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const api = (path, opts) => fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts }).then(r => r.json());
+
+const CONN_STATUSES = ['connected', 'expired', 'disconnected'];
+
+// Select en vez de badge fijo -- cambia el estado de ESA plataforma para ese
+// usuario con un solo PATCH /api/lab/users/:id, sin tocar el resto de sus
+// datos (catálogo, historial, otras plataformas).
+function connSelect(userId, platform, conn) {
+  const current = conn?.status || 'disconnected';
+  const options = CONN_STATUSES.map(s => `<option value="${s}" ${s === current ? 'selected' : ''}>${s}</option>`).join('');
+  return `<select class="conn ${current}" data-conn-user="${userId}" data-conn-platform="${platform}">${options}</select>`;
+}
+
+async function loadScenarios() {
+  const { scenarios } = await api('/api/lab/scenarios');
+  $('scenario-key').innerHTML = scenarios.map(s => `<option value="${s.key}">${s.label}</option>`).join('');
+  $('scenario-list').innerHTML = scenarios.map(s => `<div><b>${s.label}</b> (<code>${s.key}</code>) — ${s.description}</div>`).join('');
+}
+
+async function loadUsers() {
+  const { users } = await api('/api/lab/users?showPasswords=true');
+  $('users-table').innerHTML = `<table>
+    <tr><th>username</th><th>password</th><th>rol</th><th>tier</th><th>owner</th><th>nube</th><th>escenario</th><th>YT</th><th>IG</th><th>TT</th><th></th></tr>
+    ${users.map(u => `<tr>
+      <td>${u.username}</td><td>${u.password ?? ''}</td><td>${u.role}</td><td>${u.tier}</td>
+      <td>${u.isOwner ? '✓' : ''}</td><td>${u.hasCloudStorage ? '✓' : ''}</td><td>${u.scenario}</td>
+      <td>${connSelect(u.id, 'youtube', u.connections.youtube)}</td>
+      <td>${connSelect(u.id, 'instagram', u.connections.instagram)}</td>
+      <td>${connSelect(u.id, 'tiktok', u.connections.tiktok)}</td>
+      <td><button data-del="${u.id}">Borrar</button></td>
+    </tr>`).join('')}
+  </table>`;
+  document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
+    await api(`/api/lab/users/${btn.dataset.del}`, { method: 'DELETE' });
+    loadUsers();
+  });
+  // Cambiar el select ya aplica el nuevo estado -- sin botón "Guardar" aparte,
+  // es una sola acción (elegir) para el caso de uso más común (simular
+  // "conexión vencida"/"reconectada" sobre un usuario que ya existe).
+  document.querySelectorAll('[data-conn-user]').forEach(sel => sel.onchange = async () => {
+    const userId = sel.dataset.connUser;
+    const platform = sel.dataset.connPlatform;
+    const status = sel.value;
+    await api(`/api/lab/users/${userId}`, { method: 'PATCH', body: JSON.stringify({ connections: { [platform]: { status } } }) });
+    loadUsers();
+  });
+}
+
+async function loadJobs() {
+  const { items } = await api('/api/lab/publish-jobs');
+  $('jobs-table').innerHTML = `<table>
+    <tr><th>userId</th><th>plataforma</th><th>archivo</th><th>estado</th><th>%</th><th>mensaje</th><th></th></tr>
+    ${items.slice().reverse().map(j => `<tr>
+      <td class="muted">${j.userId.slice(0,8)}</td><td>${j.platform}</td><td>${j.fileName}</td>
+      <td>${j.status}</td><td>${j.progress}</td><td class="muted">${j.message ?? ''}</td>
+      <td>${j.retryable ? `<button data-retry="${j.id}">Reintentar</button>` : ''}</td>
+    </tr>`).join('')}
+  </table>`;
+  document.querySelectorAll('[data-retry]').forEach(btn => btn.onclick = async () => {
+    await api(`/api/lab/publish-jobs/${btn.dataset.retry}/retry`, { method: 'POST' });
+    loadJobs();
+  });
+}
+
+async function loadRateLimits() {
+  const { events } = await api('/api/lab/rate-limits');
+  $('rate-limits-table').innerHTML = events.length
+    ? '<pre>' + events.map(e => `${new Date(e.at).toLocaleString()} · ${e.scope} · ${e.ip} · reintento: ${e.retryAfterSeconds == null ? '—' : e.retryAfterSeconds + ' s'}`).join('\n') + '</pre>'
+    : '<p class="muted">Sin bloqueos registrados.</p>';
+}
+
+$('apply-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const key = $('scenario-key').value;
+  const username = $('apply-username').value.trim();
+  const password = $('apply-password').value.trim();
+  const created = await api(`/api/lab/scenarios/${key}/apply`, { method: 'POST', body: JSON.stringify({ username, password }) });
+  alert(`Usuario listo:\nusername: ${created.username}\npassword: ${created.password}`);
+  loadUsers();
+};
+
+$('edit-form').onsubmit = async (e) => {
+  e.preventDefault();
+  await api('/api/lab/users', { method: 'POST', body: JSON.stringify({
+    username: $('e-username').value.trim(),
+    password: $('e-password').value.trim() || undefined,
+    role: $('e-role').value,
+    tier: $('e-tier').value,
+    isOwner: $('e-owner').checked,
+    hasCloudStorage: $('e-cloud').checked,
+    workflowMode: $('e-workflow').value,
+  }) });
+  loadUsers();
+};
+
+$('refresh-users').onclick = loadUsers;
+$('refresh-jobs').onclick = loadJobs;
+$('refresh-rate-limits').onclick = loadRateLimits;
+$('reset-rate-limits').onclick = async () => {
+  await api('/api/lab/rate-limits/reset', { method: 'POST' });
+  loadRateLimits();
+};
+$('reset-lab').onclick = async () => {
+  if (!confirm('¿Vaciar TODO el Laboratorio (usuarios, catálogo, historial, jobs)?')) return;
+  await api('/api/lab/reset', { method: 'POST' });
+  loadUsers(); loadJobs();
+};
+
+loadScenarios();
+loadUsers();
+loadJobs();
+loadRateLimits();
+setInterval(loadJobs, 4000);
+setInterval(loadRateLimits, 4000);
+</script>
+</body>
+</html>

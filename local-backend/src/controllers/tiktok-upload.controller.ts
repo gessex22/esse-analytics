@@ -7,9 +7,11 @@ import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
+import { CENTRAL_API, LAB_MODE } from '../config';
+import { simulateMockUpload, MockUploadError, MockUploadMode } from '../services/mock-upload.service';
 
 const TK_BASE    = 'https://open.tiktokapis.com/v2';
-const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL    = CENTRAL_API;
 const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
 
 async function fetchToken(authHeader: string): Promise<{ access_token: string; open_id: string }> {
@@ -92,81 +94,95 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
   const jobId    = `tiktok-${fileId}`;
 
   try {
-    // 1. Iniciar upload (FILE_UPLOAD — sin URL pública, directo desde local)
-    const initRes = await fetch(`${TK_BASE}/post/publish/video/init/`, {
-      method: 'POST',
-      headers: {
-        Authorization:  `Bearer ${token.access_token}`,
-        'Content-Type': 'application/json; charset=UTF-8',
-      },
-      body: JSON.stringify({
-        post_info: {
-          title:                    String(title).slice(0, 2200),
-          privacy_level:            privacyLevel,
-          disable_duet:             Boolean(disableDuet),
-          disable_comment:          Boolean(disableComment),
-          disable_stitch:           Boolean(disableStitch),
-          video_cover_timestamp_ms: Number(thumbOffsetMs),
-          brand_content_toggle:     Boolean(brandedContent),
-          brand_organic_toggle:     Boolean(brandOrganic),
-        },
-        source_info: {
-          source:      'FILE_UPLOAD',
-          video_size:  fileSize,
-          chunk_size:  CHUNK_SIZE,
-          total_chunk_count: Math.max(1, Math.floor(fileSize / CHUNK_SIZE)),
-        },
-      }),
-    });
-    const initData = await initRes.json() as any;
-    if (initData.error?.code !== 'ok') {
-      throw new Error(initData.error?.message ?? 'Error al iniciar publicación en TikTok');
-    }
+    let videoIdForLink: string;
+    let platformUrl: string;
+    let publishId: string | null = null;
+    let publishStatus = 'PUBLISH_COMPLETE';
 
-    const { publish_id, upload_url } = initData.data as { publish_id: string; upload_url: string };
-
-    // 2. Subir chunks directo a TikTok desde esta máquina
-    await uploadChunks(upload_url, fileDoc.file_path, fileSize, CHUNK_SIZE,
-      (percent) => setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'uploading', percent }));
-
-    // 3. Esperar procesamiento
-    let publishStatus = 'PROCESSING_UPLOAD';
-    let realVideoId: string | null = null;
-    for (let i = 0; i < 60 && !['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX', 'FAILED'].includes(publishStatus); i++) {
-      setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'processing', percent: Math.round((i / 60) * 100) });
-      await new Promise(r => setTimeout(r, 5000));
-      const statusRes = await fetch(`${TK_BASE}/post/publish/status/fetch/`, {
+    if (LAB_MODE) {
+      // Nunca se llama a open.tiktokapis.com -- ver mock-upload.service.ts.
+      const mock = await simulateMockUpload('tiktok', (req.body.labSimulate as MockUploadMode) ?? 'success',
+        (percent, phase) => setUploadProgress(jobId, { platform: 'tiktok', title, phase, percent }));
+      videoIdForLink = mock.platformId;
+      platformUrl = mock.platformUrl;
+    } else {
+      // 1. Iniciar upload (FILE_UPLOAD — sin URL pública, directo desde local)
+      const initRes = await fetch(`${TK_BASE}/post/publish/video/init/`, {
         method: 'POST',
         headers: {
           Authorization:  `Bearer ${token.access_token}`,
           'Content-Type': 'application/json; charset=UTF-8',
         },
-        body: JSON.stringify({ publish_id }),
+        body: JSON.stringify({
+          post_info: {
+            title:                    String(title).slice(0, 2200),
+            privacy_level:            privacyLevel,
+            disable_duet:             Boolean(disableDuet),
+            disable_comment:          Boolean(disableComment),
+            disable_stitch:           Boolean(disableStitch),
+            video_cover_timestamp_ms: Number(thumbOffsetMs),
+            brand_content_toggle:     Boolean(brandedContent),
+            brand_organic_toggle:     Boolean(brandOrganic),
+          },
+          source_info: {
+            source:      'FILE_UPLOAD',
+            video_size:  fileSize,
+            chunk_size:  CHUNK_SIZE,
+            total_chunk_count: Math.max(1, Math.floor(fileSize / CHUNK_SIZE)),
+          },
+        }),
       });
-      const statusText = await statusRes.text();
-      const statusData = JSON.parse(statusText) as any;
-      publishStatus    = statusData.data?.status ?? publishStatus;
-      // ID real del video público (typo de TikTok: "publicaly", no "publicly").
-      // publish_id es solo el id de la operación de publicar -- no sirve para
-      // armar el link ni para pedir stats después vía /video/query/. Ojo: viene
-      // como número JSON de 64 bits y JSON.parse le pierde los últimos dígitos
-      // (pasa Number.MAX_SAFE_INTEGER) -- hay que sacarlo del texto crudo.
-      const postIdMatch = statusText.match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
-      if (postIdMatch) realVideoId = postIdMatch[1];
-      if (publishStatus === 'FAILED') {
-        throw new Error(`TikTok rechazó el video: ${statusData.data?.fail_reason ?? 'error desconocido'}`);
+      const initData = await initRes.json() as any;
+      if (initData.error?.code !== 'ok') {
+        throw new Error(initData.error?.message ?? 'Error al iniciar publicación en TikTok');
       }
-    }
 
-    if (!['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX'].includes(publishStatus)) {
-      throw new Error('Tiempo de espera agotado. El video sigue procesándose en TikTok.');
-    }
+      const { publish_id, upload_url } = initData.data as { publish_id: string; upload_url: string };
+      publishId = publish_id;
 
-    // Sin publicaly_available_post_id (puede pasar con privacidad SELF_ONLY)
-    // no hay forma de resolver el id real acá -- se cae a publish_id como
-    // antes, sabiendo que el link/las métricas de ese video no van a andar.
-    const videoIdForLink = realVideoId ?? publish_id;
-    const platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${videoIdForLink}`;
+      // 2. Subir chunks directo a TikTok desde esta máquina
+      await uploadChunks(upload_url, fileDoc.file_path, fileSize, CHUNK_SIZE,
+        (percent) => setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'uploading', percent }));
+
+      // 3. Esperar procesamiento
+      let realVideoId: string | null = null;
+      publishStatus = 'PROCESSING_UPLOAD';
+      for (let i = 0; i < 60 && !['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX', 'FAILED'].includes(publishStatus); i++) {
+        setUploadProgress(jobId, { platform: 'tiktok', title, phase: 'processing', percent: Math.round((i / 60) * 100) });
+        await new Promise(r => setTimeout(r, 5000));
+        const statusRes = await fetch(`${TK_BASE}/post/publish/status/fetch/`, {
+          method: 'POST',
+          headers: {
+            Authorization:  `Bearer ${token.access_token}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify({ publish_id }),
+        });
+        const statusText = await statusRes.text();
+        const statusData = JSON.parse(statusText) as any;
+        publishStatus    = statusData.data?.status ?? publishStatus;
+        // ID real del video público (typo de TikTok: "publicaly", no "publicly").
+        // publish_id es solo el id de la operación de publicar -- no sirve para
+        // armar el link ni para pedir stats después vía /video/query/. Ojo: viene
+        // como número JSON de 64 bits y JSON.parse le pierde los últimos dígitos
+        // (pasa Number.MAX_SAFE_INTEGER) -- hay que sacarlo del texto crudo.
+        const postIdMatch = statusText.match(/"publicaly_available_post_id"\s*:\s*\[\s*(\d+)/);
+        if (postIdMatch) realVideoId = postIdMatch[1];
+        if (publishStatus === 'FAILED') {
+          throw new Error(`TikTok rechazó el video: ${statusData.data?.fail_reason ?? 'error desconocido'}`);
+        }
+      }
+
+      if (!['PUBLISH_COMPLETE', 'SEND_TO_USER_INBOX'].includes(publishStatus)) {
+        throw new Error('Tiempo de espera agotado. El video sigue procesándose en TikTok.');
+      }
+
+      // Sin publicaly_available_post_id (puede pasar con privacidad SELF_ONLY)
+      // no hay forma de resolver el id real acá -- se cae a publish_id como
+      // antes, sabiendo que el link/las métricas de ese video no van a andar.
+      videoIdForLink = realVideoId ?? publish_id;
+      platformUrl = `https://www.tiktok.com/@${token.open_id}/video/${videoIdForLink}`;
+    }
 
     // 4. Guardar en SQLite local
     platformVideoRepo.upsert({
@@ -196,8 +212,12 @@ export const uploadToTikTok = async (req: Request, res: Response): Promise<void>
     pushFilesToCloudInBackground(req.headers.authorization);
 
     clearUploadProgress(jobId);
-    res.json({ ok: true, publishId: publish_id, status: publishStatus, sentToInbox: publishStatus === 'SEND_TO_USER_INBOX' });
+    res.json({ ok: true, publishId: publishId ?? videoIdForLink, status: publishStatus, sentToInbox: publishStatus === 'SEND_TO_USER_INBOX' });
   } catch (err: any) {
+    if (err instanceof MockUploadError && err.code === 'NO_AUTH') {
+      res.status(401).json({ error: 'NO_AUTH', message: err.message });
+      return;
+    }
     console.error('Error al subir a TikTok:', err.message);
     setUploadError(jobId, { platform: 'tiktok', title, message: err.message });
     res.status(500).json({ error: 'Error al subir a TikTok', detail: err.message });

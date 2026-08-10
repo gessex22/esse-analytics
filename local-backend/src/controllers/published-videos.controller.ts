@@ -1,8 +1,9 @@
 import { Request, Response } from 'express';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { fileRepo } from '../db/file.repo';
+import { CENTRAL_API, LAB_MODE } from '../config';
 
-const CENTRAL    = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL    = CENTRAL_API;
 const YT_API_KEY = process.env.YOUTUBE_API_KEY || '';
 
 type PublishedVideo = {
@@ -263,16 +264,23 @@ export const getPublishedVideosRefresh = async (req: AuthRequest, res: Response)
     const result: PublishedVideo[] = [];
 
     for (const platform of platforms) {
-      const token = await fetchToken(platform, authHeader);
-
       let card: PublishedVideo | null = null;
-      if (platform === 'youtube') {
-        // YouTube puede resolverse con token (canal del usuario) o API key + channel env.
-        card = await fetchYouTubeLatest(token);
-      } else if (token) {
-        card = platform === 'tiktok'
-          ? await fetchTikTokLatest(token)
-          : await fetchInstagramLatest(token);
+
+      // En Laboratorio, "último publicado por plataforma en vivo" no tiene
+      // fuente real que consultar (los platformId son mock) -- se deja en
+      // null, igual que si no hubiera token, y cae al fallback de central
+      // (mirrorToCentral/fillEmptyFromCentral, que en Laboratorio ya apunta
+      // al lab-backend) para no dejar la tarjeta vacía sin motivo.
+      if (!LAB_MODE) {
+        const token = await fetchToken(platform, authHeader);
+        if (platform === 'youtube') {
+          // YouTube puede resolverse con token (canal del usuario) o API key + channel env.
+          card = await fetchYouTubeLatest(token);
+        } else if (token) {
+          card = platform === 'tiktok'
+            ? await fetchTikTokLatest(token)
+            : await fetchInstagramLatest(token);
+        }
       }
 
       if (card) {

@@ -445,11 +445,12 @@ export const videoService = {
   getAllVideos: async (
     page = 1,
     limit = 10,
-    filters?: { tipo?: string; content_status?: string }
+    filters?: { tipo?: string; content_status?: string; order?: "asc" | "desc" | "published" }
   ): Promise<{ videos: DashboardVideo[]; info: PaginationInfo }> => {
     let url = `/api/videos?page=${page}&limit=${limit}`;
     if (filters?.tipo)           url += `&tipo=${encodeURIComponent(filters.tipo)}`;
     if (filters?.content_status) url += `&content_status=${encodeURIComponent(filters.content_status)}`;
+    if (filters?.order)          url += `&order=${filters.order}`;
     const data = await requestJson<ApiVideosResponse>(url);
     return {
       videos: data.results.map(toDashboardVideo),

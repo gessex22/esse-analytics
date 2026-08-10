@@ -24,6 +24,7 @@ import uploadStatusRoutes     from './routes/upload-status.routes';
 import { remoteLibraryProxy } from './routes/remote-library-proxy.routes';
 import { initWatcherFromConfig } from './watcher';
 import { startPlugin } from './plugins';
+import { LAB_MODE } from './config';
 
 dotenv.config();
 
@@ -47,7 +48,7 @@ app.use('/api/remote-library', remoteLibraryProxy);
 app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'esse-local-backend', db: 'sqlite' });
+  res.json({ ok: true, service: 'esse-local-backend', db: 'sqlite', environment: LAB_MODE ? 'lab' : 'local' });
 });
 
 app.use(authProxyRoutes);
@@ -77,7 +78,7 @@ if (frontendDist && fs.existsSync(frontendDist)) {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Local backend corriendo en http://0.0.0.0:${PORT}`);
-  console.log('Base de datos: SQLite (esse_local.db)');
+  console.log(`Base de datos: SQLite (${LAB_MODE ? 'esse_lab.db -- MODO LABORATORIO' : 'esse_local.db'})`);
   initWatcherFromConfig();
 
   // Acceso Remoto funciona "por defecto" (como Acceso Local): si el plugin ya

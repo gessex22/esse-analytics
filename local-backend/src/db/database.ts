@@ -3,11 +3,15 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { randomUUID } from 'crypto';
+import { LAB_MODE } from '../config';
 
 const DB_DIR = process.env.SQLITE_DIR || path.join(os.homedir(), '.esse-analytics');
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
-const DB_PATH = process.env.SQLITE_PATH || path.join(DB_DIR, 'esse_local.db');
+// En modo Laboratorio el nombre de archivo cambia SIEMPRE, aunque alguien se
+// olvide de pasar un SQLITE_DIR/SQLITE_PATH distinto -- así es estructuralmente
+// imposible que el Laboratorio termine leyendo/escribiendo esse_local.db real.
+const DB_PATH = process.env.SQLITE_PATH || path.join(DB_DIR, LAB_MODE ? 'esse_lab.db' : 'esse_local.db');
 
 export const db = new Database(DB_PATH);
 

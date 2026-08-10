@@ -3,8 +3,9 @@ import { DbFile } from '../db/file.repo';
 import { setPreloadActivity, clearPreloadActivity, setPreloadError } from '../state/remote-library-preload-activity';
 import { ensureThumbnail } from './thumbnail.service';
 import { normalizeForMeta, appendDebugLog } from './video-normalize.service';
+import { CENTRAL_API } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 const DIRECT_UPLOAD_LIMIT = 80 * 1024 * 1024;
 const TUS_CHUNK_SIZE = 8 * 1024 * 1024;
 const ANDROID_MAX_WIDTH = 1080;

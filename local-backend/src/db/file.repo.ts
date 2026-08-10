@@ -109,7 +109,7 @@ export const fileRepo = {
     content_status?: string;
     tipo?: string;
     search?: string;
-    order?: 'asc' | 'desc';
+    order?: 'asc' | 'desc' | 'published';
     limit?: number;
     offset?: number;
     excludeStatus?: string;
@@ -138,7 +138,9 @@ export const fileRepo = {
 
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const dir = opts.order === 'asc' ? 'ASC' : 'DESC';
-    const orderBy = `ORDER BY COALESCE(fecha_creacion, created_at) ${dir}, id ${dir}`;
+    const orderBy = opts.order === 'published'
+      ? `ORDER BY (SELECT MAX(published_at) FROM platform_videos WHERE linked_file_id = files.id) DESC, id DESC`
+      : `ORDER BY COALESCE(fecha_creacion, created_at) ${dir}, id ${dir}`;
 
     const countRow = db.prepare(`SELECT COUNT(*) as cnt FROM files ${where}`).get(...params) as { cnt: number };
     const total = countRow.cnt;

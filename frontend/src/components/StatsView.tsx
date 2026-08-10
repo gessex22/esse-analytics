@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Eye, Heart, MessageCircle, Loader2, RefreshCw, BarChart2 } from "lucide-react";
 import { syncService, videoService, GroupStatsItem } from "../services/api";
 import { YoutubeLogo, InstagramLogo, TiktokLogo, PlatformKey } from "./icons/PlatformLogos";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // Mismos colores de marca que ya se usan en toda la app (VideosView, SyncPanel)
 // para YouTube/Instagram/TikTok — se reusan acá como identidad categórica del
@@ -57,8 +57,7 @@ function StatsChart({ items, platform }: { items: GroupStatsItem[]; platform?: P
       </div>
       <div className="h-56 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={statsChartData(items, platform)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+          <LineChart data={statsChartData(items, platform)} margin={{ top: 8, right: 0, left: 0, bottom: 0 }}>
             <XAxis dataKey="video" tick={{ fontSize: 11 }} />
             <YAxis
               domain={[0, yMax]}
@@ -297,7 +296,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
     setLocalIds(cached?.localIds ?? {});
     setLoading(true);
     try {
-      const res = await syncService.getGroupStats(5, filter === 'all' ? undefined : filter);
+      const res = await syncService.getGroupStats(10, filter === 'all' ? undefined : filter);
       setItems(res.items);
       statsCache[filter] = { items: res.items, localIds: cached?.localIds ?? {} };
       if (res.items.length > 0) {
@@ -321,7 +320,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         <div>
           <h2 className="text-xl font-semibold text-foreground">Estadísticas</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {filter === 'all' ? 'Los últimos videos publicados en las 3 redes, comparados lado a lado.' : `Los últimos 5 videos publicados en ${PLATFORM_CFG[filter].label}.`}
+            {filter === 'all' ? 'Los últimos 10 videos publicados en las 3 redes, comparados lado a lado.' : `Los últimos 10 videos publicados en ${PLATFORM_CFG[filter].label}.`}
           </p>
         </div>
         <button

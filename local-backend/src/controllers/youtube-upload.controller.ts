@@ -8,8 +8,10 @@ import { pushFilesToCloudInBackground } from './backup-sync.controller';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { reportUploadEvent } from '../services/upload-history.service';
 import { setUploadProgress, clearUploadProgress, setUploadError } from '../state/upload-activity';
+import { CENTRAL_API, LAB_MODE } from '../config';
+import { simulateMockUpload, MockUploadError, MockUploadMode } from '../services/mock-upload.service';
 
-const CENTRAL     = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL     = CENTRAL_API;
 const CHUNK_SIZE  = 8 * 1024 * 1024; // 8 MiB, múltiplo de 256 KiB (requisito de YouTube resumable)
 
 async function fetchAccessToken(authHeader: string): Promise<string> {
@@ -138,7 +140,11 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     madeForKids = false,
     ageRestricted = false,
     publishAt,
-  } = req.body;
+    // Escape hatch de Laboratorio -- ver services/mock-upload.service.ts.
+    // Sin este campo (o fuera de LAB_MODE) el comportamiento es 'success',
+    // idéntico a antes. Nunca tiene efecto si LAB_MODE es false.
+    labSimulate,
+  } = req.body as { labSimulate?: MockUploadMode; [k: string]: any };
 
   if (!fileId || !title) return res.status(400).json({ error: 'fileId y title son requeridos' });
 
@@ -158,12 +164,22 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
 
   const jobId = `youtube-${fileId}`;
   try {
-    const result = await uploadVideoToYoutube(accessToken, filePath, {
-      title, description, tags, categoryId, privacyStatus,
-      madeForKids: Boolean(madeForKids),
-      ageRestricted: Boolean(ageRestricted),
-      publishAt,
-    }, (percent) => setUploadProgress(jobId, { platform: 'youtube', title, phase: 'uploading', percent }));
+    // Único punto de rama: en modo Laboratorio se simula la subida completa
+    // (nunca se llama a googleapis) y se sigue exactamente el mismo camino de
+    // ahí para abajo (SQLite, historial, calendario, backup) -- ver
+    // config.ts/mock-upload.service.ts.
+    const result = LAB_MODE
+      ? await (async () => {
+          const mock = await simulateMockUpload('youtube', labSimulate ?? 'success',
+            (percent, phase) => setUploadProgress(jobId, { platform: 'youtube', title, phase, percent }));
+          return { videoId: mock.platformId, videoUrl: mock.platformUrl, title };
+        })()
+      : await uploadVideoToYoutube(accessToken, filePath, {
+          title, description, tags, categoryId, privacyStatus,
+          madeForKids: Boolean(madeForKids),
+          ageRestricted: Boolean(ageRestricted),
+          publishAt,
+        }, (percent) => setUploadProgress(jobId, { platform: 'youtube', title, phase: 'uploading', percent }));
 
     platformVideoRepo.upsert({
       platform:      'youtube',
@@ -195,6 +211,12 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
     clearUploadProgress(jobId);
     res.json({ ok: true, ...result });
   } catch (err: any) {
+    // Token vencido A MITAD de la subida (mock) es el mismo caso de "reconectar"
+    // que fetchAccessToken ya maneja al principio -- no un error de subida.
+    if (err instanceof MockUploadError && err.code === 'NO_AUTH') {
+      res.status(401).json({ error: 'NO_AUTH', message: err.message });
+      return;
+    }
     console.error('Error local YouTube upload:', err.message);
     setUploadError(jobId, { platform: 'youtube', title, message: err.message });
     res.status(500).json({ error: 'Error al subir el video', detail: err.message });
@@ -212,6 +234,15 @@ export const setThumbnail = async (req: AuthRequest, res: Response) => {
     accessToken = await fetchAccessToken(req.headers.authorization!);
   } catch {
     return res.status(401).json({ error: 'NO_AUTH' });
+  }
+
+  // Nunca llamar a googleapis.com en Laboratorio -- la miniatura no tiene a
+  // qué video real pegarse (videoId es un `lab_yt_...`), y ya se verificó
+  // conexión arriba (fetchAccessToken). Se responde éxito directo: no hay
+  // nada más que simular en este endpoint.
+  if (LAB_MODE) {
+    res.json({ ok: true });
+    return;
   }
 
   const base64Data = (imageBase64 as string).replace(/^data:image\/\w+;base64,/, '');

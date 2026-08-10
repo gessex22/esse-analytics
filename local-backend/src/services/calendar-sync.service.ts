@@ -2,8 +2,9 @@ import { DbFile, fileRepo } from '../db/file.repo';
 import { configRepo } from '../db/config.repo';
 import { ensureNextVideoInRemoteLibrary } from './remote-library-preload.service';
 import { appendDebugLog } from './video-normalize.service';
+import { CENTRAL_API } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 
 type CentralCalendarEntry = {
   platform: 'youtube' | 'instagram' | 'tiktok';

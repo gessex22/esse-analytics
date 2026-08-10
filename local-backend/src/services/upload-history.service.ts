@@ -1,7 +1,8 @@
 import { configRepo } from '../db/config.repo';
 import { getOrCreateDeviceName } from '../routes/local-admin.routes';
+import { CENTRAL_API } from '../config';
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 
 // Reporta a la central UN evento de subida confirmada, en el momento exacto en que
 // pasa -- para que Historial (local y remoto/Android) tenga el registro real sin

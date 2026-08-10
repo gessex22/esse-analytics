@@ -1,10 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { configRepo } from '../db/config.repo';
 import { getOrCreateInstallId, getOrCreateDeviceName } from './local-admin.routes';
+import { CENTRAL_API } from '../config';
 
 const router = Router();
 
-const CENTRAL = process.env.CENTRAL_API || 'https://api.esse-analytics.com';
+const CENTRAL = CENTRAL_API;
 // Identifica a este cliente instalado ante la central (habilita el registro).
 // El valor real lo inyecta el Electron (setupEnv) / dev .env; fallback solo de desarrollo.
 const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';

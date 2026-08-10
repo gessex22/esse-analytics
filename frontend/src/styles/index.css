@@ -2,6 +2,21 @@
 @import './tailwind.css';
 @import './theme.css';
 
+/* Layout compartido de App.tsx -- nunca hardcodear estos números por vista.
+   --app-bottom-safe: espacio inferior seguro para que el último control de
+   CUALQUIER vista (el botón "Publicar en YouTube/Instagram/TikTok", el de
+   cualquier otra pantalla) quede clickeable por encima del MobileNav fijo
+   (Sidebar.tsx, position: fixed bottom-0, solo <sm) y del home indicator de
+   iOS -- valor estático porque el alto de esa barra no cambia en runtime.
+   --app-chrome-top: alto REAL medido de header+banners (Laboratorio, remoto,
+   carpeta pendiente, móvil) -- lo publica App.tsx vía ResizeObserver, nunca
+   un número fijo. En producción sin ningún banner activo queda en el alto
+   del header solo, sin hueco de más. */
+:root {
+  --app-bottom-safe: max(5rem, calc(env(safe-area-inset-bottom) + 5rem));
+  --app-chrome-top: 0px;
+}
+
 /* Scrollbar propia para toda la app — en Windows/Electron, Chromium muestra por
    defecto el scrollbar "clásico" del sistema (gris, grueso). Se reemplaza acá a
    nivel global para no tener que envolver cada contenedor con scroll en el

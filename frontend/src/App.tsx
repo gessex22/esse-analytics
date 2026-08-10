@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  Bell, Upload, Clock, Tv2, LogOut, AlertTriangle, Loader2, MonitorOff, X,
+  Bell, Upload, Clock, Tv2, LogOut, AlertTriangle, Loader2, MonitorOff, X, FolderOpen,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -122,7 +122,7 @@ function LogoutDialog({
 
 export default function App() {
   const { user, token, logout, loading } = useAuth();
-  const { isLocal } = useBackendType();
+  const { isLocal, isLabMode } = useBackendType();
   const { notifications, cloudOpen, unread: notifUnread, markRead } = useNotificationCenter(isLocal);
   const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
@@ -141,6 +141,35 @@ export default function App() {
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
   const [userMenuOpen, setUserMenuOpen]     = useState(false);
+
+  // ── Alto real de header+banners, publicado como variable CSS ───────────────
+  // --app-chrome-top nunca se calcula a mano (ni por cantidad de banners ni por
+  // breakpoint): un ResizeObserver mide el contenedor de verdad, así que cuando
+  // el banner de Laboratorio (u otro) no está montado, el valor baja solo sin
+  // dejar hueco -- y si algún día se agrega otro banner, o el texto pasa a 2
+  // líneas en una ventana angosta, el valor sigue siendo exacto sin tocar esta
+  // lógica. header+banners siguen en flujo normal (nunca position:fixed), así
+  // que "Contenido" ya no se solapa con esto por sí solo; esta variable existe
+  // para que ninguna vista tenga que adivinar el offset si alguna vez lo necesita
+  // (ver también --app-bottom-safe en styles/index.css).
+  //
+  // Callback ref, no useRef+useEffect: este componente tiene returns
+  // condicionales tempranos (loading/login) ANTES de llegar al JSX que monta
+  // este div -- un useEffect con deps [] correría una sola vez mientras el
+  // ref todavía es null (pantalla de carga) y nunca se reconectaría después
+  // del login. Un callback ref se re-ejecuta solo cada vez que el nodo se
+  // monta/desmonta, sin ese problema.
+  const chromeObserverRef = useRef<ResizeObserver | null>(null);
+  const setChromeRef = useCallback((el: HTMLDivElement | null) => {
+    chromeObserverRef.current?.disconnect();
+    chromeObserverRef.current = null;
+    if (!el) return;
+    const publish = () => document.documentElement.style.setProperty("--app-chrome-top", `${el.offsetHeight}px`);
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(el);
+    chromeObserverRef.current = observer;
+  }, []);
 
   // ── Logout con limpieza ─────────────────────────────────────────────────────
   const [showLogoutDialog, setShowLogoutDialog]   = useState(false);
@@ -244,6 +273,37 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.username]);
 
+  // ── Aviso "configurá tu carpeta de videos" (cuenta todopoderoso sin biblioteca) ──
+  // A diferencia del newMachineAlert de arriba (solo premium, para restaurar desde
+  // la nube), este es el caso más simple: una cuenta nueva -- real o del Laboratorio,
+  // ver lab_environment_project -- que todavía no tiene NINGUNA carpeta configurada
+  // en esta PC. Sin este aviso, el único lugar para configurarla es Ajustes >
+  // Biblioteca, y nada lleva ahí si no sabés que existe.
+  const [needsVideoFolder, setNeedsVideoFolder] = useState(false);
+  useEffect(() => {
+    if (!user || !isLocal || user.role !== "todopoderoso") { setNeedsVideoFolder(false); return; }
+    let cancelled = false;
+    backupService.getLocalStatus()
+      .then(local => { if (!cancelled) setNeedsVideoFolder(!local.videosDir); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  // Se re-chequea también al cambiar de pestaña -- así, si configuraste la
+  // carpeta en Ajustes y volvés a Resumen, el aviso desaparece sin necesitar
+  // recargar toda la app.
+  }, [user?.username, isLocal, activeNav]);
+
+  const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
+  const goToLibrarySettings = () => {
+    setSettingsInitialSection("biblioteca");
+    setActiveNav(6);
+  };
+  // Se limpia al salir de Ajustes -- si no, una visita posterior CUALQUIERA
+  // (por el menú normal, no por este aviso) seguiría saltando directo a
+  // Biblioteca en vez de abrir la lista de secciones como siempre.
+  useEffect(() => {
+    if (activeNav !== 6) setSettingsInitialSection(null);
+  }, [activeNav]);
+
   function openVideoPlayer(fileId: string, title: string) {
     setPendingPlayer({ fileId, title });
     setActiveNav(1);
@@ -316,6 +376,14 @@ export default function App() {
       {/* ── Área principal ─────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
 
+        {/* Header + banners apilables (Laboratorio, remoto, carpeta pendiente, móvil).
+            Se mide con ResizeObserver (ver setChromeRef más arriba) y se publica
+            en --app-chrome-top -- así cualquier vista puede saber el alto REAL de
+            lo que tiene fijo arriba sin adivinar un número por cantidad de banners
+            activos. No hace falta para que "Contenido" no se solape (ya es flujo
+            normal de flexbox, nunca position:fixed) — existe para que ninguna
+            vista tenga que hardcodear ese offset si alguna vez lo necesita. */}
+        <div ref={setChromeRef}>
         {/* Header */}
         <header className="flex items-center justify-between sm:justify-end px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0 bg-background">
 
@@ -468,6 +536,17 @@ export default function App() {
           </div>
         </header>
 
+        {/* Banner de Laboratorio -- persistente, nunca se puede ignorar por accidente.
+            isLabMode solo puede ser true si el local-backend al que hablamos arrancó
+            con ESSENALYTICS_LAB_MODE=1 (ver useBackendType.ts) -- nunca aparece
+            hablando con la central real ni con un local-backend normal. */}
+        {isLabMode && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-violet-500/15 border-b border-violet-500/30 text-violet-200 text-xs sm:text-sm font-medium">
+            <span aria-hidden>🧪</span>
+            <span>Laboratorio · Datos simulados</span>
+          </div>
+        )}
+
         {/* Banner modo remoto */}
         {!isLocal && (
           <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-amber-500/10 border-b border-amber-500/20 text-amber-200/90 text-xs sm:text-sm">
@@ -480,6 +559,23 @@ export default function App() {
           </div>
         )}
 
+        {/* Aviso: cuenta todopoderoso local sin carpeta de videos configurada todavía
+            (cuenta nueva real, o de Laboratorio -- ver [[lab_environment_project]]).
+            No se muestra si ya hay newMachineAlert/showWorkflowSetup abiertos, para
+            no apilar 3 avisos a la vez sobre lo mismo. */}
+        {needsVideoFolder && !newMachineAlert && !showWorkflowSetup && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-primary/10 border-b border-primary/20 text-primary text-xs sm:text-sm">
+            <FolderOpen className="w-4 h-4 flex-shrink-0" />
+            <span className="flex-1">Todavía no configuraste tu carpeta de videos — sin eso, la app no tiene nada para mostrar.</span>
+            <button
+              onClick={goToLibrarySettings}
+              className="underline font-medium hover:no-underline flex-shrink-0"
+            >
+              Configurar ahora
+            </button>
+          </div>
+        )}
+
         {/* Banner modo móvil — el dueño puede publicar desde el celular vía túnel */}
         {mobileMode && mobileCanUpload && (
           <div className="flex items-center gap-2 px-4 py-2 bg-primary/10 border-b border-primary/20 text-primary text-xs">
@@ -487,20 +583,32 @@ export default function App() {
             <span>Modo móvil — podés publicar tus videos de la PC desde acá.</span>
           </div>
         )}
+        </div>
 
         {/* Contenido */}
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0 sm:min-h-screen">
+        {/* sm:min-h-screen (forzaba min-height:100vh sin importar cuánto header+
+            banners hubiera arriba -- bug real preexistente, ver commit) se saca a
+            propósito: este div ya es flex-1 dentro de un padre flex-col de altura
+            fija (100dvh), así que ya crece para llenar el espacio disponible sin
+            necesitar un mínimo hardcodeado que compita con eso. Con 2-3 banners
+            apilados (Laboratorio + aviso de carpeta + modo móvil), ese mínimo de
+            100vh terminaba empujando el contenido ~heightDeChrome píxeles por
+            debajo del viewport real -- el botón final de Publicar (YouTube/
+            Instagram/TikTok) quedaba fuera de alcance aunque <main> reportara
+            que sí había scroll disponible. Verificado con el banner de
+            Laboratorio prendido y apagado, en 400×700 y 900×600. */}
+        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           {effectiveNav === 5
             ? <Taller role={role} />
             : (
               <main
                 className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"
-                style={{ paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}
+                style={{ paddingBottom: "var(--app-bottom-safe)" }}
               >
                 {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => setActiveNav(7)} />
                   : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
                   : effectiveNav === 2 ? <UploadView onOpenHistory={() => setActiveNav(9)} />
-                  : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} />
+                  : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} initialSection={settingsInitialSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
                   : effectiveNav === 4 ? <StatsView onOpenVideo={openVideoPlayer} />

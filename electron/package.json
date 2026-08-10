@@ -14,6 +14,7 @@
     "dist:mac": "npm run build && electron-builder --mac",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --mac",
     "dev": "npm run build:server && npm run build:main && electron .",
+    "dev:lab": "cross-env ESSENALYTICS_LAB_MODE=1 LAB_API=http://127.0.0.1:5055 npm run dev",
     "release:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win --publish always",
     "release:mac": "npm run build && electron-builder --mac --publish always"
   },

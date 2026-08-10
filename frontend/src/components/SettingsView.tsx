@@ -297,10 +297,14 @@ interface SettingsViewProps {
   isPremium?: boolean;
   isOwner?: boolean;
   onOpenVideo?: (fileId: string, title: string) => void;
+  // Deep-link a una sección puntual (ej. desde el aviso "configurá tu carpeta
+  // de videos" en App.tsx) -- solo aplica al ABRIR esta vista, no fuerza nada
+  // si el usuario navega a otra sección después.
+  initialSection?: string | null;
 }
 
-export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo }: SettingsViewProps) {
-  const [activeSection, setActiveSection] = useState<string | null>(null);
+export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo, initialSection }: SettingsViewProps) {
+  const [activeSection, setActiveSection] = useState<string | null>(initialSection ?? null);
 
   const visibleSections = ALL_SECTIONS.filter(s => {
     if (!s.roles.includes(role)) return false;
