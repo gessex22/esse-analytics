@@ -452,8 +452,13 @@ export function VideosView({
       setError(null);
       try {
         const filters: { tipo?: string; content_status?: string } = {};
-        if (tipo)   filters.tipo           = tipo;
-        if (status) filters.content_status = status;
+        if (tipo) filters.tipo = tipo;
+        // Sin filtro de estado elegido a mano → default "parciales" (no "no_completo",
+        // que el backend usaría por su cuenta e incluiría también los sin tocar).
+        // selectedStatus sigue en "" para que los chips/badge de "filtros activos"
+        // no se muestren como si el usuario hubiera elegido algo — es el punto de
+        // partida de la vista, no un filtro que se pueda "limpiar" y perder.
+        filters.content_status = status || "parcial";
         const [result, recent] = await Promise.all([
           videoService.getAllVideos(page, LIMIT, filters),
           videoService.getAllVideos(1, 5, { content_status: "completo", order: "published" }),

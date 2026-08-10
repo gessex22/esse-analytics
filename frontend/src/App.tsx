@@ -26,7 +26,7 @@ import { HistoryView } from "./components/HistoryView";
 import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
 import logoImg from "./assets/esseAnalytics.png";
-import { backupService } from "./services/api";
+import { backupService, videoService } from "./services/api";
 import { API_BASE } from "./config";
 
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
@@ -291,6 +291,44 @@ export default function App() {
   // carpeta en Ajustes y volvés a Resumen, el aviso desaparece sin necesitar
   // recargar toda la app.
   }, [user?.username, isLocal, activeNav]);
+
+  // ── Aviso "publicás hoy" (calendario, al iniciar sesión) ──────────────────────
+  // Distinto de la sección "Hoy" que ya muestra PublishingQueue -- ese aviso solo
+  // lo ve quien entra a Calendario; este es la notificación global que pedía el
+  // pending_tasks_roadmap ("alerta del día de publicación al iniciar sesión").
+  // No es local-only: el calendario ya sincroniza con la central (ver LOCAL_ONLY_NAV),
+  // así que se muestra igual en remoto -- la acción de publicar en sí no lo es.
+  const [publishToday, setPublishToday] = useState<{ title: string; count: number } | null>(null);
+  useEffect(() => {
+    if (!user) { setPublishToday(null); return; }
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // Un solo aviso por día y por cuenta -- si lo cerrás, no vuelve a aparecer hasta
+    // mañana (mismo criterio que showWorkflowSetup: no molestar de nuevo en la sesión).
+    if (localStorage.getItem(`esse_pubToday_dismissed_${user.username}_${todayKey}`) === "1") return;
+    let cancelled = false;
+    videoService.getCalendarVideos(now.getFullYear(), now.getMonth() + 1)
+      .then(videos => {
+        if (cancelled) return;
+        // date = effective_date del servidor (scheduled_date si existe, si no la
+        // fecha de creación) -- puede venir con hora, por eso se compara solo el
+        // prefijo de fecha. "completo" = ya publicado en todo lo agendado, no avisar.
+        const pending = videos.filter(v => v.date?.slice(0, 10) === todayKey && v.calendarStatus !== "completo");
+        if (pending.length > 0) setPublishToday({ title: pending[0].title, count: pending.length });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [user?.username]);
+
+  const dismissPublishToday = () => {
+    if (user) {
+      const now = new Date();
+      const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      localStorage.setItem(`esse_pubToday_dismissed_${user.username}_${todayKey}`, "1");
+    }
+    setPublishToday(null);
+  };
+  const goToCalendar = () => { setPublishToday(null); setActiveNav(7); };
 
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
   const goToLibrarySettings = () => {
@@ -572,6 +610,26 @@ export default function App() {
               className="underline font-medium hover:no-underline flex-shrink-0"
             >
               Configurar ahora
+            </button>
+          </div>
+        )}
+
+        {/* Aviso: hay algo agendado para publicar hoy en el Calendario. Mismo slot
+            que el de arriba (uno a la vez) -- si no hay carpeta configurada ese
+            aviso tiene prioridad, no tiene sentido avisar de publicar sin biblioteca. */}
+        {publishToday && !needsVideoFolder && !newMachineAlert && !showWorkflowSetup && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-primary/10 border-b border-primary/20 text-primary text-xs sm:text-sm">
+            <Bell className="w-4 h-4 flex-shrink-0" />
+            <span className="flex-1 truncate">
+              {publishToday.count === 1
+                ? <>Hoy toca publicar: <span className="font-medium">{publishToday.title}</span></>
+                : <>Hoy tenés <span className="font-medium">{publishToday.count} videos</span> agendados para publicar.</>}
+            </span>
+            <button onClick={goToCalendar} className="underline font-medium hover:no-underline flex-shrink-0">
+              Ver calendario
+            </button>
+            <button onClick={dismissPublishToday} className="flex-shrink-0 opacity-70 hover:opacity-100" aria-label="Cerrar aviso">
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
         )}
