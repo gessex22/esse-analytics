@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Eye, Heart, MessageCircle, Loader2, RefreshCw, BarChart2 } from "lucide-react";
 import { syncService, videoService, GroupStatsItem } from "../services/api";
 import { YoutubeLogo, InstagramLogo, TiktokLogo, PlatformKey } from "./icons/PlatformLogos";
-import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 // Mismos colores de marca que ya se usan en toda la app (VideosView, SyncPanel)
 // para YouTube/Instagram/TikTok — se reusan acá como identidad categórica del
@@ -18,17 +18,20 @@ const PLATFORMS: PlatformKey[] = ["youtube", "instagram", "tiktok"];
 function statsChartData(items: GroupStatsItem[], platform?: PlatformKey) {
   const sorted = [...items].sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime());
   return sorted.map((item, index) => {
-    const point: Record<string, string | number> = { video: `V${index + 1}` };
-    for (const name of platform ? [platform] : PLATFORMS) {
-      point[name] = item.platforms[name]?.views ?? 0;
-    }
-    return point;
+    const visiblePlatforms = platform ? [platform] : PLATFORMS;
+    return {
+      video: `V${index + 1}`,
+      title: item.fileName,
+      views: visiblePlatforms.reduce((sum, name) => sum + (item.platforms[name]?.views ?? 0), 0),
+    };
   });
 }
 
 function chartMax(items: GroupStatsItem[], platform?: PlatformKey): number {
   const maxValue = items.reduce((max, item) => {
-    return Math.max(max, ...(platform ? [platform] : PLATFORMS).map(name => Number(item.platforms[name]?.views ?? 0)));
+    const visiblePlatforms = platform ? [platform] : PLATFORMS;
+    const totalViews = visiblePlatforms.reduce((sum, name) => sum + Number(item.platforms[name]?.views ?? 0), 0);
+    return Math.max(max, totalViews);
   }, 0);
   if (maxValue <= 0) return 1;
 
@@ -48,11 +51,11 @@ function chartMax(items: GroupStatsItem[], platform?: PlatformKey): number {
 
 function StatsChart({ items, platform }: { items: GroupStatsItem[]; platform?: PlatformKey }) {
   const yMax = chartMax(items, platform);
-  const visiblePlatforms = platform ? [platform] : PLATFORMS;
+  const chartLabel = platform ? `Vistas por video en ${PLATFORM_CFG[platform].label}` : "Vistas totales por video";
   return (
     <div className="p-4 rounded-2xl border border-border bg-card">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-semibold text-foreground">Vistas por video y plataforma</h3>
+        <h3 className="text-sm font-semibold text-foreground">{chartLabel}</h3>
         <span className="text-[11px] text-muted-foreground">V1 = más antiguo</span>
       </div>
       <div className="h-56 w-full">
@@ -67,11 +70,20 @@ function StatsChart({ items, platform }: { items: GroupStatsItem[]; platform?: P
               allowDecimals={false}
               tickCount={5}
             />
-            <Tooltip formatter={(value) => formatNum(Number(value))} />
-            <Legend wrapperStyle={{ fontSize: 11 }} />
-            {visiblePlatforms.map(name => (
-              <Line key={name} type="monotone" dataKey={name} name={PLATFORM_CFG[name].label} stroke={PLATFORM_CFG[name].hex} strokeWidth={2} dot={{ r: 3 }} />
-            ))}
+            <Tooltip
+              labelFormatter={(_, payload) => payload[0]?.payload?.title ?? "Video"}
+              formatter={(value) => [formatNum(Number(value)), "Vistas"]}
+              contentStyle={{
+                backgroundColor: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                color: "var(--foreground)",
+                fontSize: 12,
+              }}
+              labelStyle={{ color: "var(--foreground)", fontWeight: 600 }}
+              itemStyle={{ color: "var(--muted-foreground)" }}
+            />
+            <Line type="monotone" dataKey="views" name="Vistas" stroke="#6366f1" strokeWidth={2.5} dot={{ r: 3.5 }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -320,7 +332,7 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
         <div>
           <h2 className="text-xl font-semibold text-foreground">Estadísticas</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {filter === 'all' ? 'Los últimos 10 videos publicados en las 3 redes, comparados lado a lado.' : `Los últimos 10 videos publicados en ${PLATFORM_CFG[filter].label}.`}
+            {filter === 'all' ? 'Los últimos 10 videos publicados, con las vistas sumadas entre todas las redes.' : `Los últimos 10 videos publicados en ${PLATFORM_CFG[filter].label}.`}
           </p>
         </div>
         <button
