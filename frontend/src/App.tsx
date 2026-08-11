@@ -664,7 +664,7 @@ export default function App() {
                 style={{ paddingBottom: "var(--app-bottom-safe)" }}
               >
                 {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => setActiveNav(7)} />
-                  : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} />
+                  : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} onOpenCloud={user.hasCloudStorage ? () => setActiveNav(10) : undefined} />
                   : effectiveNav === 2 ? <UploadView onOpenHistory={() => setActiveNav(9)} />
                   : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} initialSection={settingsInitialSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />

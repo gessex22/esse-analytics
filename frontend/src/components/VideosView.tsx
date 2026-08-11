@@ -19,12 +19,15 @@ import {
   Cloud,
   UploadCloud,
   Database,
+  HardDrive,
 } from "lucide-react";
-import { videoService, backupService, setupService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry } from "../services/api";
+import { videoService, backupService, setupService, remoteLibraryService, formatDurationFromSeconds, deriveRatio, DashboardVideo, PaginationInfo, WorkflowMode, SyncStatusEntry, RemoteLibraryVideo, MAX_REMOTE_LIBRARY_VIDEOS } from "../services/api";
 import { runSyncTick } from "../services/syncOrchestrator";
 import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import { Chip } from "./ui/chip";
+import { useAuth } from "../hooks/useAuth";
+import { formatBytes } from "./RemoteLibraryView";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 type TipoFilter = "" | "GUION_ESTRUCTURADO" | "CLIP_RANDOM" | "CLIP_SIN_VOZ";
@@ -345,11 +348,39 @@ export function VideosView({
   role = "todopoderoso",
   autoOpenVideo,
   onAutoOpenConsumed,
+  onOpenCloud,
 }: {
   role?: string;
   autoOpenVideo?: { fileId: string; title: string } | null;
   onAutoOpenConsumed?: () => void;
+  onOpenCloud?: () => void;
 }) {
+  const { user } = useAuth();
+
+  // ── Fuente: Local (SQLite de esta PC) vs Nube (Biblioteca remota, bytes
+  // reales en la central, misma cola que se ve en la pestaña "Nube" y en
+  // iOS/Android) -- mismo patrón "Todos/Local/Remoto" que LibraryViewModel.kt
+  // (Android) y LibraryView.swift (iOS), simplificado a 2 chips: acá "Local"
+  // ya es la vista completa de siempre (con su badge ☁️ por video), así que
+  // no hace falta un "Todos" que las fusione -- solo un vistazo rápido a la
+  // Nube sin salir de Videos. Gestión completa (subir/borrar/reproducir)
+  // sigue viviendo en la pestaña Nube (ver onOpenCloud).
+  const [librarySource, setLibrarySource] = useState<"local" | "nube">("local");
+  const [remoteVideos, setRemoteVideos]   = useState<RemoteLibraryVideo[]>([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError]     = useState<string | null>(null);
+  const canSeeCloudChip = !!(user?.hasCloudStorage || user?.isOwner);
+
+  useEffect(() => {
+    if (librarySource !== "nube" || !canSeeCloudChip) return;
+    setRemoteLoading(true);
+    setRemoteError(null);
+    remoteLibraryService.list({ limit: MAX_REMOTE_LIBRARY_VIDEOS })
+      .then((d) => setRemoteVideos(d.videos))
+      .catch(() => setRemoteError("No se pudo cargar la Nube."))
+      .finally(() => setRemoteLoading(false));
+  }, [librarySource, canSeeCloudChip]);
+
   const [videos, setVideos]           = useState<DashboardVideo[]>(videosCache?.videos ?? []);
   const [recentPublished, setRecentPublished] = useState<DashboardVideo[]>([]);
   const [info, setInfo]               = useState<PaginationInfo | null>(videosCache?.info ?? null);
@@ -872,48 +903,67 @@ export function VideosView({
         </div>
 
         <div className="flex items-center gap-2">
-          <AnimatePresence mode="wait" initial={false}>
-            {role === "todopoderoso" && selectionMode ? (
-              <motion.button
-                key="cancel"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.15 }}
-                onClick={cancelSelection}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" /> Cancelar
-              </motion.button>
-            ) : role === "todopoderoso" ? (
-              <motion.button
-                key="select"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.15 }}
-                onClick={() => setSelectionMode(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-border bg-secondary text-foreground hover:bg-secondary/80 transition-colors"
-              >
-                Seleccionar
-              </motion.button>
-            ) : null}
-          </AnimatePresence>
+          {librarySource === "local" && (
+            <>
+              <AnimatePresence mode="wait" initial={false}>
+                {role === "todopoderoso" && selectionMode ? (
+                  <motion.button
+                    key="cancel"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.15 }}
+                    onClick={cancelSelection}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" /> Cancelar
+                  </motion.button>
+                ) : role === "todopoderoso" ? (
+                  <motion.button
+                    key="select"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    transition={{ duration: 0.15 }}
+                    onClick={() => setSelectionMode(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-border bg-secondary text-foreground hover:bg-secondary/80 transition-colors"
+                  >
+                    Seleccionar
+                  </motion.button>
+                ) : null}
+              </AnimatePresence>
 
-          <button
-            onClick={() => setShowFilterPanel((v) => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-              showFilterPanel || hasActiveFilters
-                ? "bg-primary/20 text-primary border-primary/40 font-semibold"
-                : "bg-secondary text-foreground hover:bg-secondary/80 border-border"
-            }`}
-          >
-            <ListFilter className="w-3.5 h-3.5" />
-            Filtros{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
-          </button>
+              <button
+                onClick={() => setShowFilterPanel((v) => !v)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                  showFilterPanel || hasActiveFilters
+                    ? "bg-primary/20 text-primary border-primary/40 font-semibold"
+                    : "bg-secondary text-foreground hover:bg-secondary/80 border-border"
+                }`}
+              >
+                <ListFilter className="w-3.5 h-3.5" />
+                Filtros{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* ── Fuente: Local / Nube (solo si el usuario tiene el plan de storage
+          en la nube, o es el dueño) ──────────────────────────────────────── */}
+      {canSeeCloudChip && (
+        <div className="flex items-center gap-2">
+          <Chip active={librarySource === "local"} onClick={() => setLibrarySource("local")}>
+            <HardDrive /> Local
+          </Chip>
+          <Chip active={librarySource === "nube"} onClick={() => setLibrarySource("nube")}>
+            <Cloud /> Nube{remoteVideos.length > 0 ? ` (${remoteVideos.length})` : ""}
+          </Chip>
+        </div>
+      )}
+
+      {librarySource === "local" && (
+      <>
       {/* ── Barra de acciones masivas ─────────────────────────────────────── */}
       <AnimatePresence initial={false}>
       {selectionMode && selectedIds.length > 0 && (
@@ -1467,6 +1517,81 @@ export function VideosView({
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
+      )}
+      </>
+      )}
+
+      {/* ── Fuente: Nube (cola remota, capada a MAX_REMOTE_LIBRARY_VIDEOS) ──
+          Vistazo rápido de solo lectura -- subir/borrar/reproducir/editar
+          links sigue viviendo en la pestaña Nube completa (onOpenCloud). */}
+      {librarySource === "nube" && (
+        <motion.div key="nube-section" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className="space-y-3">
+          <div className="flex items-start gap-2 px-4 py-3 rounded-xl bg-primary/5 border border-primary/20 text-xs text-muted-foreground">
+            <Cloud className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary" />
+            <div className="flex-1">
+              <p className="text-foreground font-medium">Cola de Nube ({remoteVideos.length}/{MAX_REMOTE_LIBRARY_VIDEOS})</p>
+              <p className="mt-0.5">Videos con bytes reales en la nube, publicables desde cualquier dispositivo (celular incluido). Para subir, borrar, reproducir o editar links andá a la pestaña Nube.</p>
+            </div>
+            {onOpenCloud && (
+              <button onClick={onOpenCloud} className="flex-shrink-0 text-primary hover:underline font-medium whitespace-nowrap">
+                Abrir Nube →
+              </button>
+            )}
+          </div>
+
+          {remoteLoading && <VideoListSkeleton rows={3} />}
+
+          {remoteError && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-4 rounded-xl text-sm flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" /> {remoteError}
+            </div>
+          )}
+
+          {!remoteLoading && !remoteError && remoteVideos.length === 0 && (
+            <div className="bg-card border border-border rounded-xl p-10 text-center text-muted-foreground text-sm">
+              No hay videos en la Nube todavía.
+            </div>
+          )}
+
+          {!remoteLoading && remoteVideos.length > 0 && (
+            <div className="bg-card border border-border rounded-xl divide-y divide-border">
+              {remoteVideos.map((v, idx) => {
+                const simpleState = aggregatePlatformState({ platforms: v.platforms, platforms_discarded: v.platformsDiscarded });
+                return (
+                  <div
+                    key={v._id}
+                    className={`flex items-center gap-3 px-4 py-3
+                      ${idx === 0 ? "rounded-t-xl" : ""}
+                      ${idx === remoteVideos.length - 1 ? "rounded-b-xl" : ""}
+                    `}
+                  >
+                    <Cloud className="w-4 h-4 flex-shrink-0 text-primary/70" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-foreground truncate">{v.fileName}</p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap text-[10px] text-muted-foreground">
+                        <span>{formatBytes(v.sizeBytes)}</span>
+                        {v.durationSeconds ? <span className="font-mono">{formatDurationFromSeconds(v.durationSeconds)}</span> : null}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {isSimpleFlow ? (
+                        <SimpleStatusBadge state={simpleState} />
+                      ) : (
+                        visiblePlatforms.map((p) => (
+                          <PlatformBadge
+                            key={p}
+                            platform={p}
+                            state={v.platforms.includes(p) ? "publicado" : v.platformsDiscarded.includes(p) ? "descartado" : "pendiente"}
+                          />
+                        ))
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </motion.div>
       )}
 
       {/* Toast transitorio -- error al subir un video puntual a la nube

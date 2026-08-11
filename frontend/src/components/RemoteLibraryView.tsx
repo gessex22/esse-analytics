@@ -148,7 +148,7 @@ function EditRemoteLinksModal({ video, onClose, onSaved }: {
   );
 }
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB"];
   let v = bytes / 1024, i = 0;

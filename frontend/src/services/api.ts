@@ -1032,6 +1032,7 @@ export interface RemoteLibraryPlatformLink {
 export interface RemoteLibraryVideo {
   _id: string;
   userId: string;
+  contentId?: string;
   fileName: string;
   storedFileName: string | null;
   sizeBytes: number;
