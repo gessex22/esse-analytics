@@ -490,15 +490,16 @@ export function VideosView({
         // no se muestren como si el usuario hubiera elegido algo — es el punto de
         // partida de la vista, no un filtro que se pueda "limpiar" y perder.
         filters.content_status = status || "parcial";
-        const [result, recent] = await Promise.all([
-          videoService.getAllVideos(page, LIMIT, filters),
-          videoService.getAllVideos(1, 5, { content_status: "completo", order: "published" }),
-        ]);
-        // La cola principal contiene los pendientes y, al final, una referencia
-        // de los cinco últimos completos. Comparten el mismo renderer para que
-        // muestren exactamente los mismos datos y badges.
-        setVideos([...result.videos, ...recent.videos.filter((v) => !result.videos.some((pending) => pending._id === v._id))]);
-        setRecentPublished(recent.videos);
+        const result = await videoService.getAllVideos(page, LIMIT, filters);
+        // Los cinco últimos completos se muestran únicamente al final de la
+        // cola, es decir, en su última página. No forman parte del paginado de
+        // pendientes ni deben repetirse en cada página.
+        const recent = page === result.info.totalPages
+          ? await videoService.getAllVideos(1, 5, { content_status: "completo", order: "published" })
+          : null;
+        const recentVideos = recent?.videos ?? [];
+        setVideos([...result.videos, ...recentVideos.filter((v) => !result.videos.some((pending) => pending._id === v._id))]);
+        setRecentPublished(recentVideos);
         setInfo(result.info);
         setCurrentPage(page);
         videosCache = { page, tipo: tipoKey, status: statusKey, videos: result.videos, info: result.info };
