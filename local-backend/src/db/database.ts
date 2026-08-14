@@ -116,6 +116,17 @@ db.exec(`
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE(idea_id, file_id)
   );
+
+  -- Identidad estable de ESTA instalación física, separada a propósito de
+  -- app_config (donde vive install_id) -- ver
+  -- docs/primary-install-corrected-plan-2026-08-14.md. wipeAll()/clearOwner()
+  -- no mencionan esta tabla, así que sobrevive logout/wipe/cambio de cuenta.
+  -- Solo se rota con una acción explícita de soporte ("restablecer identidad
+  -- de esta PC"), nunca automáticamente.
+  CREATE TABLE IF NOT EXISTS device_identity (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    device_id TEXT NOT NULL
+  );
 `);
 
 // Migrations

@@ -4,9 +4,12 @@
 > `docs/primary-install-installid-lifecycle-blocker-2026-08-14.md`
 > (`installId` no sobrevive un logout normal). Las Fases 2-5 de aquel
 > documento (subida ad-hoc, C4, índice de `content_id`) siguen vigentes tal
-> cual — acá se renombran G y se retoman recién al final. **Sin implementar
-> todavía** salvo lo que ya estaba pusheado de la Fase 0/1 original
-> (commits `6608423`, `2614645`), que hay que migrar, no tirar.
+> cual — acá se renombran G y se retoman recién al final.
+>
+> **Fases A-D: implementadas y pusheadas (commit ver HANDOFF).** `tsc --noEmit`
+> verificado con conteo exacto antes/después vía `git stash` — 0 errores
+> nuevos en `backend` y `local-backend`. **No probado contra un cliente real
+> todavía** — falta Fase E (cliente Electron/frontend) y F (tests).
 
 # Plan corregido: identidad de dispositivo + primaria segura
 
@@ -104,6 +107,23 @@ const fullSync = isPrimary && requestedFullSync === true;
   (`primaryDeviceId` vacío) **no** cae acá — ya está cubierto como `primary`
   por la fórmula de arriba, no hace falta un caso especial de "toleremos
   esto temporalmente".
+
+  **Desviación deliberada al implementar (2026-08-14):** en
+  `bulkUpsertBackupFiles` específicamente se mantuvo la degradación
+  graceful (ignorar `fullSync`/no escribir `video_folder`, pero seguir
+  aceptando el push de metadata/badges) en vez de un 403 duro, por dos
+  motivos: (1) `video_folder` viaja en **todo** push regular de
+  `pushFilesToCloud` como simple eco del config local, no solo cuando el
+  usuario está *cambiando* la carpeta — un 403 basado en "el campo está
+  presente" rechazaría el 100% de los pushes normales de una secundaria,
+  no solo los que de verdad intentan reconfigurar algo; (2) el gate duro de
+  verdad (que una secundaria ni siquiera tenga carpeta/scanner corriendo)
+  es responsabilidad del cliente (Fase E, todavía sin implementar) — hasta
+  que exista, un 403 acá bloquearía también el sync de badges/estadísticas
+  que el propio plan de "instalación primaria única" quería preservar desde
+  una secundaria. El 403 explícito sobre `autoDetectFolder`/
+  `updateScanConfig`/`scanFolder` (los endpoints DEDICADOS de configurar
+  carpeta) sigue pendiente como parte de Fase E.
 - No confiar en `req.body.fullSync` como autorización (ya aplicado en
   `2614645`, se mantiene).
 - `pushFilesToCloud` manda `deviceId` en vez de `installId` en el body.

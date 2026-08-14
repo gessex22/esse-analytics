@@ -6,6 +6,7 @@ import { verifyToken, AuthRequest } from '../middleware/auth.middleware';
 import { configRepo } from '../db/config.repo';
 import { db } from '../db/database';
 import { fileRepo } from '../db/file.repo';
+import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { CENTRAL_API, JWT_SECRET, LAB_MODE } from '../config';
 
 const router = Router();
@@ -127,21 +128,24 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
 });
 
 // POST /api/local/claim-primary — reclama ESTA instalación como la principal
-// de la cuenta (Fase 0 de docs/primary-install-implementation-plan-2026-08-14.md).
-// Proxy directo a la central (User.installId vive ahí, no en SQLite local) --
-// mismo patrón que /api/local/owner con link-install. Requiere password: la
-// central la valida contra el hash antes de reasignar.
+// de la cuenta (docs/primary-install-corrected-plan-2026-08-14.md, Fase C).
+// Manda deviceId (identidad estable de la PC, sobrevive logout), NO installId
+// (ese es solo el secreto de auth). Proxy directo a la central
+// (User.primaryDeviceId vive ahí) -- requiere password: la central la valida
+// contra el hash antes de reasignar. Solo hace falta para REEMPLAZAR una
+// primaria ya establecida; el primer claim es automático (ver
+// bulkUpsertBackupFiles en la central).
 router.post('/api/local/claim-primary', verifyToken, async (req: AuthRequest, res: Response) => {
   const { password } = req.body as { password?: string };
   try {
-    const installId = getOrCreateInstallId();
+    const deviceId = deviceIdentityRepo.getOrCreate();
     const upstream = await fetch(`${CENTRAL}/api/auth/claim-primary`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: req.headers.authorization || '',
       },
-      body: JSON.stringify({ installId, password, deviceName: getOrCreateDeviceName(), source: 'desktop' }),
+      body: JSON.stringify({ deviceId, password, deviceName: getOrCreateDeviceName(), source: 'desktop' }),
     });
     const data = await upstream.json().catch(() => ({}));
     res.status(upstream.status).json(data);
@@ -152,19 +156,34 @@ router.post('/api/local/claim-primary', verifyToken, async (req: AuthRequest, re
 
 // GET /api/local/installation-status — ¿esta instalación es la primaria de la
 // cuenta o una secundaria (gate duro)? Proxy a la central, que es la única
-// fuente de verdad de esto (ver docs/primary-install-implementation-plan-2026-08-14.md,
-// Fase 1). No cachea nada localmente a propósito -- se consulta al login y
+// fuente de verdad de esto (docs/primary-install-corrected-plan-2026-08-14.md,
+// Fase E). No cachea nada localmente a propósito -- se consulta al login y
 // antes de cada sync.
 router.get('/api/local/installation-status', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const installId = getOrCreateInstallId();
-    const upstream = await fetch(`${CENTRAL}/api/auth/installation-status?installId=${encodeURIComponent(installId)}`, {
+    const deviceId = deviceIdentityRepo.getOrCreate();
+    const upstream = await fetch(`${CENTRAL}/api/auth/installation-status?deviceId=${encodeURIComponent(deviceId)}`, {
       headers: { Authorization: req.headers.authorization || '' },
     });
     const data = await upstream.json().catch(() => ({}));
     res.status(upstream.status).json(data);
   } catch (err: any) {
     res.status(502).json({ message: 'No se pudo contactar a la central.', detail: err.message });
+  }
+});
+
+// POST /api/local/device-identity/reset — "restablecer identidad de esta PC"
+// (acción de soporte, docs/primary-install-corrected-plan-2026-08-14.md
+// Fase A.2). Rota el device_id local -- después de esto, esta instalación
+// vuelve a ser una secundaria sin reclamar (o se auto-reclama de nuevo si la
+// cuenta no tiene primaria todavía) hasta que alguien la reclame otra vez.
+// No toca install_id ni ninguna otra tabla.
+router.post('/api/local/device-identity/reset', verifyToken, (_req: AuthRequest, res: Response) => {
+  try {
+    const deviceId = deviceIdentityRepo.reset();
+    res.json({ ok: true, deviceId });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al restablecer identidad de la PC.', detail: err.message });
   }
 });
 

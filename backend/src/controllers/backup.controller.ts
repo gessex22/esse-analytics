@@ -113,17 +113,31 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       return;
     }
 
-    // Fase 1 de docs/primary-install-implementation-plan-2026-08-14.md
-    // (hallazgo de seguridad #2): antes se confiaba ciegamente en el booleano
-    // fullSync que mandaba el cliente -- cualquier instalación podía archivar
-    // el catálogo de otra con solo mandar fullSync:true. Ahora la central
-    // recalcula esto mismo comparando installId contra User.installId; el
-    // valor que mande el cliente en el body se ignora más abajo. Sin
-    // installId todavía registrado (cuenta nueva) se trata como primaria --
-    // mismo criterio que getInstallationStatus.
-    const { installId } = req.body as { installId?: string };
-    const userDoc = await UserModel.findById(userId).select('installId').lean();
-    const isPrimary = !userDoc?.installId || (!!installId && userDoc.installId === installId);
+    // Fase D de docs/primary-install-corrected-plan-2026-08-14.md (hallazgo
+    // de seguridad #2): antes se confiaba ciegamente en el booleano fullSync
+    // que mandaba el cliente -- cualquier instalación podía archivar el
+    // catálogo de otra con solo mandar fullSync:true. Ahora la central
+    // recalcula esto comparando deviceId contra User.primaryDeviceId; el
+    // valor que mande el cliente en el body se ignora más abajo.
+    //
+    // Bootstrap de primaria (sin contraseña, a propósito -- ver "Resolución
+    // del bootstrap" en el plan): si la cuenta todavía no tiene
+    // primaryDeviceId, ESTA es la primera operación de catálogo real que
+    // llega, y el dispositivo que la manda queda fijado como primaria acá
+    // mismo, sin pedir confirmación (no hay nada que proteger todavía --
+    // reemplazarla después SÍ exige POST /api/auth/claim-primary con
+    // contraseña). Sin esto, dos instalaciones nuevas podrían actuar como
+    // "primaria" indefinidamente sin que ninguna quedara fijada de verdad.
+    const { deviceId } = req.body as { deviceId?: string };
+    const userDoc = await UserModel.findById(userId).select('primaryDeviceId').lean();
+    const isBootstrap = !userDoc?.primaryDeviceId;
+    const isPrimary = isBootstrap || userDoc!.primaryDeviceId === deviceId;
+    // Fija la primaria en el primer deviceId válido que aparezca durante el
+    // bootstrap. Si todavía no llega ninguno (cliente viejo/sin migrar), se
+    // sigue tratando como primaria igual que antes -- no empeora nada.
+    if (isBootstrap && deviceId && deviceId.length >= 16) {
+      await UserModel.findByIdAndUpdate(userId, { primaryDeviceId: deviceId });
+    }
 
     const fileNames = incoming.map(f => f.file_name);
     const contentIds = incoming.map(f => f.content_id).filter(Boolean);

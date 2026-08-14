@@ -23,8 +23,18 @@ export interface IUser extends Document {
   deletedAt?: Date;
   // Secreto único de la instalación vinculada a esta cuenta. Autoriza operaciones
   // destructivas desde el cliente (reset de contraseña, baja) sin exponer una key
-  // global. Solo la instalación dueña conoce este valor.
+  // global. Solo la instalación dueña conoce este valor. Se borra en cada logout
+  // (ver local-backend clearOwner/wipeAll) -- NO usar para nada que necesite
+  // sobrevivir logout/login, ver primaryDeviceId más abajo.
   installId?: string;
+  // Identidad estable del dispositivo físico que es la "primaria" de esta
+  // cuenta -- distinto de installId a propósito (docs/primary-install-corrected-plan-2026-08-14.md):
+  // este SÍ debe sobrevivir logout/login de la misma cuenta, install_id no.
+  // vacío = sin reclamar todavía (bootstrap: cualquier dispositivo actúa como
+  // primaria hasta que uno haga la primera operación de catálogo real, que lo
+  // fija sin pedir contraseña -- ver bulkUpsertBackupFiles). Reemplazarlo
+  // después de fijado exige POST /api/auth/claim-primary con contraseña.
+  primaryDeviceId?: string;
   // Preferencia de tema (se sincroniza con la cuenta para tenerla en cualquier dispositivo).
   theme?: string;
   video_folder?: string;
@@ -51,6 +61,7 @@ const userSchema = new Schema<IUser>({
   firstLinkedAt:      { type: Date },
   deletedAt:          { type: Date },
   installId:          { type: String },
+  primaryDeviceId:    { type: String },
   theme:              { type: String },
   video_folder:       { type: String },
   hasCloudStorage:    { type: Boolean, default: false },
