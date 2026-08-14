@@ -913,6 +913,26 @@ export const backupService = {
   markSecondary: (): Promise<{ ok: boolean }> =>
     requestJson('/api/local/setup/mark-secondary', { method: 'POST' }),
 
+  // ¿Esta instalación es la "primaria" de la cuenta (puede escanear/manejar
+  // carpeta/fullSync) o una secundaria (gate duro)? La central es la única
+  // fuente de verdad -- ver docs/primary-install-corrected-plan-2026-08-14.md.
+  getInstallationStatus: (): Promise<{
+    role: 'primary' | 'secondary';
+    canFullSync: boolean;
+    canManageFolder: boolean;
+    canUseAdHocUpload: boolean;
+  }> => requestJson('/api/local/installation-status'),
+
+  // Reclama esta PC como la principal de la cuenta -- reemplaza la anterior
+  // si había una. Requiere la contraseña actual (confirmación explícita,
+  // la central la valida contra el hash).
+  claimPrimary: (password: string): Promise<{ ok: boolean; role: 'primary' }> =>
+    requestJson('/api/local/claim-primary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    }),
+
   // Limpia todos los datos locales y desvincula la instalación.
   // Soft-fail: si algún step falla, continúa igual para no dejar al usuario bloqueado.
   wipeLocalData: async (): Promise<void> => {

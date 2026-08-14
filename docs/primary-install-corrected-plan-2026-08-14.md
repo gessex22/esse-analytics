@@ -141,7 +141,34 @@ const fullSync = isPrimary && requestedFullSync === true;
   `2614645`, se mantiene).
 - `pushFilesToCloud` manda `deviceId` en vez de `installId` en el body.
 
-## Fase E — Cliente y UX de primaria
+## Fase E — Cliente y UX de primaria ✅ implementada 2026-08-14
+
+**Estado: implementada y pusheada.** `tsc`/`build`/`lint` limpios en los 3
+paquetes tocados; verificado en vivo con `?mock=1` (login owner, dashboard y
+sidebar renderizan normal, `installation-status` no mockeado se resuelve
+sin romper nada — gracefully degrada a `role` indefinido, mismo que
+"primaria"). **No probado con un mock de `role: 'secondary'` todavía**, ni
+contra Electron real.
+
+- **Gate real server-side** (no solo cliente): `requirePrimaryDevice`
+  (`local-backend/src/middleware/auth.middleware.ts`) aplicado a
+  `POST /api/videos/scan/config`, `POST /api/videos/scan` y
+  `POST /api/local/setup/auto-detect` — devuelve `403 PRIMARY_DEVICE_REQUIRED`
+  si la central dice que esta instalación no es la primaria. Si la central
+  no responde (offline), deja pasar (defensa en profundidad, no punto único
+  de fallo).
+- **Watcher de una primaria reemplazada**: `pushFilesToCloud` (que ya corre
+  periódicamente) revisa `isPrimary` en la respuesta de la central y, si es
+  `false`, llama `stopWatcher()` + marca `secondary_install` local — sin
+  borrar ningún dato.
+- **Frontend**: nuevo estado `installationRole` en `App.tsx` (consulta
+  `backupService.getInstallationStatus()` al login), `isNavVisible` oculta
+  Videos/Subir/Taller/Gemas cuando es secundaria (mismo criterio que modo
+  remoto), banner "Esta PC es secundaria" con botón "Reclamar esta PC como
+  principal" → modal de confirmación de contraseña →
+  `backupService.claimPrimary(password)`.
+
+Original (sigue siendo la referencia de diseño):
 
 1. Al login: recuperar/generar `device_id`, consultar
    `installation-status`.

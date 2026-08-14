@@ -6,6 +6,7 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { ensurePreloadForNextVideos } from '../services/calendar-sync.service';
 import { CENTRAL_API } from '../config';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
+import { stopWatcher } from '../watcher';
 
 const CENTRAL = CENTRAL_API;
 
@@ -67,6 +68,18 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
 
   const result = await upstream.json();
   configRepo.set('backup_last_push', new Date().toISOString());
+
+  // Fase E (docs/primary-install-corrected-plan-2026-08-14.md): si la
+  // central dice que esta instalación YA NO es la primaria (alguien
+  // reclamó la primaria desde otra PC mientras esta seguía corriendo), se
+  // degrada acá mismo -- para el watcher para no seguir generando
+  // identidad de catálogo como si nada, SIN borrar ningún dato local.
+  // pushFilesToCloud ya corre periódicamente (tick de sync + tras cada
+  // publicación), así que no hace falta un polling aparte para detectarlo.
+  if (result?.isPrimary === false) {
+    stopWatcher();
+    configRepo.set('secondary_install', '1');
+  }
 
   // Respaldo real de las transcripciones — antes no existía ningún push, así que
   // el wipe de datos locales (p.ej. al cerrar sesión) las borraba sin posibilidad

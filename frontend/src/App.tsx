@@ -296,6 +296,44 @@ export default function App() {
   // recargar toda la app.
   }, [user?.username, isLocal, activeNav]);
 
+  // ── Rol de instalación: primaria/secundaria ───────────────────────────────────
+  // docs/primary-install-corrected-plan-2026-08-14.md, Fase E. La central decide
+  // (nunca el cliente, mismo criterio que bulkUpsertBackupFiles del lado
+  // backend) -- esto solo refleja esa respuesta para la UI. El gate real
+  // (que una secundaria no pueda escanear/configurar carpeta) ya está
+  // aplicado server-side en local-backend con o sin esto; acá se oculta nav
+  // local y se ofrece "reclamar como principal".
+  const [installationRole, setInstallationRole] = useState<"primary" | "secondary" | null>(null);
+  useEffect(() => {
+    if (!user || !isLocal) { setInstallationRole(null); return; }
+    let cancelled = false;
+    backupService.getInstallationStatus()
+      .then(({ role }) => { if (!cancelled) setInstallationRole(role); })
+      .catch(() => {}); // central inalcanzable: no bloquea la UI, se reintenta en el próximo login/tab
+    return () => { cancelled = true; };
+  }, [user?.username, isLocal]);
+  const isSecondaryInstall = installationRole === "secondary";
+  const [secondaryBannerDismissed, setSecondaryBannerDismissed] = useState(false);
+
+  const [claimModalOpen, setClaimModalOpen] = useState(false);
+  const [claimPassword, setClaimPassword]   = useState("");
+  const [claimBusy, setClaimBusy]           = useState(false);
+  const [claimError, setClaimError]         = useState<string | null>(null);
+  const handleClaimPrimary = async () => {
+    if (!claimPassword) return;
+    setClaimBusy(true); setClaimError(null);
+    try {
+      await backupService.claimPrimary(claimPassword);
+      setInstallationRole("primary");
+      setClaimModalOpen(false);
+      setClaimPassword("");
+    } catch (err: any) {
+      setClaimError(err.message || "No se pudo reclamar esta PC como principal.");
+    } finally {
+      setClaimBusy(false);
+    }
+  };
+
   // ── Aviso "publicás hoy" (calendario, al iniciar sesión) ──────────────────────
   // Distinto de la sección "Hoy" que ya muestra PublishingQueue -- ese aviso solo
   // lo ve quien entra a Calendario; este es la notificación global que pedía el
@@ -382,11 +420,16 @@ export default function App() {
     // acceso remoto (celular/navegador) -- el único gate real es tener el plan de
     // storage en la nube, sin importar isLocal. Por eso queda afuera de LOCAL_ONLY_NAV.
     if (i === 10) return !!user.hasCloudStorage;
-    if (!isLocal && LOCAL_ONLY_NAV.has(i)) {
+    // isSecondaryInstall: mismo gate duro que el modo remoto -- una PC
+    // secundaria no tiene catálogo físico propio (docs/primary-install-corrected-plan-2026-08-14.md,
+    // Fase E), así que Videos/Subir/Taller/Gemas se ocultan igual que en
+    // remoto. La excepción de "Subir" para el owner remoto no aplica acá
+    // todavía (necesitaría la subida ad-hoc de la Fase G, sin implementar).
+    if ((!isLocal || isSecondaryInstall) && LOCAL_ONLY_NAV.has(i)) {
       // Excepción: el owner puede publicar en remoto desde el catálogo (la central
       // tiene sus archivos co-localizados y publica por fileId). Solo "Subir" (2);
       // el resto (Videos/Taller/Gemas) sigue siendo local-only.
-      if (!(i === 2 && !!user.isOwner)) return false;
+      if (!(i === 2 && !!user.isOwner && !isSecondaryInstall)) return false;
     }
     // En modo móvil, "Subir" (2) solo para quien puede publicar desde el celular
     // (owner ahora; premium cuando se habilite el rollout).
@@ -749,6 +792,99 @@ export default function App() {
                 <X className="w-4 h-4" />
               </button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Banner: PC secundaria (docs/primary-install-corrected-plan-2026-08-14.md) ── */}
+      <AnimatePresence>
+        {isSecondaryInstall && !secondaryBannerDismissed && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.22 }}
+            className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 z-50 w-full max-w-md px-4"
+          >
+            <div className="flex items-start gap-3 bg-card border border-amber-500/30 rounded-xl shadow-2xl p-4">
+              <MonitorOff className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground">Esta PC es secundaria</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                  Otra instalación ya es la principal de tu cuenta. Acá no podés escanear ni
+                  configurar la carpeta de videos hasta que la reclames.
+                </p>
+                <button
+                  onClick={() => setClaimModalOpen(true)}
+                  className="mt-2 text-xs font-semibold text-primary hover:underline"
+                >
+                  Reclamar esta PC como principal
+                </button>
+              </div>
+              <button
+                onClick={() => setSecondaryBannerDismissed(true)}
+                className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Modal: reclamar esta PC como principal ────────────────────────────── */}
+      <AnimatePresence>
+        {claimModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center px-4"
+            onClick={() => { if (!claimBusy) { setClaimModalOpen(false); setClaimError(null); } }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="bg-card border border-border rounded-xl shadow-2xl p-5 w-full max-w-sm"
+              onClick={e => e.stopPropagation()}
+            >
+              <h3 className="text-sm font-semibold text-foreground">Reclamar esta PC como principal</h3>
+              <p className="text-xs text-muted-foreground mt-1 leading-snug">
+                Esto reemplaza la instalación principal actual. Confirmá tu contraseña para continuar.
+              </p>
+              <input
+                type="password"
+                autoFocus
+                value={claimPassword}
+                onChange={e => setClaimPassword(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleClaimPrimary(); }}
+                placeholder="Contraseña actual"
+                className="mt-3 w-full px-3 py-2 bg-secondary/40 border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              />
+              {claimError && (
+                <p className="mt-2 text-xs text-red-400 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" /> {claimError}
+                </p>
+              )}
+              <div className="mt-4 flex gap-2 justify-end">
+                <button
+                  onClick={() => { setClaimModalOpen(false); setClaimError(null); setClaimPassword(""); }}
+                  disabled={claimBusy}
+                  className="text-xs px-3 py-2 rounded-lg text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleClaimPrimary}
+                  disabled={claimBusy || !claimPassword}
+                  className="text-xs px-3 py-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 flex items-center gap-1.5"
+                >
+                  {claimBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Reclamar
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
