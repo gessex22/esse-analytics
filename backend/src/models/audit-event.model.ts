@@ -16,7 +16,11 @@ export type AuditEventType =
   | 'platform_disconnect'
   | 'publish_confirmed'
   | 'calendar_config_updated'
-  | 'account_setting_changed';
+  | 'account_setting_changed'
+  // Reasignación explícita de User.installId (Fase 0 de
+  // docs/primary-install-implementation-plan-2026-08-14.md) -- distinto de
+  // 'login': un login NO reasigna la primaria (antes sí, era el bug).
+  | 'primary_install_claimed';
 
 export interface IAuditEvent extends Document {
   userId: string;

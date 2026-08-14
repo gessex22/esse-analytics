@@ -292,9 +292,18 @@ export const deactivateUser = async (req: AuthRequest, res: Response): Promise<v
 // ── POST /api/auth/me/deactivate ──────────────────────────────────────────────
 // El propio usuario marca su cuenta como dada de baja (soft delete).
 // ── POST /api/auth/link-install ───────────────────────────────────────────────
-// Registra (o actualiza) el secreto de instalación de la cuenta autenticada. Se
-// llama tras un login válido desde la app; a partir de ahí las operaciones
-// destructivas exigen este mismo secreto.
+// Registra el secreto de instalación de la cuenta autenticada -- SOLO si
+// todavía no había ninguna (cuenta nueva/primer login de la app en cualquier
+// PC). Se llama tras cada login válido desde la app; a partir de ahí las
+// operaciones destructivas exigen este mismo secreto.
+//
+// FIX 2026-08-14 (docs/primary-install-implementation-plan-2026-08-14.md,
+// Fase 0, hallazgo de seguridad #1): antes esto pisaba installId en CADA
+// login sin condición -- el campo que autoriza reset de contraseña y baja de
+// cuenta cambiaba de dueño con solo loguearse en otra PC. Ahora: si ya hay
+// una primaria distinta, esta instalación queda como 'secondary' (sin
+// reemplazar nada); para reemplazarla de verdad hace falta un claim
+// explícito con contraseña, ver claimPrimary más abajo.
 export const linkInstall = async (req: AuthRequest, res: Response): Promise<void> => {
   const { installId } = req.body as { installId?: string };
   if (!installId || installId.length < 16) {
@@ -302,10 +311,99 @@ export const linkInstall = async (req: AuthRequest, res: Response): Promise<void
     return;
   }
   try {
-    await UserModel.findByIdAndUpdate(req.user!.id, { installId });
-    res.json({ ok: true });
+    const user = await UserModel.findById(req.user!.id).select('installId');
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+
+    if (!user.installId || user.installId === installId) {
+      // Cuenta nueva (sin primaria todavía) o esta misma instalación ya lo era.
+      if (!user.installId) await UserModel.findByIdAndUpdate(req.user!.id, { installId });
+      res.json({ ok: true, role: 'primary' });
+      return;
+    }
+
+    // Ya hay una primaria DISTINTA -- no se reemplaza acá.
+    res.json({ ok: true, role: 'secondary' });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al vincular instalación.', error: err.message });
+  }
+};
+
+// ── POST /api/auth/claim-primary ────────────────────────────────────────────
+// Reasigna User.installId a la instalación que llama, reemplazando la
+// primaria anterior si había una distinta. Acción explícita del usuario
+// (nunca automática, ver linkInstall arriba) -- requiere confirmar con la
+// contraseña actual, mismo criterio que cualquier otra operación destructiva
+// de la cuenta (installId también autoriza reset de password/baja de cuenta,
+// no puede reasignarse a la ligera). Deja auditoría de la instalación
+// anterior y la nueva.
+export const claimPrimary = async (req: AuthRequest, res: Response): Promise<void> => {
+  const { installId, password, deviceName, source } = req.body as
+    { installId?: string; password?: string; deviceName?: string; source?: string };
+  if (!installId || installId.length < 16) {
+    res.status(400).json({ message: 'installId inválido.' });
+    return;
+  }
+  if (!password) {
+    res.status(400).json({ message: 'Confirmá tu contraseña actual para reclamar esta PC como principal.' });
+    return;
+  }
+  try {
+    const user = await UserModel.findById(req.user!.id);
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) {
+      res.status(401).json({ message: 'Contraseña incorrecta.' });
+      return;
+    }
+
+    const previousInstallId = user.installId ?? null;
+    if (previousInstallId !== installId) {
+      await UserModel.findByIdAndUpdate(req.user!.id, { installId });
+      await recordAuditEvent({
+        userId: req.user!.id,
+        type: 'primary_install_claimed',
+        installationId: installId,
+        deviceName, source,
+        entity: { kind: 'installation', id: installId, label: 'primary_claimed' },
+        detail: { previousInstallId },
+      });
+    }
+
+    res.json({ ok: true, role: 'primary' });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al reclamar instalación principal.', error: err.message });
+  }
+};
+
+// ── GET /api/auth/installation-status?installId= ────────────────────────────
+// Le dice al cliente si ES la primaria (puede fullSync, manejar carpeta,
+// escanear) o es secundaria (gate duro -- ver
+// docs/primary-install-implementation-plan-2026-08-14.md, Fase 1). La central
+// es la única fuente de verdad de esto: el cliente nunca decide solo si
+// puede fullSync (bulkUpsertBackupFiles recalcula esto mismo server-side en
+// vez de confiar en el booleano que manda el cliente -- hallazgo de
+// seguridad #2 del mismo plan).
+export const getInstallationStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+  const installId = (req.query.installId as string) || '';
+  try {
+    const user = await UserModel.findById(req.user!.id).select('installId').lean();
+    if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+
+    // Sin primaria registrada todavía (cuenta nueva): cualquier instalación
+    // con installId válido actúa como primaria -- se registra de verdad
+    // recién en el próximo link-install exitoso (arriba).
+    const isPrimary = !user.installId || (!!installId && user.installId === installId);
+    const role = isPrimary ? 'primary' : 'secondary';
+
+    res.json({
+      role,
+      canFullSync: isPrimary,
+      canManageFolder: isPrimary,
+      canUseAdHocUpload: true,
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: 'Error al consultar estado de instalación.', error: err.message });
   }
 };
 

@@ -24,10 +24,20 @@ Verificados contra el código real, no son teóricos:
    realmente la primaria. Cualquier instalación puede mandar
    `fullSync: true` hoy y archivar el catálogo de otra. Fase 1.2 lo cierra.
 
-## Fase 0 — Corregir el contrato de "primaria"
+## Fase 0 — Corregir el contrato de "primaria" ✅ implementado 2026-08-14
 
 Objetivo: que una instalación secundaria no pueda convertirse en primaria
 ni hacer un `fullSync` por accidente.
+
+**Estado: implementado y pusheado.** `linkInstall` ya no pisa `installId`
+en cada login (arregla el hallazgo de seguridad #1); `claim-primary` e
+`installation-status` existen en central (`/api/auth/*`) y proxeados en
+local-backend (`/api/local/*`, mismo patrón que `/api/local/owner`).
+Verificado con `tsc --noEmit` limpio en ambos paquetes (no se pudo bootear
+el server completo en este entorno por un problema preexistente y no
+relacionado en `node_modules/multer`, ver commit). **Todavía no probado en
+vivo contra un cliente real** — falta Fase 1 (nada llama a estos endpoints
+todavía) y las pruebas manuales de Fase 5.
 
 1. Separar el endpoint actual `link-install`:
    - Si `User.installId` está vacío, registra la primera instalación.

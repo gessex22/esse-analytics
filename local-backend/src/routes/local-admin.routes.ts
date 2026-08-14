@@ -126,6 +126,48 @@ router.post('/api/local/owner', verifyToken, async (req: AuthRequest, res: Respo
   }
 });
 
+// POST /api/local/claim-primary — reclama ESTA instalación como la principal
+// de la cuenta (Fase 0 de docs/primary-install-implementation-plan-2026-08-14.md).
+// Proxy directo a la central (User.installId vive ahí, no en SQLite local) --
+// mismo patrón que /api/local/owner con link-install. Requiere password: la
+// central la valida contra el hash antes de reasignar.
+router.post('/api/local/claim-primary', verifyToken, async (req: AuthRequest, res: Response) => {
+  const { password } = req.body as { password?: string };
+  try {
+    const installId = getOrCreateInstallId();
+    const upstream = await fetch(`${CENTRAL}/api/auth/claim-primary`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: req.headers.authorization || '',
+      },
+      body: JSON.stringify({ installId, password, deviceName: getOrCreateDeviceName(), source: 'desktop' }),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    res.status(upstream.status).json(data);
+  } catch (err: any) {
+    res.status(502).json({ message: 'No se pudo contactar a la central.', detail: err.message });
+  }
+});
+
+// GET /api/local/installation-status — ¿esta instalación es la primaria de la
+// cuenta o una secundaria (gate duro)? Proxy a la central, que es la única
+// fuente de verdad de esto (ver docs/primary-install-implementation-plan-2026-08-14.md,
+// Fase 1). No cachea nada localmente a propósito -- se consulta al login y
+// antes de cada sync.
+router.get('/api/local/installation-status', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const installId = getOrCreateInstallId();
+    const upstream = await fetch(`${CENTRAL}/api/auth/installation-status?installId=${encodeURIComponent(installId)}`, {
+      headers: { Authorization: req.headers.authorization || '' },
+    });
+    const data = await upstream.json().catch(() => ({}));
+    res.status(upstream.status).json(data);
+  } catch (err: any) {
+    res.status(502).json({ message: 'No se pudo contactar a la central.', detail: err.message });
+  }
+});
+
 // GET /api/local/setup/workflow-mode — 'simple' (un solo estado por video) o
 // 'avanzado' (estado independiente por plataforma). null = todavía no elegido.
 router.get('/api/local/setup/workflow-mode', verifyToken, (req: AuthRequest, res: Response) => {
