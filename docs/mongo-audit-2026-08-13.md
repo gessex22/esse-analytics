@@ -3,6 +3,32 @@
 Auditoría de solo lectura sobre los esquemas, controladores, índices y datos
 reales de la central. No se modificaron documentos ni índices.
 
+## Estado de remediación (actualizado 2026-08-13)
+
+| Fix | Estado | Detalle |
+| --- | --- | --- |
+| P0 — índice legado `platformvideos.platform_1_platformId_1` | ✅ Aplicado | Eliminado en producción (Atlas). Preflight: 0 combinaciones `platform+platformId` compartidas entre distintos `userId`. |
+| P0 — índice único `platform_config.{userId,platform}` | ✅ Aplicado | Creado como `userId_1_platform_1` en producción. Preflight: 0 duplicados por `(userId, platform)`. |
+| P1 — `platformLinks` ausente en 1,092 videos remotos | Reclasificado a backlog, no bug activo | Confirmado en código (`remote-library.controller.ts`): `platformLinks` solo se llena vía `updateRemoteLibraryVideoPlatforms`, sin backfill automático. Son registros históricos nunca matcheados a mano, no una regresión. No bloquea nada — el fallback ante array vacío ya está cubierto. |
+| P1 — `publishing_status` como 4ta fuente de "publicado" | Pendiente de decisión, bajo riesgo confirmado | `frontend/src/services/api.ts::getPublishingStatus/updatePublishingStatus` no tienen ningún caller en toda la UI (verificado por búsqueda completa en `frontend/src`) — código muerto del lado cliente. Lo único activo son los `deleteByFileId` en cascada. Seguro de deprecar cuando se decida ejecutar. |
+| P1 — identidad de `files`/`backup_files`/`file_path` | Sin aplicar | Requiere migración de índice más cuidadosa (índice único parcial excluyendo `content_id: null`, ver `docs/mongo-remediation-review-plan.md`). |
+| P2 — normalización de arrays nulos / archivo con >3 resoluciones | Sin aplicar | — |
+
+**Script usado para los fixes P0:** `backend/scripts/mongo-p0-index-fixes.js`
+(dry-run por default, `--apply` para escribir; imprime preflight, postflight y
+los comandos exactos de rollback). Corrido en producción el 2026-08-13:
+
+```
+Eliminado: platformvideos.platform_1_platformId_1
+  Rollback: db.platformvideos.createIndex({platform:1,platformId:1},{unique:true,name:"platform_1_platformId_1"})
+Creado: platform_config.userId_1_platform_1
+  Rollback: db.platform_config.dropIndex("userId_1_platform_1")
+```
+
+Antes de cualquier otro fix de este documento (identidad de archivos,
+consolidación de `publishing_status`, backfill de `platformLinks`), seguir el
+protocolo de `docs/mongo-remediation-review-plan.md`.
+
 ## Resumen
 
 La base tiene 16 colecciones activas. El modelo ya separa correctamente cuenta,
