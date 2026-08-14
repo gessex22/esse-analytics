@@ -13,7 +13,7 @@ reales de la central. No se modificaron documentos ni índices.
 | P1 — `publishing_status` como 4ta fuente de "publicado" | ✅ Deprecado (pasos 1-3) | Sacados `getPublishingStatus`/`updatePublishingStatus` y el tipo `PublishingStatus` de `frontend/src/services/api.ts` (sin callers). Rutas/controllers/modelo marcados LEGACY en central y local-backend (comentarios, sin borrar). De paso se eliminó `local-backend/src/models/publishing-status.model.ts`, un modelo mongoose huérfano (nunca importado, local-backend ni siquiera tiene `mongoose` de dependencia) que rompía `tsc --noEmit`. Falta el paso 4 (borrar ruta/modelo/colección) — no urgente, esperar un tiempo prudencial. |
 | P1 — `files.file_path` único global (H2, sub-parte de la identidad de archivos) | ✅ Aplicado | Migrado de único-global a único-por-usuario `{userId,file_path}`. Preflight: 0 duplicados por `(userId,file_path)`. Índice global `file_path_1` eliminado. Declarado en `file.model.ts` (antes el global ni estaba en el schema, se gestionaba fuera de mongoose). Script: `backend/scripts/mongo-filepath-index-and-normalize.js`. |
 | P1 — identidad de `files`/`backup_files` por `content_id` | 🚧 Fixes de código C1-C3 aplicados; índice sigue bloqueado | Ver `docs/mongo-remediation-review-2026-08-13.md`. `bulkUpsertBackupFiles` ahora hace `bulkWrite({ordered:false})` con try/catch (un duplicado ya no tumba el push completo) y prioriza el `content_id` ya existente sobre el entrante (no más ping-pong entre instalaciones). `resolveOrCreateFile` graba `content_id` al crear. **El índice único parcial de `content_id` sigue sin crearse** — falta C4 (decisión de precedencia con `backup_files.userId_1_file_name_1`) y, sobre todo, pruebas de cliente reales (Electron/iOS/Android/free) que no existen todavía. |
-| — Verificación cross-plataforma de C1-C3 | ✅ Verificado por lectura de código (sin poder compilar iOS/Android desde este entorno) | Los 3 fixes viven en la central (`backend/src/controllers/backup.controller.ts`), el único server al que hablan Electron/iOS/Android — no hicieron falta cambios de cliente. `bulkUpsertBackupFiles` (C1/C3) es exclusivo del push de Electron (`local-backend::pushFilesToCloud`); mobile no lo llama. `resolveOrCreateFile` (C2) sí lo llaman iOS/Android vía `POST /api/sync/file-platforms` (`SyncAPI.swift::updateFilePlatforms`, Android `UpdateFilePlatformsRequest` — ambos ya mandaban `contentId`), así que C2 los beneficia directo. Hallazgo aparte, no una regresión: `recordPublish`/`record-publish` (el flujo principal de "publicar" desde mobile) **no manda `contentId`**, solo `fileName` — un video publicado por primera vez desde el celular sigue creándose sin `content_id`, igual que antes de este fix. |
+| — Verificación cross-plataforma de C1-C3 | ✅ Verificado por lectura de código (sin poder compilar iOS/Android desde este entorno) — **corregido 2026-08-13**, ver nota abajo | Los 3 fixes viven en la central (`backend/src/controllers/backup.controller.ts`), el único server al que hablan Electron/iOS/Android — no hicieron falta cambios de cliente, y ninguno de los tres rompe nada en mobile (verificado). `bulkUpsertBackupFiles` (C1/C3) es exclusivo del push de Electron; mobile no lo llama. **Corrección sobre lo documentado originalmente:** C2 (`resolveOrCreateFile` graba `content_id` al crear) hoy **no tiene ningún efecto práctico en mobile** — verificando el *call site* real (no solo el DTO) de `updateFilePlatforms`/`UpdateFilePlatformsRequest` en ambos repos, ni iOS ni Android mandan `contentId` ahí, solo `fileName` + `remoteLibraryVideoId`. El campo existe en el DTO pero nada lo puebla. `FileEntity` (iOS) ni su equivalente en Android tienen un `content_id` propio — su identidad estable para un video bajado de Nube es `remoteLibraryVideoId` (`ImportUseCase.swift::importFromRemoteLibrary`), un mecanismo *distinto* y ya bien resuelto (dedup por `remoteLibraryVideoId`, no por nombre). `content_id` es, en la práctica, un concepto **solo de desktop** hoy. |
 | P2 — normalización de arrays nulos | ✅ Aplicado | 6 `files.platforms` + 13 `files.platforms_discarded` ausentes → `[]`, por driver crudo (sin bump de `updatedAt`). Mismo script que el fix de `file_path`. |
 | P2 — "archivo con >3 resoluciones" | ✅ Cerrado, no era un bug de datos | Era el bug de enum de `facebook` (ver fila de abajo) — no se tocó el documento, no hacía falta. |
 | Bug de enum `facebook` en `file.model.ts` | ✅ Arreglado | `Platform`/`platforms`/`platforms_discarded` no incluían `'facebook'` (`platform-video.model.ts` sí lo tenía). Agregado. `remote_library_videos` tiene el mismo hueco pero está evitado a propósito en `backup.controller.ts:933` — no se tocó. |
@@ -32,6 +32,37 @@ Creado: platform_config.userId_1_platform_1
 Antes de cualquier otro fix de este documento (identidad de archivos,
 consolidación de `publishing_status`, backfill de `platformLinks`), seguir el
 protocolo de `docs/mongo-remediation-review-plan.md`.
+
+### Nota — "descargar un video de Nube" y content_id (investigado 2026-08-13)
+
+Se investigó si existe un camino donde bajar un video de Biblioteca remota a
+disco pudiera crear una identidad (`content_id`) distinta a la que ese mismo
+video ya tenía en la nube -- misma familia de problema que H8, pero en
+sentido "nube → dispositivo" en vez de "PC A → PC B". Resultado:
+
+- **Desktop no tiene esta feature.** `local-backend` solo *empuja* video a
+  Nube (`pushVideoToRemoteLibrary`); no existe un flujo que baje bytes de
+  Biblioteca remota y los re-registre como archivo local rastreado. La
+  hipótesis original (que el scanner de `local-backend/src/db/file.repo.ts::create()`
+  -- que SIEMPRE genera un `randomUUID()` nuevo, sin forma de recibir un
+  `content_id` externo -- pudiera chocar con esto) no es alcanzable hoy: no
+  hay ningún caller que la dispare.
+- **Mobile SÍ tiene esta feature** (`ImportUseCase.swift::importFromRemoteLibrary`
+  en iOS, "mismo motivo por el que Android hace el mismo round-trip" según su
+  propio comentario) y **ya está bien resuelta**, pero con un mecanismo
+  distinto: dedupea por `remoteLibraryVideoId` (el `_id` del documento en
+  `remote_library_videos`, un vínculo determinístico), no por `content_id` --
+  `FileEntity` (iOS) y su equivalente Android no tienen `content_id` propio.
+
+Conclusión: no hay un bug activo en esta dirección específica hoy, porque el
+único cliente que baja bytes de Nube (mobile) ya resuelve su identidad de
+otra forma. Pero confirma que `content_id` es, en la práctica, un concepto
+**solo de desktop** -- la identidad "real" cross-plataforma de un video que
+pasó por Biblioteca remota es `remoteLibraryVideoId`/`contentId` de
+`remote_library_videos`, no el `content_id` de `files`/`backup_files` que
+este plan intenta hacer único. Vale la pena tenerlo presente para C4 (y para
+cualquier diseño futuro de identidad unificada): son dos esquemas de
+identidad distintos que hoy conviven sin pisarse, no uno solo.
 
 ## Resumen
 
