@@ -113,6 +113,18 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       return;
     }
 
+    // Fase 1 de docs/primary-install-implementation-plan-2026-08-14.md
+    // (hallazgo de seguridad #2): antes se confiaba ciegamente en el booleano
+    // fullSync que mandaba el cliente -- cualquier instalación podía archivar
+    // el catálogo de otra con solo mandar fullSync:true. Ahora la central
+    // recalcula esto mismo comparando installId contra User.installId; el
+    // valor que mande el cliente en el body se ignora más abajo. Sin
+    // installId todavía registrado (cuenta nueva) se trata como primaria --
+    // mismo criterio que getInstallationStatus.
+    const { installId } = req.body as { installId?: string };
+    const userDoc = await UserModel.findById(userId).select('installId').lean();
+    const isPrimary = !userDoc?.installId || (!!installId && userDoc.installId === installId);
+
     const fileNames = incoming.map(f => f.file_name);
     const contentIds = incoming.map(f => f.content_id).filter(Boolean);
     // Matchea por content_id (estable ante renombres) o por file_name (registros
@@ -326,8 +338,9 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     // Reconciliación: si el push es completo (fullSync), lo que ya no está local
     // se marca ELIMINADO_DISCO en el central (los endpoints remotos lo excluyen).
     // No se borra físico → se preservan transcripts/platformvideos enlazados.
+    // isPrimary manda acá, no req.body.fullSync (ver comentario al principio).
     let archived = 0;
-    if (req.body.fullSync === true) {
+    if (isPrimary && req.body.fullSync === true) {
       const r = await FileModel.updateMany(
         { userId, file_name: { $nin: fileNames }, status: { $ne: 'ELIMINADO_DISCO' } },
         { $set: { status: 'ELIMINADO_DISCO' } },
@@ -343,12 +356,18 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       await BackupFileModel.deleteMany({ userId, file_name: { $nin: fileNames } });
     }
 
+    // Configurar carpeta también queda gateado a la primaria (Fase 1 del plan
+    // de instalación primaria) -- una secundaria no debe poder redefinir
+    // dónde vive físicamente el catálogo de la cuenta.
     const { video_folder } = req.body;
-    if (video_folder && typeof video_folder === 'string') {
+    if (isPrimary && video_folder && typeof video_folder === 'string') {
       await UserModel.findByIdAndUpdate(userId, { video_folder });
     }
 
-    res.json({ updated: toUpdate.length, skipped: incoming.length - toUpdate.length, filesSynced: incoming.length, archived });
+    res.json({
+      updated: toUpdate.length, skipped: incoming.length - toUpdate.length,
+      filesSynced: incoming.length, archived, isPrimary,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -5,6 +5,7 @@ import { transcriptRepo } from '../db/transcript.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { ensurePreloadForNextVideos } from '../services/calendar-sync.service';
 import { CENTRAL_API } from '../config';
+import { getOrCreateInstallId } from '../routes/local-admin.routes';
 
 const CENTRAL = CENTRAL_API;
 
@@ -41,11 +42,17 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
   // reconciliar (quitar del remoto lo que ya no existe localmente). Una instalación
   // secundaria (PC distinta con solo un subconjunto de videos) NUNCA debe reconciliar
   // así, o archivaría en la nube los videos que solo existen en la PC principal.
+  // Mandamos installId para que la central pueda validarlo de verdad -- el
+  // fullSync que mandamos acá es solo lo que ESTA instalación cree que es,
+  // la central lo recalcula comparando contra User.installId y lo ignora si
+  // no coincide (docs/primary-install-implementation-plan-2026-08-14.md,
+  // hallazgo de seguridad #2 -- antes se confiaba ciegamente en este booleano).
   const isSecondary = configRepo.get('secondary_install') === '1';
+  const installId = getOrCreateInstallId();
   const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-    body: JSON.stringify({ files, video_folder, fullSync: !isSecondary }),
+    body: JSON.stringify({ files, video_folder, fullSync: !isSecondary, installId }),
   });
 
   if (!upstream.ok) {
