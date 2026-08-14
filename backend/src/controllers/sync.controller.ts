@@ -916,12 +916,15 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
 
       const overrideDate = override?.lastPublishedDate ? new Date(override.lastPublishedDate).getTime() : 0;
       const dynamicDate = dynamic?.lastPublishedDate ? new Date(dynamic.lastPublishedDate).getTime() : 0;
-      // Empate (mismo día) a favor del override -- suele traer el intervalDays
-      // que el usuario ajustó a mano, que la versión dinámica no puede saber.
-      const useDynamic = dynamic && dynamicDate > overrideDate;
+      // `lastPublishedDate` solo guarda el día, así que un empate (mismo día)
+      // es ambiguo por fecha -- pero la fuente dinámica (PlatformVideoModel)
+      // SIEMPRE refleja la publicación real más reciente, la actualice quien
+      // la actualice, así que en el empate gana ella. El intervalDays que el
+      // usuario ajustó a mano en el override no se pierde: se conserva aparte.
+      const useDynamic = dynamic && dynamicDate >= overrideDate;
 
       const base = useDynamic
-        ? dynamic!
+        ? { ...dynamic!, intervalDays: override?.intervalDays ?? dynamic!.intervalDays }
         : override
           ? { lastPublishedTitle: override.lastPublishedTitle, lastPublishedDate: override.lastPublishedDate, intervalDays: override.intervalDays ?? dynamic?.intervalDays ?? DEFAULT_INTERVAL_DAYS[platform] }
           : dynamic ?? { lastPublishedTitle: '', lastPublishedDate: '', intervalDays: DEFAULT_INTERVAL_DAYS[platform] };

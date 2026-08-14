@@ -643,6 +643,7 @@ async function syncCalendarAfterPublish(
   userId: string,
   platform: string,
   publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null,
+  publishedAt: Date,
 ): Promise<void> {
   if (!publishedFile || !['youtube', 'instagram', 'tiktok'].includes(platform)) return;
   try {
@@ -675,7 +676,11 @@ async function syncCalendarAfterPublish(
       {
         $set: {
           userId, platform,
-          lastPublishedDate:  new Date().toISOString().slice(0, 10),
+          // Debe ser la fecha real del evento, no la hora en la que esta
+          // sincronización llegó al servidor. De otro modo un backfill o un
+          // reintento tardío puede hacer que Calendario muestre un video viejo
+          // como el último publicado, aunque Historial esté correcto.
+          lastPublishedDate:  publishedAt.toISOString().slice(0, 10),
           lastPublishedTitle: publishedFile.file_name,
           lastVideoId:        String(publishedFile._id),
           nextVideoId:        newNextVideoId,
@@ -918,7 +923,7 @@ export async function applyPlatformPublish(userId: string, data: {
     publishedAt: publishedAtDate, matchStatus,
   });
 
-  await syncCalendarAfterPublish(userId, platform, publishedFile);
+  await syncCalendarAfterPublish(userId, platform, publishedFile, publishedAtDate);
 
   // E: si el mismo video (por fileName o contentId) también vive en Biblioteca
   // remota, refleja la plataforma ahí también -- solo altas, nunca desvincula

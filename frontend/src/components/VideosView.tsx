@@ -484,12 +484,13 @@ export function VideosView({
       try {
         const filters: { tipo?: string; content_status?: string } = {};
         if (tipo) filters.tipo = tipo;
-        // Sin filtro de estado elegido a mano → default "parciales" (no "no_completo",
-        // que el backend usaría por su cuenta e incluiría también los sin tocar).
-        // selectedStatus sigue en "" para que los chips/badge de "filtros activos"
-        // no se muestren como si el usuario hubiera elegido algo — es el punto de
-        // partida de la vista, no un filtro que se pueda "limpiar" y perder.
-        filters.content_status = status || "parcial";
+        // Sin filtro de estado elegido a mano → default "no_completo": la cola
+        // pendiente completa, incluidos los recién detectados por el watcher
+        // (`sin_publicar`), no solo los `parcial`. selectedStatus sigue en ""
+        // para que los chips/badge de "filtros activos" no se muestren como si
+        // el usuario hubiera elegido algo — es el punto de partida de la vista,
+        // no un filtro que se pueda "limpiar" y perder.
+        filters.content_status = status || "no_completo";
         const result = await videoService.getAllVideos(page, LIMIT, filters);
         // Los cinco últimos completos se muestran únicamente al final de la
         // cola, es decir, en su última página. No forman parte del paginado de
@@ -895,7 +896,6 @@ export function VideosView({
       {/* ── Cabecera ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-foreground font-semibold text-lg">Cola de videos</h2>
           {info && (
             <p className="text-muted-foreground text-xs mt-0.5 font-mono">
               {info.totalRecords} registros · página {info.currentPage}/{info.totalPages}
@@ -1128,6 +1128,7 @@ export function VideosView({
             return (
               <motion.div
                 key={video._id}
+                layout="position"
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.04, duration: 0.22, ease: "easeOut" }}
