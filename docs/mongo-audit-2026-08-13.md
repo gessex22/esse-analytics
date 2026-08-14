@@ -64,7 +64,21 @@ este plan intenta hacer único. Vale la pena tenerlo presente para C4 (y para
 cualquier diseño futuro de identidad unificada): son dos esquemas de
 identidad distintos que hoy conviven sin pisarse, no uno solo.
 
-## Resumen
+> **Para un agente/revisor que arranca en frío:** la tabla "Estado de
+> remediación" de arriba es la fuente de verdad actual — lo de acá abajo
+> (Resumen, Mapa de colecciones, integridad, huecos y "Secuencia propuesta")
+> es el cuerpo de la auditoría **original**, sin actualizar desde entonces.
+> Varias de sus afirmaciones ya están corregidas o superadas más arriba
+> (ej. la fila "Archivos con más de tres resoluciones: 1" de la tabla de
+> integridad de abajo decía "dato corrupto, reparar" — **ya sabemos que no lo
+> es**, ver la fila del bug de enum `facebook` arriba). Si algo de acá abajo
+> contradice la tabla de arriba, gana la tabla de arriba. Para el detalle
+> completo de lo bloqueado (identidad por `content_id`), leer también
+> `docs/mongo-remediation-plan-2026-08-13.md` (el plan) y
+> `docs/mongo-remediation-review-2026-08-13.md` (la revisión independiente,
+> veredicto y hallazgos H1-H12).
+
+## Resumen (auditoría original, sin actualizar — ver nota arriba)
 
 La base tiene 16 colecciones activas. El modelo ya separa correctamente cuenta,
 catálogo, eventos, sincronización y almacenamiento remoto, pero aún conserva
@@ -111,11 +125,11 @@ hay hoy en los clientes y en `backup.controller.ts`.
 | Duplicados por `(userId, content_id)` en `backup_files` | 0 | Igual: datos sanos, protección insuficiente. |
 | Duplicados por `(userId, platform)` en `platform_config` | 0 | Sin duplicados actuales, pero tampoco índice que los impida. |
 | `files.platforms` y `platforms_discarded` se superponen | 0 | Estado lógico consistente en este punto. |
-| Archivos con más de tres resoluciones de plataforma | 1 | Dato corrupto o legado que debe aislarse y reparar. |
+| Archivos con más de tres resoluciones de plataforma | 1 | ⚠️ **Desactualizado, ver tabla de arriba**: NO es dato corrupto — era el bug de enum `facebook`, ya arreglado. No aislar ni reparar el documento. |
 | `transcripts`, `publishing_status` o `platformvideos` huérfanos | 0 | Las referencias existentes siguen vivas. |
 | Historial sin `PlatformVideo` correspondiente | 3 | El fallback de recuperación cubre esto, pero no debería ser normal. |
 | Historial sin `BackupPlatformVideo` correspondiente | 1 | Puede perder el enlace exacto al hacer pull en Electron. |
-| `publishing_status` distinto de `files.platforms` | 27 | Duplicación de estado ya materializada en datos reales. |
+| `publishing_status` distinto de `files.platforms` | 27 | ⚠️ **Ver tabla de arriba**: `publishing_status` ya está deprecado (sin callers en frontend) — este desacuerdo ya no importa, no hace falta reconciliarlo. |
 | `files` sin fila correspondiente en `backup_files` | 37 | El endpoint los mezcla deliberadamente; indica que el mirror no es completo. |
 | `remote_library_videos` publicados sin `platformLinks` | 1,092 | La plataforma se marca como resuelta sin guardar el enlace/ID exacto. |
 | `files.platforms` nulo o no-array | 6 | Legacy/schema drift. |
@@ -204,17 +218,15 @@ remotos deben normalizarse con una migración de datos. Hasta entonces, todas la
 consultas/aggregations deben usar `$ifNull` y los clientes deben asumir arrays
 vacíos.
 
-## Secuencia propuesta de corrección
+## Secuencia propuesta de corrección (plan original — estado real en la tabla de arriba)
 
-1. Agregar un script de diagnóstico repetible (solo lectura) con estas métricas
-   y ejecutarlo antes/después de cada migración.
-2. Corregir los índices P0: eliminar el índice global de `platformvideos` y
-   crear el único de `platform_config`.
-3. Normalizar arrays nulos y reparar el archivo con más de tres resoluciones.
-4. Hacer únicos los `content_id` por usuario y reemplazar el índice global de
-   `files.file_path`.
-5. Consolidar escritura de publicación en `applyPlatformPublish`, backfillear
-   `platformLinks` y retirar `publishing_status` de los consumidores.
-6. Documentar la semántica definitiva: `audit_events` es inmutable;
-   `upload_history` es una proyección idempotente; los mirrors son
-   recuperables, nunca fuentes de verdad.
+1. ✅ Hecho — scripts `backend/scripts/mongo-*.js` (dry-run/--apply, preflight/postflight).
+2. ✅ Hecho — los 2 índices P0.
+3. 🚧 Parcial — arrays nulos normalizados; el "archivo con más de tres
+   resoluciones" **no se repara** (no es un dato corrupto, ver nota arriba).
+4. 🚧 Parcial — `file_path` ya es único por usuario; `content_id` único **sigue
+   bloqueado** (ver `docs/mongo-remediation-review-2026-08-13.md`).
+5. 🚧 Parcial — `publishing_status` deprecado (pasos 1-3 de 4); backfill de
+   `platformLinks` **descartado** (reclasificado a backlog histórico, no bug).
+6. ⏳ Sin hacer — documentar la semántica definitiva de `audit_events`/
+   `upload_history`/mirrors.
