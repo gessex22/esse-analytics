@@ -1,5 +1,5 @@
-import { configRepo } from '../db/config.repo';
 import { getOrCreateDeviceName } from '../routes/local-admin.routes';
+import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { CENTRAL_API } from '../config';
 
 const CENTRAL = CENTRAL_API;
@@ -23,8 +23,14 @@ export async function reportUploadEvent(
   },
 ): Promise<void> {
   if (!authHeader) return;
-  const deviceId = configRepo.get('install_id');
-  if (!deviceId) return;
+  // FIX 2026-08-14: usaba configRepo.get('install_id') -- el secreto de auth
+  // que se borra en cada logout, no la identidad estable de la PC (ver
+  // docs/primary-install-corrected-plan-2026-08-14.md). Un video publicado
+  // justo después de un logout/login quedaba con el device de Historial
+  // desalineado, y si install_id todavía no se había regenerado (null), el
+  // evento ni se reportaba (el `if (!deviceId) return` de abajo). deviceId
+  // vía deviceIdentityRepo siempre existe (getOrCreate lo crea si falta).
+  const deviceId = deviceIdentityRepo.getOrCreate();
 
   try {
     const res = await fetch(`${CENTRAL}/api/sync/history`, {

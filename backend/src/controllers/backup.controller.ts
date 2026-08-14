@@ -126,18 +126,31 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     // llega, y el dispositivo que la manda queda fijado como primaria acá
     // mismo, sin pedir confirmación (no hay nada que proteger todavía --
     // reemplazarla después SÍ exige POST /api/auth/claim-primary con
-    // contraseña). Sin esto, dos instalaciones nuevas podrían actuar como
-    // "primaria" indefinidamente sin que ninguna quedara fijada de verdad.
+    // contraseña).
+    //
+    // FIX 2026-08-14 (condición de carrera encontrada en revisión post-Fase
+    // D): la versión anterior hacía find() y DESPUÉS un update incondicional
+    // -- si dos instalaciones nuevas mandaban su primer push casi al mismo
+    // tiempo, las dos leían primaryDeviceId vacío, las dos se consideraban
+    // "primaria" y las dos ejecutaban reconciliación (podían archivarse
+    // catálogo una a la otra) antes de que cualquier escritura "ganara".
+    // Ahora: updateOne con filtro condicional (solo aplica si SIGUE vacío en
+    // el momento exacto de escribir, atómico a nivel de Mongo) + relectura
+    // para saber quién ganó de verdad antes de decidir si reconciliar.
     const { deviceId } = req.body as { deviceId?: string };
-    const userDoc = await UserModel.findById(userId).select('primaryDeviceId').lean();
-    const isBootstrap = !userDoc?.primaryDeviceId;
-    const isPrimary = isBootstrap || userDoc!.primaryDeviceId === deviceId;
-    // Fija la primaria en el primer deviceId válido que aparezca durante el
-    // bootstrap. Si todavía no llega ninguno (cliente viejo/sin migrar), se
-    // sigue tratando como primaria igual que antes -- no empeora nada.
-    if (isBootstrap && deviceId && deviceId.length >= 16) {
-      await UserModel.findByIdAndUpdate(userId, { primaryDeviceId: deviceId });
+    if (deviceId && deviceId.length >= 16) {
+      await UserModel.updateOne(
+        { _id: userId, primaryDeviceId: { $in: [null, undefined] } },
+        { $set: { primaryDeviceId: deviceId } },
+      );
     }
+    const userDoc = await UserModel.findById(userId).select('primaryDeviceId').lean();
+    // Cliente viejo/sin deviceId todavía: se sigue tratando como primaria
+    // igual que antes de este cambio (no empeora nada, solo no participa del
+    // bootstrap atómico). Log temporal para saber cuándo ya no quedan
+    // clientes sin migrar y se puede exigir deviceId de verdad.
+    if (!deviceId) console.warn(`[bulkUpsertBackupFiles] push sin deviceId (cliente sin migrar) -- userId=${userId}`);
+    const isPrimary = !deviceId || !userDoc?.primaryDeviceId || userDoc.primaryDeviceId === deviceId;
 
     const fileNames = incoming.map(f => f.file_name);
     const contentIds = incoming.map(f => f.content_id).filter(Boolean);
