@@ -105,7 +105,16 @@ sobre `docs/primary-install-corrected-plan-2026-08-14.md`) — `device_id`
 automáticamente; bootstrap con auto-claim sin contraseña en la primera
 operación real; `claim-primary`/`installation-status`/`bulkUpsertBackupFiles`
 migrados. Verificado con conteo exacto de `tsc --noEmit` antes/después
-(0 errores nuevos). **No probado contra un cliente real todavía.**
+(0 errores nuevos).
+
+**Revisión post-A-D (commits `4bfb7a4`, `caa3254`) encontró y cerró 3
+problemas más**: condición de carrera real en el auto-claim de bootstrap
+(fix: `updateOne` atómico condicional); `upload-history.service.ts` usaba
+`install_id` para el Historial (mismo bug de fondo + silenciaba el evento
+si era `null`); `localResetPassword`/`localDeactivate` comparaban
+`installId` (se rompían tras el primer logout) — migrados a
+`primaryDeviceId`, más estricto que antes. **No probado contra un cliente
+real todavía.**
 
 **Sin implementar**: Fase E (cliente Electron consultando estado antes de
 sync, UI ocultando nav local + banner "reclamar como principal") y Fase F
