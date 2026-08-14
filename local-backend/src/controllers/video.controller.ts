@@ -368,8 +368,19 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     // siguiente video y fijar su ID remoto de forma inmediata.
     const nextFile = fileRepo.findNewerAdjacent(file, platform as Platform);
     await syncNextVideoToCentral(req.headers.authorization, platform as any, {
-      lastPublishedDate: (publishedAt ? new Date(publishedAt) : new Date()).toISOString().slice(0, 10),
-      lastPublishedTitle: file.file_name,
+      // Sin previousPublication no hay fecha local fiable (típico: un video
+      // publicado desde otra PC o fuera de la app, recién linkeado acá) --
+      // mandar new Date() como si fuera la real pisaba el override central
+      // con "hoy" y le ganaba a la fecha verdadera en el Calendario (BUG
+      // detectado 2026-08-14: link de TikTok de abril mostrado como "último
+      // publicado" de hoy). Mejor omitir los dos campos juntos (título y
+      // fecha son un solo hecho, no se actualizan a medias): reportUploadEvent
+      // (arriba) ya deja la fuente dinámica (PlatformVideoModel) con el dato
+      // real, y getCalendarConfig la usa sola cuando no hay override que mandarle.
+      ...(publishedAt ? {
+        lastPublishedDate: new Date(publishedAt).toISOString().slice(0, 10),
+        lastPublishedTitle: file.file_name,
+      } : {}),
       nextFile,
     });
     res.json({ platform_url: trimmed, platforms: fileRepo.findById(fileId)!.platforms });
