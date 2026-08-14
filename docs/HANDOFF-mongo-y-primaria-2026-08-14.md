@@ -3,6 +3,15 @@
 Punto de entrada único para retomar este trabajo sin releer la conversación
 completa. Escrito para un agente que arranca en frío.
 
+> **PAUSADO 2026-08-14 a pedido del usuario, después de Fase E.** Fases A-E
+> de `docs/primary-install-corrected-plan-2026-08-14.md` implementadas y
+> pusheadas, sin probar contra un cliente real. **Fase F (tests) y Fase G
+> (subida ad-hoc/C4/índice de content_id) quedan anotadas para retomar
+> después — no arrancar sin que el usuario lo pida explícitamente.** Antes
+> de nada de eso, hace falta un rebuild real de `backend`/`local-backend`/
+> `electron` para poder probar Fase A-E de verdad (este entorno no puede
+> bootear el server completo ni correr Electron).
+
 ## Orden de lectura recomendado
 
 1. Este documento (estado general, qué hacer después).

@@ -6,10 +6,25 @@
 > documento (subida ad-hoc, C4, índice de `content_id`) siguen vigentes tal
 > cual — acá se renombran G y se retoman recién al final.
 >
-> **Fases A-D: implementadas y pusheadas (commit ver HANDOFF).** `tsc --noEmit`
-> verificado con conteo exacto antes/después vía `git stash` — 0 errores
-> nuevos en `backend` y `local-backend`. **No probado contra un cliente real
-> todavía** — falta Fase E (cliente Electron/frontend) y F (tests).
+> **Fases A-E: implementadas y pusheadas** (ver tabla de commits en
+> `docs/HANDOFF-mongo-y-primaria-2026-08-14.md`). Verificado por tipos
+> (`tsc --noEmit`, conteo exacto antes/después) + build/lint del frontend +
+> una pasada en vivo por Browser preview (`?mock=1`). **No probado contra un
+> cliente real (Electron/local-backend real, ni con `role:'secondary'`
+> mockeado) todavía.**
+>
+> **PAUSADO acá a pedido del usuario (2026-08-14) — Fase F y Fase G quedan
+> anotadas para retomar después, no implementar ahora:**
+> - **Fase F (tests)** — sin empezar. Automatizados: bootstrap/carrera,
+>   claim, secundaria con `fullSync`, `wipeAll` preserva `device_id`.
+>   Manuales: dos PCs nuevas simultáneas, logout/login primaria, claim,
+>   secundaria intentando escanear, cliente viejo sin `deviceId`. Requiere
+>   un rebuild real de Electron/local-backend para probarse de verdad — ver
+>   respuesta sobre rebuild más abajo en la conversación.
+> - **Fase G (ex-Fases 2-5 del plan original)** — subida ad-hoc, reglas de
+>   conflicto de C4, índice único parcial de `content_id`. Sigue gateada
+>   detrás de F: no ejecutar sin que A-E se hayan probado contra un cliente
+>   real primero.
 >
 > **Revisión post-A-D (2026-08-14) encontró 3 problemas más, todos
 > arreglados:** condición de carrera real en el auto-claim de bootstrap
