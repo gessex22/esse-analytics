@@ -62,4 +62,14 @@ const FileSchema = new Schema<IFile>({
 // applyPlatformPublish) -- sparse porque los registros viejos no tienen content_id.
 FileSchema.index({ userId: 1, content_id: 1 }, { sparse: true });
 
+// Único por usuario, no global (2026-08-13, ver docs/mongo-audit-2026-08-13.md):
+// antes file_path era único GLOBAL (índice creado fuera del schema, nunca
+// declarado acá) y ya colisionaba en producción -- el flujo de backup crea
+// filas con file_path = file_name como placeholder (resolveOrCreateFile en
+// backup.controller.ts), así que dos usuarios con el mismo nombre de archivo
+// (ej. "render.mp4") pisaban el índice global. Migrado a este compuesto vía
+// backend/scripts/mongo-filepath-index-and-normalize.js (0 duplicados por
+// (userId,file_path) verificado antes de aplicar).
+FileSchema.index({ userId: 1, file_path: 1 }, { unique: true });
+
 export const FileModel = model<IFile>('File', FileSchema, 'files');
