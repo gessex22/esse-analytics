@@ -2,7 +2,14 @@ import { Schema, model, Document } from 'mongoose';
 
 export type FileContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
 
-export type Platform = 'youtube' | 'instagram' | 'tiktok';
+// 'facebook': crossposting desde Instagram (ver instagram-upload.controller.ts,
+// $addToSet: {platforms: ['instagram','facebook']}) escribía este valor sin que
+// el enum lo declarara -- no bloqueaba la escritura ($addToSet no corre
+// validadores por default), pero hacía pasar por "dato corrupto" a publicaciones
+// reales de facebook en cualquier chequeo de integridad contra este enum
+// (encontrado en la revisión independiente de docs/mongo-audit-2026-08-13.md,
+// 2026-08-13). platform-video.model.ts ya lo tenía declarado.
+export type Platform = 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 
 export interface IFile extends Document {
   userId?: string;       // dueño del archivo (scoping por cuenta). Legacy = sin dueño → backfill al owner.
@@ -35,12 +42,12 @@ const FileSchema = new Schema<IFile>({
   },
   platforms: {
     type: [String],
-    enum: ['youtube', 'instagram', 'tiktok'],
+    enum: ['youtube', 'instagram', 'tiktok', 'facebook'],
     default: [],
   },
   platforms_discarded: {
     type: [String],
-    enum: ['youtube', 'instagram', 'tiktok'],
+    enum: ['youtube', 'instagram', 'tiktok', 'facebook'],
     default: [],
   },
   publishCode: { type: String, sparse: true },
