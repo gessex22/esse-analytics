@@ -61,9 +61,27 @@ todavía) y las pruebas manuales de Fase 5.
    }
    ```
 
-## Fase 1 — Aplicar el gate en servidor y cliente
+## Fase 1 — Aplicar el gate en servidor y cliente 🚧 parcial, BLOQUEADA
 
-Objetivo: que el bloqueo no dependa solo de la UI.
+**Estado 2026-08-14: parcialmente implementada (commit `2614645`), pero
+bloqueada para seguir.** Se encontró que `installId` (reusado de Fase 0) se
+borra en cada logout normal (`App.tsx::handleLogoutClick` →
+`/api/local/wipe` → `configRepo.wipeAll()` borra `app_config`, donde vive
+`install_id`) — rompe la premisa de "primaria estable". Ver
+`docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` para la
+cadena de evidencia completa y el fix recomendado (separar `install_id` de
+un `device_id` nuevo que sí sobreviva logout). **No seguir con el resto de
+esta fase (gate duro 403, cliente Electron, frontend) hasta resolver eso.**
+
+Ya hecho, seguro y sin dependencia del bug de arriba (usa degradación
+graceful, no bloqueo duro):
+- `bulkUpsertBackupFiles` recalcula `fullSync` server-side comparando
+  `installId` contra `User.installId`, ignora el booleano del cliente.
+- Gatea la escritura de `video_folder` a la misma condición.
+- `pushFilesToCloud` manda `installId` en el body.
+
+Objetivo original de la fase (sigue vigente, retomar después del fix de
+`device_id`): que el bloqueo no dependa solo de la UI.
 
 1. Cada llamada local relevante incluye `installId`: `/api/backup/files/bulk`,
    configuración de carpeta, cualquier ruta que ejecute escaneo, watcher o

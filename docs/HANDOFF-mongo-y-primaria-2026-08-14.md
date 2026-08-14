@@ -25,6 +25,11 @@ completa. Escrito para un agente que arranca en frío.
    (`resolveOrCreateFile`). Es el documento a seguir si se va a implementar
    esto. Incluye 2 hallazgos de seguridad reales y no relacionados con
    `content_id` (ver siguiente sección) que son prioridad inmediata.
+7. `docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` — **el
+   bloqueante actual.** Léelo antes de tocar nada de Fase 1 en adelante:
+   `installId` se borra en cada logout normal, rompiendo la premisa de
+   primaria estable. Tiene la cadena de evidencia completa y el fix
+   recomendado.
 
 ## Qué se hizo y ya está en producción/main
 
@@ -85,8 +90,17 @@ miniatura, en la sección "Decisión final" de `single-primary-install-plan-2026
 
 Ya no es "diseño abierto" — hay un plan de ejecución fase por fase en
 `docs/primary-install-implementation-plan-2026-08-14.md` (Fase 0 a 5).
-**Fase 0 ya está implementada y pusheada** (commit `6608423`). Fase 1-5
-siguen sin hacer. Dos cosas importantes de ese plan:
+
+**Fase 0: implementada y pusheada** (commit `6608423`).
+**Fase 1: parcial y BLOQUEADA** (commit `2614645` para lo ya hecho) — se
+encontró que `installId` se borra en cada logout normal, rompiendo la
+premisa de "primaria estable" que Fase 0/1 asumían. Ver
+`docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` (cadena de
+evidencia completa + fix recomendado: separar un `device_id` nuevo que
+sobreviva logout, de `install_id` que sigue siendo correcto tal como está
+para su propósito original de autorización). **No seguir con el resto de
+Fase 1 (gate duro, cliente Electron, frontend) hasta resolver esto.**
+Fase 2-5 siguen sin hacer. Dos cosas importantes del plan original:
 
 1. **2 hallazgos de seguridad reales, verificados contra el código,
    independientes de `content_id`** — prioridad inmediata sin importar qué
