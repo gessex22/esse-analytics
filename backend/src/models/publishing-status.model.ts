@@ -1,5 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 
+// LEGACY (2026-08-13): ver publishingStatus.controller.ts y "Estado de
+// remediación" en docs/mongo-audit-2026-08-13.md. No agregar nuevos usos.
 export interface IPublishingStatus extends Document {
   userId: string;
   fileId: Types.ObjectId;

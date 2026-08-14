@@ -3,6 +3,15 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { PublishingStatusModel } from '../models/publishing-status.model';
 import { FileModel } from '../models/file.model';
 
+// LEGACY (marcado 2026-08-13, ver docs/mongo-audit-2026-08-13.md): esta
+// colección es una 4ta fuente de "publicado" que no pasa por
+// applyPlatformPublish() y diverge de files.platforms (27 desacuerdos
+// medidos en la auditoría). Confirmado que ningún componente del frontend
+// llama a estos endpoints (api.ts ya no los expone) -- no agregar
+// consumidores nuevos. Se deja viva por compatibilidad hacia atrás hasta la
+// migración final; lo único activo hoy es el borrado en cascada al eliminar
+// un archivo/idea.
+
 export async function getAllPublishingStatus(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;

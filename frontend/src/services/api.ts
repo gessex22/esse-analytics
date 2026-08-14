@@ -109,16 +109,6 @@ export interface DashboardVideo {
   platforms_discarded: ("youtube" | "instagram" | "tiktok" | "facebook")[];
 }
 
-export interface PublishingStatus {
-  _id: string;
-  fileId: string;
-  title: string;
-  tiktok_published: boolean;
-  instagram_published: boolean;
-  youtube_published: boolean;
-  createdAt: string;
-}
-
 export type CalendarStatus = 'pendiente' | 'parcial' | 'completo';
 
 export interface CalendarVideo {
@@ -595,20 +585,11 @@ export const videoService = {
     });
   },
 
-  getPublishingStatus: async (): Promise<PublishingStatus[]> => {
-    return requestJson<PublishingStatus[]>('/api/publishing-status');
-  },
-
-  updatePublishingStatus: async (
-    fileId: string,
-    updates: Partial<Pick<PublishingStatus, 'tiktok_published' | 'instagram_published' | 'youtube_published'>>,
-  ): Promise<PublishingStatus> => {
-    return requestJson<PublishingStatus>(`/api/publishing-status/${fileId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-  },
+  // getPublishingStatus/updatePublishingStatus (endpoint /api/publishing-status)
+  // se sacaron de acá el 2026-08-13: ningún componente los llamaba, eran
+  // código muerto -- ver "Estado de remediación" en docs/mongo-audit-2026-08-13.md.
+  // La ruta y el modelo siguen vivos en el backend (legacy, solo lectura /
+  // borrado en cascada), no se tocan hasta la migración final.
 };
 
 // ==========================================

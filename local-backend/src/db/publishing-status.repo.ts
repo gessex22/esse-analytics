@@ -1,5 +1,9 @@
 import { db } from './database';
 
+// LEGACY (2026-08-13, ver docs/mongo-audit-2026-08-13.md en el equivalente
+// central): ningún componente del frontend llama a los endpoints que usan
+// este repo (api.ts ya no los expone). No agregar nuevos usos -- solo queda
+// vivo `deleteByFileId`/`deleteAll` como limpieza en cascada.
 export interface DbPublishingStatus {
   id: number;
   file_id: number;
