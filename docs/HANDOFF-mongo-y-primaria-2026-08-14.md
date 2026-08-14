@@ -85,7 +85,8 @@ miniatura, en la sección "Decisión final" de `single-primary-install-plan-2026
 
 Ya no es "diseño abierto" — hay un plan de ejecución fase por fase en
 `docs/primary-install-implementation-plan-2026-08-14.md` (Fase 0 a 5).
-Nada de esto está implementado todavía. Dos cosas importantes de ese plan:
+**Fase 0 ya está implementada y pusheada** (commit `6608423`). Fase 1-5
+siguen sin hacer. Dos cosas importantes de ese plan:
 
 1. **2 hallazgos de seguridad reales, verificados contra el código,
    independientes de `content_id`** — prioridad inmediata sin importar qué
