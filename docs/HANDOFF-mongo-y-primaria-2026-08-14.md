@@ -98,18 +98,20 @@ miniatura, en la sección "Decisión final" de `single-primary-install-plan-2026
 Ya no es "diseño abierto" — hay un plan de ejecución fase por fase en
 `docs/primary-install-implementation-plan-2026-08-14.md` (Fase 0 a 5).
 
-**Fase 0 original: implementada y pusheada** (commit `6608423`), pero
-**su lógica de primaria/secundaria queda superada por el plan corregido**
-(`docs/primary-install-corrected-plan-2026-08-14.md`, Fase C) — hay que
-migrarla a `device_id`/`primaryDeviceId`, no está mal lo que hace, está
-construida sobre el campo equivocado.
-**Fase 1 original: parcial** (commit `2614645`) — mismo caso, migrar a
-`device_id` (Fase D del plan corregido).
-**Siguiente paso real: implementar el plan corregido, Fases A-D en un solo
-cambio** (no tiene sentido migrar el campo a medias). Fase G del plan
-corregido (ex-Fases 2-5: subida ad-hoc, C4, índice de `content_id`) sigue
-sin hacer, gateada detrás de A-F. Dos cosas importantes que siguen valiendo
-del plan original:
+**Plan corregido, Fases A-D: implementadas y pusheadas** (commit `ab3051d`,
+sobre `docs/primary-install-corrected-plan-2026-08-14.md`) — `device_id`
+(tabla SQLite dedicada, sobrevive logout/wipe) separado de `install_id`
+(sin cambios); `primaryDeviceId` nuevo en `User`, sin migrar
+automáticamente; bootstrap con auto-claim sin contraseña en la primera
+operación real; `claim-primary`/`installation-status`/`bulkUpsertBackupFiles`
+migrados. Verificado con conteo exacto de `tsc --noEmit` antes/después
+(0 errores nuevos). **No probado contra un cliente real todavía.**
+
+**Sin implementar**: Fase E (cliente Electron consultando estado antes de
+sync, UI ocultando nav local + banner "reclamar como principal") y Fase F
+(tests automatizados/manuales). Fase G (ex-Fases 2-5 del plan original:
+subida ad-hoc, C4, índice de `content_id`) sigue gateada detrás de E-F. Dos
+cosas importantes que siguen valiendo del plan original:
 
 1. **2 hallazgos de seguridad reales, verificados contra el código,
    independientes de `content_id`** — prioridad inmediata sin importar qué
