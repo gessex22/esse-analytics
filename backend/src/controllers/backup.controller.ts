@@ -155,37 +155,53 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     });
 
     if (toUpdate.length > 0) {
-      await BackupFileModel.bulkWrite(
-        toUpdate.map(f => {
-          const ex = resolveExisting(f);
-          const { platforms, platforms_discarded } = resolvePlatforms(f, ex);
-          // Si matcheó por content_id, el filtro va por _id (permite que file_name
-          // haya cambiado); si no había match previo, upsert por file_name como antes.
-          const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
-          return {
-            updateOne: {
-              filter,
-              update: {
-                $set: {
-                  userId,
-                  content_id:          f.content_id          ?? ex?.content_id ?? null,
-                  file_name:           f.file_name,
-                  platforms,
-                  platforms_discarded,
-                  content_status:      f.content_status      ?? 'borrador',
-                  scheduled_date:      f.scheduled_date      ?? null,
-                  duracion_segundos:   f.duracion_segundos   ?? null,
-                  resolucion:          f.resolucion          ?? null,
-                  formato:             f.formato             ?? null,
-                  fecha_creacion:      f.fecha_creacion      ?? null,
-                  local_updated_at:    new Date(f.local_updated_at),
+      try {
+        await BackupFileModel.bulkWrite(
+          toUpdate.map(f => {
+            const ex = resolveExisting(f);
+            const { platforms, platforms_discarded } = resolvePlatforms(f, ex);
+            // Si matcheó por content_id, el filtro va por _id (permite que file_name
+            // haya cambiado); si no había match previo, upsert por file_name como antes.
+            const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
+            return {
+              updateOne: {
+                filter,
+                update: {
+                  $set: {
+                    userId,
+                    // Preferí el content_id que YA tenía el documento por sobre el que
+                    // trae este push -- si dos instalaciones del mismo usuario (dos PCs)
+                    // matchean el mismo archivo por file_name, cada una genera su propio
+                    // content_id local (randomUUID por instalación, ver database.ts), y
+                    // dejar que el último push gane producía ping-pong sobre un campo que
+                    // se supone estable. Una vez fijado, solo lo completa si faltaba
+                    // (docs/mongo-remediation-review-2026-08-13.md, hallazgo H8).
+                    content_id:          ex?.content_id ?? f.content_id ?? null,
+                    file_name:           f.file_name,
+                    platforms,
+                    platforms_discarded,
+                    content_status:      f.content_status      ?? 'borrador',
+                    scheduled_date:      f.scheduled_date      ?? null,
+                    duracion_segundos:   f.duracion_segundos   ?? null,
+                    resolucion:          f.resolucion          ?? null,
+                    formato:             f.formato             ?? null,
+                    fecha_creacion:      f.fecha_creacion      ?? null,
+                    local_updated_at:    new Date(f.local_updated_at),
+                  },
                 },
+                upsert: true,
               },
-              upsert: true,
-            },
-          };
-        }),
-      );
+            };
+          }),
+          { ordered: false },
+        );
+      } catch (err: any) {
+        // ordered:false ya aplicó todas las operaciones que no chocaron contra un
+        // índice único -- no abortamos el resto del push (FileModel, Nube,
+        // reconciliación) por un duplicado aislado. Antes esto tumbaba el backup
+        // completo con un solo E11000 (hallazgo H7 de la revisión independiente).
+        console.warn('[bulkUpsertBackupFiles] BackupFileModel.bulkWrite con errores parciales:', err.writeErrors?.length ?? err.message);
+      }
     }
 
     // ── Sincroniza también la colección `files` (FileModel) ────────────────────
@@ -213,36 +229,45 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     const resolveFileModelExisting = (f: any) =>
       (f.content_id && fileModelExistingByContentId.get(f.content_id)) || fileModelExistingByFileName.get(f.file_name);
 
-    await FileModel.bulkWrite(
-      incoming.map(f => {
-        const ex = resolveFileModelExisting(f);
-        const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
-        const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
-        return {
-          updateOne: {
-            filter,
-            update: {
-              $set: {
-                content_id:          f.content_id          ?? ex?.content_id ?? null,
-                file_name:           f.file_name,
-                platforms,
-                platforms_discarded,
-                content_status:      f.content_status      ?? 'borrador',
-                scheduled_date:      f.scheduled_date      ?? null,
-                duracion_segundos:   f.duracion_segundos   ?? null,
-                resolucion:          f.resolucion          ?? null,
-                formato:             f.formato             ?? null,
-                fecha_creacion:      f.fecha_creacion      ?? null,
+    try {
+      await FileModel.bulkWrite(
+        incoming.map(f => {
+          const ex = resolveFileModelExisting(f);
+          const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
+          const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
+          return {
+            updateOne: {
+              filter,
+              update: {
+                $set: {
+                  // Mismo criterio que BackupFileModel arriba: no reasignar un
+                  // content_id ya fijado (H8 de la revisión independiente).
+                  content_id:          ex?.content_id ?? f.content_id ?? null,
+                  file_name:           f.file_name,
+                  platforms,
+                  platforms_discarded,
+                  content_status:      f.content_status      ?? 'borrador',
+                  scheduled_date:      f.scheduled_date      ?? null,
+                  duracion_segundos:   f.duracion_segundos   ?? null,
+                  resolucion:          f.resolucion          ?? null,
+                  formato:             f.formato             ?? null,
+                  fecha_creacion:      f.fecha_creacion      ?? null,
+                },
+                // Solo al crear: campos requeridos que la app no envía (el remoto no
+                // hace stream, así que file_path es un placeholder).
+                $setOnInsert: { userId, file_path: f.file_name, status: 'PENDIENTE' },
               },
-              // Solo al crear: campos requeridos que la app no envía (el remoto no
-              // hace stream, así que file_path es un placeholder).
-              $setOnInsert: { userId, file_path: f.file_name, status: 'PENDIENTE' },
+              upsert: true,
             },
-            upsert: true,
-          },
-        };
-      }),
-    );
+          };
+        }),
+        { ordered: false },
+      );
+    } catch (err: any) {
+      // Mismo criterio que arriba: no abortar el resto del push por un duplicado
+      // aislado (hallazgo H7).
+      console.warn('[bulkUpsertBackupFiles] FileModel.bulkWrite con errores parciales:', err.writeErrors?.length ?? err.message);
+    }
 
     // Revivir: un archivo que vuelve en el push pero estaba archivado se reactiva.
     // Hace el sync autocorrectivo (un push parcial previo no deja nada perdido).
@@ -732,9 +757,15 @@ async function resolveOrCreateFile(
   // tienen de dónde sacarlo y queda invisible hasta que alguien lo vincule a
   // mano en Videos (escritorio).
   if (!file) {
+    // content_id acá también: sin esto, un archivo creado desde una publicación
+    // móvil (sin catálogo previo en el escritorio) quedaba para siempre sin
+    // content_id aunque el caller lo hubiera mandado -- fuera del índice único
+    // parcial de identidad (H8 de la revisión independiente).
+    const setOnInsert: Record<string, unknown> = { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' };
+    if (stableContentId) setOnInsert.content_id = stableContentId;
     file = await FileModel.findOneAndUpdate(
       { userId, file_name: fileName },
-      { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+      { $setOnInsert: setOnInsert },
       { upsert: true, new: true },
     );
   }
