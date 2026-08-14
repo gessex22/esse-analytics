@@ -1,3 +1,9 @@
+> **Estado: diseño decidido, sin implementar.** Se optó por Opción A (gate
+> duro) + subida simple ad-hoc para no perder la capacidad de publicar desde
+> una secundaria. Ver "Decisión final" más abajo para el detalle completo —
+> las secciones 1-5 originales quedan como el razonamiento que llevó a la
+> decisión, no las releas como si aún estuvieran abiertas.
+
 # Plan: una sola instalación local "escritora" por cuenta
 
 Alternativa al diseño de `canonical_content_id` + `content_hash`
@@ -135,16 +141,99 @@ este plan — no es un riesgo nuevo que este diseño introduzca, pero si se
 implementa, vale la pena que el flujo de "reclamar primaria" (punto 2)
 avise esto explícitamente en vez de dejarlo implícito.
 
-## Pendiente de decidir antes de implementar
+## Decisión final (2026-08-14): Opción A + subida simple ad-hoc
 
-- **Opción A vs B** (punto 1) — B preserva más funcionalidad pero es más
-  código; A es casi gratis pero le saca a la secundaria la posibilidad de
-  publicar subiendo bytes propios.
-- Si se elige B, definir la señal exacta para "adoptar" el `content_id`
-  central (¿alcanza con `file_name` igual, o conviene sumar
-  tamaño/duración como hoy hace `findDuplicate` en iOS, para evitar
-  adoptar la identidad de un archivo distinto que casualmente se llama
-  igual — mismo caso límite que H9).
+Se descartó la Opción B (adopción de `content_id`). Se eligió el gate duro,
+resolviendo su contra principal (perder la capacidad de publicar desde la
+secundaria) con un flujo nuevo y acotado, no con el mecanismo de identidad
+de B.
+
+### Qué es el gate duro en concreto
+
+Una instalación no-primaria (`installId` local ≠ `User.installId` central):
+- No puede configurar `video_folder` ni correr `watcher.ts`/`scan.controller.ts`.
+- `LOCAL_ONLY_NAV` (Videos, Subir catálogo completo, Taller, Gemas) se oculta,
+  igual que en modo remoto hoy.
+- El SQLite local **sigue existiendo** (el gate es sobre el escaneo de
+  carpeta persistente, no sobre la base en sí) — necesario para lo que
+  sigue.
+
+### Hallazgo técnico que definió el diseño de "subida simple"
+
+Los 3 uploaders de `local-backend` (`youtube-upload.controller.ts:151`,
+instagram/tiktok equivalentes) **exigen un `fileId` de SQLite**
+(`fileRepo.findById(fileId)`) — no existe hoy ningún endpoint que reciba un
+archivo suelto sin pasar antes por el catálogo. La "Subida simple" actual
+(`frontend/src/components/SimpleUploadView.tsx`) tampoco sirve tal cual:
+depende de `videoService.getSlimList()`, que lee el catálogo trackeado —
+con el gate puesto, esa lista queda vacía.
+
+### Flujo nuevo: subida simple ad-hoc (a construir)
+
+1. El usuario elige **un** archivo con el picker nativo del SO — no desde
+   una carpeta trackeada.
+2. `local-backend` de esa PC lo copia a un temporal propio y crea **una
+   sola fila** `fileRepo.create()` para ese archivo puntual. Como es un
+   video nuevo (no existe en ningún lado más), no hay conflicto de
+   identidad posible — el `content_id` que le toque es irrelevante, nunca
+   compite con nada (ver "Video nuevo en la secundaria" abajo).
+3. Con ese `fileId` ad-hoc, reusa el 100% de los uploaders existentes sin
+   tocarlos — publica en 1-3 plataformas con título/descripción
+   compartidos, mismo UX que la `SimpleUploadView` actual.
+4. Al terminar, borra el temporal (opcional) — el video real queda en las
+   plataformas, no como catálogo persistente en esa PC.
+
+### Cómo se ve en el resto del sistema
+
+- **Historial**: sin cambios. Cada uploader llama `recordUploadEvent`/
+  `applyPlatformPublish` al terminar, sin importar qué PC lo originó —
+  aparece en Historial normal.
+- **¿La PC principal la detecta?**: sí, vía su próximo `pull()`. La central
+  ya tiene un `files` doc (creado por `resolveOrCreateFile`,
+  `backup.controller.ts:734-740` — el mismo camino que usa hoy cualquier
+  publicación desde el celular sin catálogo local previo). La primaria lo
+  trae como metadata/badge en el próximo pull, sin bytes. **No hace falta
+  construir nada nuevo acá.**
+- **Estadísticas**: sin cambios — se calculan sobre `platformvideos`
+  (métricas reales de la API de cada plataforma), no sobre qué máquina
+  subió el archivo.
+- **Transcripción y miniatura**: limitación real, pero **preexistente, no
+  una regresión de este plan** — es la misma que ya tiene hoy cualquier
+  video publicado solo desde el celular. Sin catálogo local persistente:
+  no hay transcripción (100% local, corre sobre el archivo en disco) y la
+  miniatura sale placeholder en la primaria (se genera con ffmpeg sobre el
+  archivo local, que ahí no existe). Mejora opcional para más adelante:
+  como el archivo sí pasa físicamente por la secundaria durante el upload,
+  se podría generar la miniatura en ese momento (el ffmpeg de
+  `local-backend` ya está disponible) y pushearla a la central junto con
+  el registro. La transcripción queda fuera de alcance (necesita el modelo
+  completo, más caro).
+
+### Video nuevo en la secundaria (ya cubierto, sin caso especial)
+
+Un video que no existe en ningún lado (ni central, ni Nube, ni otra PC) no
+tiene con qué entrar en conflicto — el gate de identidad "primaria vs
+secundaria" solo importa cuando hay dos identidades compitiendo por el
+mismo archivo. La subida simple ad-hoc de arriba cubre este caso sin
+ninguna lógica adicional.
+
+### Video que ya está en Biblioteca remota (Nube) — no cubierto todavía
+
+No existe hoy en Electron el equivalente de
+`ImportUseCase.swift::importFromRemoteLibrary` (iOS) — descargar bytes de
+Nube a un temporal, importar, publicar. Si hiciera falta publicar desde una
+secundaria algo que **ya** está en Nube sin tenerlo físicamente ahí,
+habría que construir esa feature aparte (mismo patrón que mobile), usando
+`remoteLibraryVideoId` como identidad — no `content_id` — igual que ya
+hace mobile. No es parte de este plan; queda anotado como posible trabajo
+futuro si se necesita.
+
+## Pendiente de decidir/hacer antes de implementar
+
+- Diseñar el flujo UI/UX de "reclamar PC principal" (punto 2) y el picker
+  nativo de la subida simple ad-hoc.
 - Confirmar que ningún flujo actual depende de que **dos** instalaciones
   hagan `fullSync` a la vez (no encontré ninguno revisando `sync.routes.ts`/
   `backup.routes.ts`, pero vale la pena que lo confirme quien lo implemente).
+- Decidir si la mejora opcional de miniatura-en-upload-ad-hoc entra en el
+  alcance inicial o se deja para después.
