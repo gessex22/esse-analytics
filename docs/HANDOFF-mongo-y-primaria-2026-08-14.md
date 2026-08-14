@@ -116,11 +116,18 @@ si era `null`); `localResetPassword`/`localDeactivate` comparaban
 `primaryDeviceId`, más estricto que antes. **No probado contra un cliente
 real todavía.**
 
-**Sin implementar**: Fase E (cliente Electron consultando estado antes de
-sync, UI ocultando nav local + banner "reclamar como principal") y Fase F
-(tests automatizados/manuales). Fase G (ex-Fases 2-5 del plan original:
-subida ad-hoc, C4, índice de `content_id`) sigue gateada detrás de E-F. Dos
-cosas importantes que siguen valiendo del plan original:
+**Fase E: implementada y pusheada** (commit `46bce3b`) — gate real
+server-side (`requirePrimaryDevice`) en las 3 rutas de escaneo/carpeta;
+`pushFilesToCloud` para el watcher solo si una primaria fue reemplazada
+(sin borrar datos); frontend con banner + modal "Reclamar como principal" y
+nav oculto para secundarias. Verificado con `tsc`/build/lint limpios + una
+pasada en vivo por Browser preview (`?mock=1`, login owner, sin crashes).
+**No probado con `role:'secondary'` ni contra Electron/un cliente real.**
+
+**Sin implementar**: Fase F (tests automatizados/manuales). Fase G
+(ex-Fases 2-5 del plan original: subida ad-hoc, C4, índice de `content_id`)
+sigue gateada detrás. Dos cosas importantes que siguen valiendo del plan
+original:
 
 1. **2 hallazgos de seguridad reales, verificados contra el código,
    independientes de `content_id`** — prioridad inmediata sin importar qué
