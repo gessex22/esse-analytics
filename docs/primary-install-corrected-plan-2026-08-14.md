@@ -10,6 +10,19 @@
 > verificado con conteo exacto antes/después vía `git stash` — 0 errores
 > nuevos en `backend` y `local-backend`. **No probado contra un cliente real
 > todavía** — falta Fase E (cliente Electron/frontend) y F (tests).
+>
+> **Revisión post-A-D (2026-08-14) encontró 3 problemas más, todos
+> arreglados:** condición de carrera real en el auto-claim de bootstrap
+> (`bulkUpsertBackupFiles` hacía find()+update incondicional, dos PCs
+> nuevas pusheando a la vez podían las dos actuar como "primaria" y
+> archivarse catálogo mutuamente — fix: `updateOne` con filtro condicional
+> atómico); `upload-history.service.ts` mandaba `install_id` como si fuera
+> `deviceId` al Historial (mismo bug de fondo, y de paso silenciaba el
+> evento entero si `install_id` era `null`); `localResetPassword`/
+> `localDeactivate` comparaban `installId` (se rompían tras el primer
+> logout normal) — migrados a `primaryDeviceId`, que además es **más
+> estricto** que antes (solo la PC principal, no cualquier dispositivo que
+> alguna vez matcheó `installId`).
 
 # Plan corregido: identidad de dispositivo + primaria segura
 

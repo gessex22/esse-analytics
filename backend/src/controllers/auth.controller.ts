@@ -424,12 +424,22 @@ export const deactivateMe = async (req: AuthRequest, res: Response): Promise<voi
 // ── POST /api/auth/local-reset ────────────────────────────────────────────────
 // Solo accesible desde el cliente instalado (X-Client-Key). Permite resetear la
 // contraseña sin conocer la actual — útil si el usuario la olvidó.
+//
+// FIX 2026-08-14: comparaba installId, que se borra en cada logout normal
+// (ver docs/primary-install-installid-lifecycle-blocker-2026-08-14.md) --
+// una vez fijado por primera vez, la PC legítima del usuario dejaba de
+// poder resetear su propia contraseña después del primer logout, porque
+// installId local y central nunca volvían a coincidir. No se puede exigir
+// JWT/contraseña actual acá (es justo el caso "me olvidé la contraseña", no
+// hay con qué reautenticar) -- se usa primaryDeviceId en su lugar: sobrevive
+// logout, y de paso es MÁS estricto que antes (solo la PC principal puede
+// hacer esto, no cualquier dispositivo que alguna vez matcheó installId).
 export const localResetPassword = async (req: Request, res: Response): Promise<void> => {
   if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
-  const { username, newPassword, installId } = req.body as { username?: string; newPassword?: string; installId?: string };
+  const { username, newPassword, deviceId } = req.body as { username?: string; newPassword?: string; deviceId?: string };
   if (!username || !newPassword) {
     res.status(400).json({ message: 'Usuario y nueva contraseña requeridos.' });
     return;
@@ -441,16 +451,16 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
   try {
     const user = await UserModel.findOne({ username: username.toLowerCase() });
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
-    // Solo la instalación vinculada a la cuenta puede resetearla.
-    if (!user.installId || user.installId !== installId) {
-      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación vinculada a la cuenta.' });
+    // Solo la PC principal de la cuenta puede resetearla.
+    if (!user.primaryDeviceId || user.primaryDeviceId !== deviceId) {
+      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación principal de la cuenta.' });
       return;
     }
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
     await recordAuditEvent({
       userId: String(user._id), type: 'account_setting_changed',
-      installationId: installId, source: 'desktop',
+      installationId: deviceId, source: 'desktop',
       entity: { kind: 'account', id: String(user._id), label: 'password_reset' },
       // NUNCA la contraseña -- solo qué tipo de cambio fue.
       detail: { setting: 'password' },
@@ -466,12 +476,14 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
 // (borra todos sus tokens OAuth). No requiere contraseña — pensado para cuando el
 // usuario la olvidó y necesita cortar el acceso. Protegido por X-Client-Key (solo
 // desde la app instalada), igual que el reset de contraseña.
+// FIX 2026-08-14: mismo criterio que localResetPassword arriba -- primaryDeviceId
+// en vez de installId (que se borraba en cada logout normal).
 export const localDeactivate = async (req: Request, res: Response): Promise<void> => {
   if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
-  const { username, installId } = req.body as { username?: string; installId?: string };
+  const { username, deviceId } = req.body as { username?: string; deviceId?: string };
   if (!username) {
     res.status(400).json({ message: 'Usuario requerido.' });
     return;
@@ -480,9 +492,9 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
     const user = await UserModel.findOne({ username: username.toLowerCase() });
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
 
-    // Solo la instalación vinculada a la cuenta puede darla de baja.
-    if (!user.installId || user.installId !== installId) {
-      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación vinculada a la cuenta.' });
+    // Solo la PC principal de la cuenta puede darla de baja.
+    if (!user.primaryDeviceId || user.primaryDeviceId !== deviceId) {
+      res.status(403).json({ message: 'Esta operación solo está permitida desde la instalación principal de la cuenta.' });
       return;
     }
 
@@ -501,7 +513,7 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
 
     await recordAuditEvent({
       userId: String(user._id), type: 'account_setting_changed',
-      installationId: installId, source: 'desktop',
+      installationId: deviceId, source: 'desktop',
       entity: { kind: 'account', id: String(user._id), label: 'deactivated_via_local_reset' },
       detail: { setting: 'status', value: 'deleted', revokedTokens: revoked },
     });

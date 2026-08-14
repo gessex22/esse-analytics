@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { configRepo } from '../db/config.repo';
 import { getOrCreateInstallId, getOrCreateDeviceName } from './local-admin.routes';
+import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { CENTRAL_API } from '../config';
 
 const router = Router();
@@ -10,8 +10,12 @@ const CENTRAL = CENTRAL_API;
 // El valor real lo inyecta el Electron (setupEnv) / dev .env; fallback solo de desarrollo.
 const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
 
-// Rutas destructivas que exigen el secreto de instalación de esta máquina.
-const INSTALL_SECRET_ROUTES = ['/api/auth/local-reset', '/api/auth/local-deactivate'];
+// Rutas destructivas que exigen ser la PC PRINCIPAL de la cuenta (deviceId,
+// no installId -- ver docs/primary-install-corrected-plan-2026-08-14.md.
+// FIX 2026-08-14: usaban installId, que se borra en cada logout normal; la
+// PC legítima perdía la capacidad de resetear su propia contraseña después
+// del primer logout).
+const PRIMARY_DEVICE_ROUTES = ['/api/auth/local-reset', '/api/auth/local-deactivate'];
 
 // Fase 5 (auditoría): estas rutas necesitan saber QUÉ instalación las llama
 // para que la central pueda armar el evento con installationId/deviceName.
@@ -57,10 +61,10 @@ async function proxyToCentral(req: Request, res: Response, _next: NextFunction) 
 
     const init: RequestInit = { method: req.method, headers };
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      // Inyecta el secreto de instalación desde SQLite — nunca pasa por el frontend.
+      // Inyecta la identidad de dispositivo desde SQLite — nunca pasa por el frontend.
       const body = { ...req.body };
-      if (INSTALL_SECRET_ROUTES.some(r => req.originalUrl.startsWith(r))) {
-        body.installId = configRepo.get('install_id') ?? undefined;
+      if (PRIMARY_DEVICE_ROUTES.some(r => req.originalUrl.startsWith(r))) {
+        body.deviceId = deviceIdentityRepo.getOrCreate();
       }
       // Identidad de dispositivo para el evento de auditoría de login (Fase 5)
       // -- mismo criterio que arriba, nunca la manda el frontend.
