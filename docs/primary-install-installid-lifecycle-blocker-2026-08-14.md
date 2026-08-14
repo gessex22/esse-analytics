@@ -1,3 +1,9 @@
+> **Resuelto en diseño 2026-08-14** — ver
+> `docs/primary-install-corrected-plan-2026-08-14.md` (Fases A-G), que
+> reemplaza las Fases 0-1 originales con `device_id` separado de
+> `install_id`. Este documento queda como el registro de la investigación
+> que llevó a esa decisión. Sin implementar todavía.
+
 # Bloqueante encontrado en Fase 1: `installId` no sobrevive un logout normal
 
 Encontrado implementando Fase 1 de

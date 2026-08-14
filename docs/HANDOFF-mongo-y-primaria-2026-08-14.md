@@ -25,11 +25,18 @@ completa. Escrito para un agente que arranca en frío.
    (`resolveOrCreateFile`). Es el documento a seguir si se va a implementar
    esto. Incluye 2 hallazgos de seguridad reales y no relacionados con
    `content_id` (ver siguiente sección) que son prioridad inmediata.
-7. `docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` — **el
-   bloqueante actual.** Léelo antes de tocar nada de Fase 1 en adelante:
-   `installId` se borra en cada logout normal, rompiendo la premisa de
-   primaria estable. Tiene la cadena de evidencia completa y el fix
-   recomendado.
+7. `docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` — cadena
+   de evidencia del bloqueante (`installId` no sobrevive un logout normal).
+   Resuelto en diseño, ver siguiente punto.
+8. `docs/primary-install-corrected-plan-2026-08-14.md` — **el plan vigente
+   a seguir para la instalación primaria, reemplaza las Fases 0-1 de
+   `primary-install-implementation-plan-2026-08-14.md`.** `device_id`
+   (nuevo, sobrevive logout) separado de `install_id` (existente, sigue
+   siendo solo para autorizar operaciones destructivas). Incluye la
+   resolución del bootstrap (auto-claim silencioso en el primer uso, sin
+   contraseña — la contraseña solo se exige para *reemplazar* una primaria
+   ya establecida). Sin implementar todavía — hay que migrar lo pusheado en
+   `6608423`/`2614645`, no tirarlo.
 
 ## Qué se hizo y ya está en producción/main
 
@@ -91,16 +98,18 @@ miniatura, en la sección "Decisión final" de `single-primary-install-plan-2026
 Ya no es "diseño abierto" — hay un plan de ejecución fase por fase en
 `docs/primary-install-implementation-plan-2026-08-14.md` (Fase 0 a 5).
 
-**Fase 0: implementada y pusheada** (commit `6608423`).
-**Fase 1: parcial y BLOQUEADA** (commit `2614645` para lo ya hecho) — se
-encontró que `installId` se borra en cada logout normal, rompiendo la
-premisa de "primaria estable" que Fase 0/1 asumían. Ver
-`docs/primary-install-installid-lifecycle-blocker-2026-08-14.md` (cadena de
-evidencia completa + fix recomendado: separar un `device_id` nuevo que
-sobreviva logout, de `install_id` que sigue siendo correcto tal como está
-para su propósito original de autorización). **No seguir con el resto de
-Fase 1 (gate duro, cliente Electron, frontend) hasta resolver esto.**
-Fase 2-5 siguen sin hacer. Dos cosas importantes del plan original:
+**Fase 0 original: implementada y pusheada** (commit `6608423`), pero
+**su lógica de primaria/secundaria queda superada por el plan corregido**
+(`docs/primary-install-corrected-plan-2026-08-14.md`, Fase C) — hay que
+migrarla a `device_id`/`primaryDeviceId`, no está mal lo que hace, está
+construida sobre el campo equivocado.
+**Fase 1 original: parcial** (commit `2614645`) — mismo caso, migrar a
+`device_id` (Fase D del plan corregido).
+**Siguiente paso real: implementar el plan corregido, Fases A-D en un solo
+cambio** (no tiene sentido migrar el campo a medias). Fase G del plan
+corregido (ex-Fases 2-5: subida ad-hoc, C4, índice de `content_id`) sigue
+sin hacer, gateada detrás de A-F. Dos cosas importantes que siguen valiendo
+del plan original:
 
 1. **2 hallazgos de seguridad reales, verificados contra el código,
    independientes de `content_id`** — prioridad inmediata sin importar qué
