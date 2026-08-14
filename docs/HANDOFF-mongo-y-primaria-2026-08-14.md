@@ -19,6 +19,12 @@ completa. Escrito para un agente que arranca en frío.
 5. `docs/single-primary-install-plan-2026-08-14.md` — diseño alternativo
    para desbloquear el índice de `content_id`, con decisión final tomada
    (Opción A + subida simple ad-hoc), sin implementar todavía.
+6. `docs/primary-install-implementation-plan-2026-08-14.md` — **el plan de
+   ejecución real, fase por fase, para lo decidido en el doc anterior.**
+   Ya pasó una revisión y tiene una corrección de contrato aplicada
+   (`resolveOrCreateFile`). Es el documento a seguir si se va a implementar
+   esto. Incluye 2 hallazgos de seguridad reales y no relacionados con
+   `content_id` (ver siguiente sección) que son prioridad inmediata.
 
 ## Qué se hizo y ya está en producción/main
 
@@ -77,19 +83,30 @@ miniatura, en la sección "Decisión final" de `single-primary-install-plan-2026
 
 ## Qué falta para poder implementar la instalación primaria única
 
-Ver la sección final de `single-primary-install-plan-2026-08-14.md`
-("Pendiente de decidir/hacer"):
+Ya no es "diseño abierto" — hay un plan de ejecución fase por fase en
+`docs/primary-install-implementation-plan-2026-08-14.md` (Fase 0 a 5).
+Nada de esto está implementado todavía. Dos cosas importantes de ese plan:
 
-- Diseñar el flujo UI/UX de "reclamar PC principal" (nuevo endpoint
-  `POST /api/local/claim-primary`, banner/confirmación en frontend).
-- Diseñar el picker nativo + flujo backend de la subida simple ad-hoc.
-- Confirmar que ningún flujo actual depende de que dos instalaciones hagan
-  `fullSync` a la vez.
-- Decidir si generar miniatura en el momento de la subida ad-hoc entra en
-  el alcance inicial.
+1. **2 hallazgos de seguridad reales, verificados contra el código,
+   independientes de `content_id`** — prioridad inmediata sin importar qué
+   se decida sobre el resto:
+   - `POST /api/auth/link-install` (`backend/src/controllers/auth.controller.ts:298-310`)
+     pisa `User.installId` en **cada login**, sin condición — el campo que
+     autoriza reset de contraseña/baja de cuenta cambia de dueño solo con
+     loguearse en otra PC.
+   - `bulkUpsertBackupFiles` (`backend/src/controllers/backup.controller.ts:330`)
+     confía ciegamente en el booleano `fullSync` que manda el cliente, sin
+     validar contra quién es la primaria real.
+2. **Contrato corregido de `resolveOrCreateFile`** (bloqueaba Fase 2 hasta
+   que se aclaró): la regla de "no vincular automáticamente con ambigüedad"
+   NO debe aplicarse al caso de "cero candidatos" — eso rompería
+   `recordPublish` de iOS/Android (que nunca manda `contentId` y depende de
+   que 0 candidatos = crear registro nuevo). Contrato final documentado en
+   la Fase 2 de `primary-install-implementation-plan-2026-08-14.md`.
 
-Nada de esto está implementado — es diseño validado en conversación, listo
-para pasar a plan de ejecución.
+El orden de ejecución acordado: Fase 0-1 (autoridad de primaria — los 2
+hallazgos de seguridad) → Fase 2 (subida ad-hoc, contrato ya resuelto) →
+Fase 3 (C4) → Fase 4 (índice) → Fase 5 (pruebas, en paralelo donde aplique).
 
 ## Contexto de la cuenta/uso real (para calibrar riesgo)
 

@@ -1,8 +1,12 @@
-> **Estado: diseño decidido, sin implementar.** Se optó por Opción A (gate
-> duro) + subida simple ad-hoc para no perder la capacidad de publicar desde
-> una secundaria. Ver "Decisión final" más abajo para el detalle completo —
-> las secciones 1-5 originales quedan como el razonamiento que llevó a la
-> decisión, no las releas como si aún estuvieran abiertas.
+> **Estado: diseño decidido, con plan de ejecución escrito.** Se optó por
+> Opción A (gate duro) + subida simple ad-hoc para no perder la capacidad de
+> publicar desde una secundaria. Ver "Decisión final" más abajo para el
+> detalle completo — las secciones 1-5 originales quedan como el
+> razonamiento que llevó a la decisión, no las releas como si aún
+> estuvieran abiertas. **El plan de implementación fase por fase, ya
+> revisado y con una corrección de contrato aplicada, vive en
+> `docs/primary-install-implementation-plan-2026-08-14.md`** — ese es el
+> documento a seguir para implementar, no este.
 
 # Plan: una sola instalación local "escritora" por cuenta
 
