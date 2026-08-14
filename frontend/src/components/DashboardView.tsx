@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { motion, useReducedMotion } from "motion/react";
 import {
   CalendarDays,
   ChevronRight,
@@ -265,6 +266,7 @@ export function DashboardView({
   onOpenVideo?: (fileId: string, title: string) => void;
   onOpenCalendar?: () => void;
 }) {
+  const reduceMotion = useReducedMotion();
   const [items, setItems] = useState<GroupStatsItem[]>(dashboardCache?.items ?? []);
   const [individualItems, setIndividualItems] = useState<Partial<Record<Platform, GroupStatsItem[]>>>(dashboardCache?.individualItems ?? {});
   const [rankingMode, setRankingMode] = useState<'combined' | 'individual'>('combined');
@@ -500,7 +502,7 @@ export function DashboardView({
   const LeaderLogo = ranking[0] ? PLATFORM_CFG[ranking[0].platform].Logo : null;
 
   return (
-    <div className="space-y-5 max-w-5xl">
+    <div className="space-y-5">
       <style>{`.dashboard-top-grid > section:nth-child(3) { display: none; }
         .dashboard-top-grid > section:nth-child(1) > div:nth-child(2) > div:nth-child(1) { order: 2; transform: translateY(-0.5rem); }
         .dashboard-top-grid > section:nth-child(1) > div:nth-child(2) > div:nth-child(2) { order: 1; }
@@ -516,18 +518,7 @@ export function DashboardView({
           .dashboard-top-grid > section:nth-child(2) { order: 1; }
         }
       }`}</style>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.18em] text-primary font-semibold">
-            Centro de control
-          </p>
-          <h1 className="text-2xl font-semibold text-foreground mt-1">
-            Resumen
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Una mirada rápida a tu contenido publicado y lo que viene.
-          </p>
-        </div>
+      <div className="flex justify-end">
         <button
           onClick={load}
           disabled={loading}
@@ -541,14 +532,14 @@ export function DashboardView({
       </div>
 
       {demoMode && (
-        <div className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+        <motion.div initial={reduceMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="flex items-center gap-2 rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
           <Sparkles className="w-3.5 h-3.5" />
           Vista previa de demo: estos datos aparecerán reemplazados por tus
           métricas reales.
-        </div>
+        </motion.div>
       )}
 
-      <div className="dashboard-top-grid grid grid-cols-1 lg:grid-cols-[1.35fr_0.65fr] gap-4 items-stretch">
+      <motion.div initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: reduceMotion ? 0 : 0.04, duration: 0.24, ease: "easeOut" }} className="dashboard-top-grid grid grid-cols-1 lg:grid-cols-[1.35fr_0.65fr] gap-4 items-stretch">
         <PodiumGadget ranking={ranking} demoMode={demoMode} mode={rankingMode} onModeChange={setRankingMode} />
         <section className="rounded-2xl border border-border bg-card p-4 sm:p-6">
           <div className="flex items-center mb-4">
@@ -684,9 +675,9 @@ export function DashboardView({
             <span>{demoMode ? "Demo" : "Actualizado"}</span>
           </div>
         </section>
-      </div>
+      </motion.div>
 
-      <section className="rounded-2xl border border-border bg-card p-4 sm:p-5 lg:w-[calc(66.666%_-_0.5rem)]">
+      <motion.section initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: reduceMotion ? 0 : 0.1, duration: 0.24, ease: "easeOut" }} className="rounded-2xl border border-border bg-card p-4 sm:p-5 lg:w-[calc(66.666%_-_0.5rem)]">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-sm font-semibold text-foreground">
@@ -744,7 +735,7 @@ export function DashboardView({
         >
           Abrir calendario <ChevronRight className="w-3.5 h-3.5" />
         </button>
-      </section>
+      </motion.section>
     </div>
   );
 }

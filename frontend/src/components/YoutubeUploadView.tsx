@@ -24,6 +24,24 @@ export function streamUrl(fileId: string): string {
   return `${API}/api/videos/stream/${fileId}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 }
 
+/** Miniatura local del catálogo, con fallback al ícono si todavía no se generó. */
+export function VideoThumbnail({ fileId, className = "" }: { fileId: string; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <>
+      {!failed && (
+        <img
+          src={videoService.thumbnailUrl(fileId)}
+          alt=""
+          className={`absolute inset-0 h-full w-full object-cover ${className}`}
+          onError={() => setFailed(true)}
+        />
+      )}
+      {failed && <Film className="w-5 h-5 text-muted-foreground/30" />}
+    </>
+  );
+}
+
 // Placeholder de la tarjeta de cuenta mientras se verifica el estado OAuth
 // (evita que el perfil "aparezca de golpe" al terminar la consulta).
 export function AccountCardSkeleton() {
@@ -216,7 +234,7 @@ export function VideoPickerModal({ onSelect, onClose, platform }: { onSelect: (v
                     </span>
                   )}
                   <div className="w-16 h-10 rounded bg-secondary flex items-center justify-center flex-shrink-0 relative">
-                    <Film className="w-3.5 h-3.5 text-muted-foreground/40" />
+                    <VideoThumbnail fileId={v.fileId} />
                     {v.duration && <span className="absolute bottom-0.5 right-0.5 text-[9px] bg-black/80 text-white px-1 rounded font-mono">{v.duration}</span>}
                   </div>
                   <span className={`flex-1 text-sm truncate ${num ? "text-foreground" : "text-muted-foreground"}`}>{v.title}</span>
@@ -459,7 +477,7 @@ function TikTokUploadForm({ selected, onChangeVideo, onUploaded }: {
           <div className="flex items-center gap-3">
             <button onClick={() => setPreviewVideo(selected)}
               className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-foreground/20 transition-colors">
-              <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
+              <VideoThumbnail fileId={selected.fileId} className="group-hover:brightness-75 transition" />
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
                   <Play className="w-4 h-4 text-white fill-white ml-0.5" />
@@ -1047,7 +1065,7 @@ function InstagramUploadForm({ selected, onChangeVideo, onUploaded }: {
           <div className="flex items-center gap-3">
             <button onClick={() => setPreviewVideo(selected)}
               className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-pink-500/50 transition-colors">
-              <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
+              <VideoThumbnail fileId={selected.fileId} className="group-hover:brightness-75 transition" />
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
                   <Play className="w-4 h-4 text-white fill-white ml-0.5" />
@@ -1550,10 +1568,26 @@ export function YoutubeUploadView() {
   };
 
   // Al cambiar de plataforma, pre-selecciona su nextVideo
+  const youtubeDraftRef = useRef<{
+    selected: SlimVideo | null; title: string; description: string; tags: string[];
+    categoryId: string; audience: Audience; privacy: Privacy; publishAt: string;
+  } | null>(null);
+
   const switchPlatform = (p: Platform) => {
+    if (p === activePlatform) return;
+    if (activePlatform === "youtube") {
+      youtubeDraftRef.current = { selected, title, description, tags, categoryId, audience, privacy, publishAt };
+    }
     setActivePlatform(p);
     setStep("details");
     setUploadError(null);
+    if (p === "youtube" && youtubeDraftRef.current) {
+      const draft = youtubeDraftRef.current;
+      setSelected(draft.selected); setTitle(draft.title); setDescription(draft.description);
+      setTags(draft.tags); setCategoryId(draft.categoryId); setAudience(draft.audience);
+      setPrivacy(draft.privacy); setPublishAt(draft.publishAt);
+      return;
+    }
     const v = nextVideos[p];
     if (v) {
       setSelected(v);
@@ -1803,7 +1837,7 @@ export function YoutubeUploadView() {
                       <div className="flex items-center gap-3">
                         <button onClick={() => setPreviewVideo(selected)}
                           className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-primary/50 transition-colors">
-                          <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
+                          <VideoThumbnail fileId={selected.fileId} className="group-hover:brightness-75 transition" />
                           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                             <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
                               <Play className="w-4 h-4 text-white fill-white ml-0.5" />

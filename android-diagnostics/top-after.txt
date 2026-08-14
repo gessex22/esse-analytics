@@ -1,0 +1,35 @@
+Tasks: 810 total,   1 running, 809 sleeping,   0 stopped,   0 zombie
+  Mem:  7765152K total,  7657540K used,   107612K free,     2040K buffers
+ Swap:  7864316K total,  1282588K used,  6581728K free,  3793188K cached
+800%cpu  66%user   0%nice  63%sys 663%idle   0%iow   6%irq   3%sirq   0%host
+  PID USER         PR  NI VIRT  RES  SHR S[%CPU] %MEM     TIME+ ARGS
+ 2976 system       18  -2  17G 506M 294M S  100   6.6 686:49.53 system_server
+14332 shell        20   0 2.0G 6.3M 5.0M R 21.8   0.0   0:00.10 top -b -n 1 -m 30
+10547 system       20   0 8.7G 135M  83M S  3.1   1.7   7:14.21 com.oplus.midas
+ 7262 system       20   0 2.2G 6.9M 6.3M S  3.1   0.0  27:06.97 horae
+ 1862 system       20   0 2.8G 8.6M 7.8M S  3.1   0.1 111:32.56 android.hardware.sensors@2.1-service.multihal
+   73 root         20   0    0    0    0 S  3.1   0.0   1:19.15 [rcuop/6]
+14041 system       20   0 7.8G 109M  59M S  0.0   1.4   0:00.09 com.android.DeviceAsWebcam
+14019 root          0 -20    0    0    0 S  0.0   0.0   0:00.12 [irq/208-dwc3]
+13853 u0_a283      20   0  11G 301M 207M S  0.0   3.9   0:05.60 com.facebook.orca
+13685 root         20   0    0    0    0 I  0.0   0.0   0:00.02 [kworker/2:1-events]
+13472 u0_a276      20   0  10G 392M 258M S  0.0   5.1   0:13.79 com.facebook.katana
+13378 u0_a310      20   0  10G 245M 161M S  0.0   3.2   0:02.39 com.duolingo
+13363 u0_a138      10 -10 8.7G 300M 143M S  0.0   3.9   0:24.34 com.esseanalytics.android
+13353 root         20   0    0    0    0 I  0.0   0.0   0:00.00 [kworker/0:2-events]
+13304 u0_a240      20   0 8.4G 240M 154M S  0.0   3.1   0:03.98 com.google.android.apps.messaging
+13192 root         20   0    0    0    0 I  0.0   0.0   0:00.01 [kworker/2:0-events]
+13085 u0_a275      20   0 9.3G 266M 172M S  0.0   3.5   0:01.55 com.google.android.apps.chromecast.app
+12985 system       20   0 7.9G 130M  79M S  0.0   1.7   0:00.38 com.oplus.notificationmanager
+12912 u0_a234      20   0 8.5G 191M 113M S  0.0   2.5   0:04.59 com.dti.amx
+12887 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/7:9H-fsverity_read_queue]
+12886 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/7:8H]
+12885 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/7:7H-kblockd]
+12884 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/7:6H-fsverity_read_queue]
+12883 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/7:5H-fsverity_read_queue]
+12842 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/2:4H-kblockd]
+12841 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/2:2H]
+12819 u0_a236      20   0 7.8G 109M  59M S  0.0   1.4   0:00.15 com.facebook.system
+12795 u0_a253      20   0 8.6G 198M 128M S  0.0   2.6   0:01.75 com.google.android.apps.photos
+12705 u0_a252      20   0 8.1G 133M  79M S  0.0   1.7   0:01.17 com.facebook.appmanager
+12659 u0_a238      20   0 8.3G 134M  81M S  0.0   1.7   0:01.05 com.facebook.services

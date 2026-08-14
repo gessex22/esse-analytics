@@ -109,11 +109,7 @@ export function HistoryView({ onOpenVideo }: HistoryViewProps) {
 
   return (
     <div className="flex flex-col gap-5 pb-8">
-      <div>
-        <h1 className="text-xl font-semibold text-foreground">Historial de subidas</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Cada video que se sube desde la app queda registrado acá automáticamente.
-        </p>
+      <div className="text-center">
         {!loading && total > 0 && (
           <p className="text-xs text-muted-foreground mt-1">
             {total} registros · página {currentPage}/{totalPages}

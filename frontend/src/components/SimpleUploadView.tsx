@@ -9,7 +9,7 @@ import { VideoModal } from "./player/VideoModal";
 import { Skeleton } from "./ui/skeleton";
 import {
   Platform, SlimVideo, PLATFORMS, YT_CATEGORIES,
-  TagInput, VideoPickerModal, AccountCardSkeleton, resolveNextForPlatform,
+  TagInput, VideoPickerModal, AccountCardSkeleton, resolveNextForPlatform, VideoThumbnail,
 } from "./YoutubeUploadView";
 import { API_BASE as API } from "../config";
 
@@ -274,7 +274,7 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
           <div className="flex items-center gap-3">
             <button onClick={() => setPreviewVideo(video)}
               className="w-24 h-14 rounded-lg bg-secondary border border-border flex items-center justify-center flex-shrink-0 relative group hover:border-primary/50 transition-colors">
-              <Film className="w-5 h-5 text-muted-foreground/30 group-hover:opacity-0 transition-opacity" />
+              <VideoThumbnail fileId={video.fileId} className="group-hover:brightness-75 transition" />
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                 <div className="w-8 h-8 rounded-full bg-black/70 flex items-center justify-center">
                   <Play className="w-4 h-4 text-white fill-white ml-0.5" />

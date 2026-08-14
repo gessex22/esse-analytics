@@ -1060,7 +1060,6 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-foreground">Calendario</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             {overdueB.length > 0
               ? <span className="text-red-500 font-medium">⚠ {overdueB.length === 1 ? "1 plataforma vencida" : `${overdueB.length} plataformas vencidas`} · publicá ahora</span>

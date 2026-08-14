@@ -1,0 +1,25 @@
+Tasks: 795 total,   2 running, 793 sleeping,   0 stopped,   0 zombie
+  Mem:  7765152K total,  7699368K used,    65784K free,     2168K buffers
+ Swap:  7864316K total,  1250148K used,  6614168K free,  3653592K cached
+800%cpu  31%user   0%nice  97%sys 650%idle   0%iow  19%irq   3%sirq   0%host
+  PID USER         PR  NI VIRT  RES  SHR S[%CPU] %MEM     TIME+ ARGS
+ 1877 system       -3   0 2.3G  13M  11M S 34.3   0.1  16:25.09 vendor.qti.hardware.display.composer-service
+ 2976 system       18  -2  17G 493M 284M S 31.2   6.5 695:40.92 system_server
+32418 shell        20   0 2.1G 6.1M 4.9M R 21.8   0.0   0:00.09 top -b -n 1 -m 20
+ 2049 system       -3  -8 4.0G  51M  38M S 15.6   0.6  93:14.60 surfaceflinger
+ 1829 system       20   0 2.1G 4.9M 4.6M R  6.2   0.0   4:00.75 diag-router
+ 5793 u0_a192      20   0  11G 344M 165M S  3.1   4.5 241:39.18 com.android.systemui
+ 1948 system       20   0 2.3G 6.8M 6.4M S  3.1   0.0  55:10.28 vendor.oplus.hardware.charger-V6-service
+  367 root         20   0 2.1G 5.5M 4.0M S  3.1   0.0  86:01.50 ueventd
+   15 root         20   0    0    0    0 S  3.1   0.0  53:54.81 [rcuog/0]
+32381 root         20   0    0    0    0 I  0.0   0.0   0:00.02 [kworker/2:1-events]
+32209 root         RT   0    0    0    0 S  0.0   0.0   0:00.26 [irq/185-touch-00]
+32180 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [dsi_err_workq]
+31936 u0_a283      20   0  10G 300M 206M S  0.0   3.9   0:05.26 com.facebook.orca
+31687 u0_a276      20   0  10G 358M 237M S  0.0   4.7   0:07.51 com.facebook.katana
+31093 root          0 -20    0    0    0 I  0.0   0.0   0:00.71 [kworker/u17:2-qmi_msg_handler]
+31068 u0_a86       20   0 8.1G 153M  94M S  0.0   2.0   0:00.69 com.google.android.projection.gearhead:car
+31025 u0_a143      20   0 8.9G 273M 195M S  0.0   3.6   0:02.72 com.google.android.apps.maps
+30768 root          0 -20    0    0    0 I  0.0   0.0   0:00.00 [kworker/X18:7-kveritydX]
+30722 u0_a282       0 -20  11G 385M 254M S  0.0   5.0   0:09.51 com.instagram.android
+30718 root         20   0    0    0    0 I  0.0   0.0   0:01.53 [kworker/u16:6-memlat_wq]

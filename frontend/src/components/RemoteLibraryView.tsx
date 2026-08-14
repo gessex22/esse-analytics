@@ -278,14 +278,9 @@ export function RemoteLibraryView() {
   };
 
   return (
-    <div className="space-y-5 max-w-6xl mx-auto">
+    <div className="space-y-5">
       <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-foreground">Biblioteca remota</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Videos guardados en la nube — se suben directo desde acá, sin pasar por tu PC.
-          </p>
-        </div>
+        <div />
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className={`text-xs font-mono ${atCapacity ? "text-amber-400" : "text-muted-foreground"}`}>
             {total}/{MAX_REMOTE_LIBRARY_VIDEOS}

@@ -206,7 +206,7 @@ export function Taller({ role = "todopoderoso" }: { role?: string }) {
 
   if (error)
     return (
-      <div className="p-6 m-6 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center gap-2">
+      <div className="p-6 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center gap-2">
         <AlertCircle className="w-4 h-4" /> {error}
       </div>
     );
@@ -215,24 +215,18 @@ export function Taller({ role = "todopoderoso" }: { role?: string }) {
   // Si no está instalado y no hay ideas, mostramos el aviso para habilitarlo.
   if (!maidenLoading && maiden && !maiden.active && ideas.length === 0)
     return (
-      <div className="px-3 sm:px-6 py-8">
+      <div className="py-8">
         <MaidenRequired feature="El Taller" />
       </div>
     );
 
   return (
     <div
-      className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 sm:py-6 sm:pb-0 space-y-4"
-      style={{ fontFamily: "'Inter', sans-serif", paddingBottom: "max(5rem, calc(env(safe-area-inset-bottom) + 5rem))" }}
+      className="space-y-4"
+      style={{ fontFamily: "'Inter', sans-serif" }}
     >
       {/* ── Cabecera ───────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-foreground">Taller</h2>
-          <p className="text-muted-foreground text-xs mt-0.5">
-            Versiones y borradores de cada video original
-          </p>
-        </div>
+      <div className="flex items-center justify-end">
         <div className="flex items-center gap-2">
           <AnimatePresence mode="wait" initial={false}>
             {role === "todopoderoso" && selectionMode ? (

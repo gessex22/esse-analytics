@@ -23,7 +23,8 @@ import { UsersPanel } from "./components/UsersPanel";
 import { StatsView } from "./components/StatsView";
 import { DashboardView } from "./components/DashboardView";
 import { HistoryView } from "./components/HistoryView";
-import { Sidebar, MobileNav, navItems } from "./components/Sidebar";
+import { Sidebar, MobileNav, NAV_ORDER, navItems } from "./components/Sidebar";
+import { ViewShell } from "./components/ViewShell";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
 import logoImg from "./assets/esseAnalytics.png";
 import { backupService, videoService } from "./services/api";
@@ -138,6 +139,9 @@ export default function App() {
   useSyncOrchestrator(isLocal && isPremium);
   const [showLogin, setShowLogin] = useState(false);
   const [activeNav, setActiveNav]           = useState(0);
+  const [navigationDirection, setNavigationDirection] = useState<1 | -1>(1);
+  const contentScrollRef = useRef<HTMLElement | null>(null);
+  const viewScrollPositions = useRef<Record<number, number>>({});
   const [pendingPlayer, setPendingPlayer]   = useState<{ fileId: string; title: string } | null>(null);
   const [notifOpen, setNotifOpen]           = useState(false);
   const [userMenuOpen, setUserMenuOpen]     = useState(false);
@@ -328,12 +332,12 @@ export default function App() {
     }
     setPublishToday(null);
   };
-  const goToCalendar = () => { setPublishToday(null); setActiveNav(7); };
+  const goToCalendar = () => { setPublishToday(null); handleNavClick(7); };
 
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | null>(null);
   const goToLibrarySettings = () => {
     setSettingsInitialSection("biblioteca");
-    setActiveNav(6);
+    handleNavClick(6);
   };
   // Se limpia al salir de Ajustes -- si no, una visita posterior CUALQUIERA
   // (por el menú normal, no por este aviso) seguiría saltando directo a
@@ -344,7 +348,7 @@ export default function App() {
 
   function openVideoPlayer(fileId: string, title: string) {
     setPendingPlayer({ fileId, title });
-    setActiveNav(1);
+    handleNavClick(1);
   }
 
   // Mientras verifica el token guardado
@@ -398,7 +402,38 @@ export default function App() {
     : 7;
 
   const handleNavClick = (i: number) => {
+    if (contentScrollRef.current) viewScrollPositions.current[effectiveNav] = contentScrollRef.current.scrollTop;
+    // La dirección sigue el orden que el usuario VE en el sidebar, no los
+    // índices históricos de navItems (que ya no están ordenados visualmente).
+    const currentPosition = NAV_ORDER.indexOf(effectiveNav);
+    const nextPosition = NAV_ORDER.indexOf(i);
+    setNavigationDirection(nextPosition >= currentPosition ? 1 : -1);
     setActiveNav(i);
+  };
+
+  // No se restaura en un useEffect atado a effectiveNav: con
+  // AnimatePresence mode="wait" la vista saliente sigue montada (haciendo su
+  // animación de salida) en el momento en que effectiveNav ya cambió, así que
+  // ese scrollTop se aplicaría sobre el contenido viejo -- un salto visible
+  // antes de que desaparezca. Se aplica recién cuando esa salida terminó (ver
+  // onExitComplete más abajo), momento en el que la vista nueva ya se montó.
+  const restoreScrollForNav = (nav: number) => {
+    const target = contentScrollRef.current;
+    if (target) target.scrollTop = viewScrollPositions.current[nav] ?? 0;
+  };
+
+  const viewMeta: Record<number, { title: string; description?: string; width?: "compact" | "default" | "wide" }> = {
+    0: { title: "Resumen", description: "Una mirada rápida a tu contenido publicado y lo que viene." },
+    1: { title: "Videos", description: "Gestioná tu catálogo y la cola de publicación." },
+    2: { title: "Subir", description: "Prepará y publicá contenido en tus plataformas." },
+    3: { title: "Usuarios" },
+    4: { title: "Estadísticas", description: "Rendimiento reciente de tu contenido." },
+    5: { title: "Taller", description: "Versiones y borradores de cada video original." },
+    6: { title: "Ajustes", description: "Configurá tu espacio de trabajo.", width: "compact" },
+    7: { title: "Calendario", description: "Organizá lo próximo que vas a publicar." },
+    8: { title: "Gemas" },
+    9: { title: "Historial", description: "Registro de publicaciones realizadas desde la app." },
+    10: { title: "Biblioteca remota", description: "Videos guardados en la nube.", width: "wide" },
   };
 
   return (
@@ -656,16 +691,16 @@ export default function App() {
             que sí había scroll disponible. Verificado con el banner de
             Laboratorio prendido y apagado, en 400×700 y 900×600. */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {effectiveNav === 5
-            ? <Taller role={role} />
-            : (
-              <main
+          <main
+                ref={contentScrollRef}
                 className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"
                 style={{ paddingBottom: "var(--app-bottom-safe)" }}
               >
-                {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => setActiveNav(7)} />
-                  : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} onOpenCloud={user.hasCloudStorage ? () => setActiveNav(10) : undefined} />
-                  : effectiveNav === 2 ? <UploadView onOpenHistory={() => setActiveNav(9)} />
+                <AnimatePresence mode="wait" initial={false} custom={navigationDirection} onExitComplete={() => restoreScrollForNav(effectiveNav)}>
+                  <ViewShell key={effectiveNav} viewKey={effectiveNav} direction={navigationDirection} {...viewMeta[effectiveNav]}>
+                  {effectiveNav === 0 ? <DashboardView onOpenVideo={openVideoPlayer} onOpenCalendar={() => handleNavClick(7)} />
+                  : effectiveNav === 1 ? <VideosView role={role} autoOpenVideo={pendingPlayer} onAutoOpenConsumed={() => setPendingPlayer(null)} onOpenCloud={user.hasCloudStorage ? () => handleNavClick(10) : undefined} />
+                  : effectiveNav === 2 ? <UploadView onOpenHistory={() => handleNavClick(9)} />
                   : effectiveNav === 6 ? <SettingsView role={role} isLocal={isLocal} isPremium={isPremium} isOwner={!!user.isOwner} onOpenVideo={openVideoPlayer} initialSection={settingsInitialSection} />
                   : effectiveNav === 7 ? <PublishingQueue role={role} onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 3 ? (user.isOwner ? <UsersPanel /> : <ProximamenteView label="Usuarios" />)
@@ -674,10 +709,10 @@ export default function App() {
                   : effectiveNav === 9 ? <HistoryView onOpenVideo={openVideoPlayer} />
                   : effectiveNav === 10 ? <RemoteLibraryView />
                   : <ProximamenteView label={navItems[effectiveNav]?.label ?? ""} />
-                }
+                  }
+                  </ViewShell>
+                </AnimatePresence>
               </main>
-            )
-          }
         </div>
 
         <MobileNav effectiveNav={effectiveNav} isNavVisible={isNavVisible} onNavClick={handleNavClick} />

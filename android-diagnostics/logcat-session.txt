@@ -1,0 +1,264 @@
+--------- beginning of main
+08-13 04:15:11.809  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:12.014  7152  7152 I adbd    : adbd service requested 'shell,v2:export ANDROID_LOG_TAGS=''; exec logcat '-v' 'threadtime''
+08-13 04:15:12.154  7152  7152 I adbd    : adbd service requested 'shell,v2,TERM=xterm-256color,raw:perfetto -o /data/local/tmp/esse-perfetto.trace -t 600s sched freq idle am wm gfx view binder_driver hal dalvik input res memory'
+08-13 04:15:12.203 14291 14291 E perfetto:    perfetto_cmd.cc:1317 Failed to open /data/local/tmp/esse-perfetto.trace. If you get permission denied in /data/misc/perfetto-traces, the file might have been created by another user, try deleting it first. (errno: 13, Permission denied)
+08-13 04:15:12.385  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:12.590  6294  6672 D CommonApp-120-10138: DefaultState EVENT_SCENARIOS_CHANGE
+08-13 04:15:12.591  6294  6672 D CommonApp-120-10138: scene=COMMON pn=com.esseanalytics.android
+08-13 04:15:12.812  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:13.020  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:13.410  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:13.598  1885 14277 I [UAH_CLIENT]: UahRelease, handle:14127
+08-13 04:15:13.595  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:13.626  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:13.631  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:13.652  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:13.653  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:13.661  5793  5793 I SystemUi--Statusbar: BatteryControllerExt-->updateBatteryChangeIntent():broadcast=android.intent.action.BATTERY_CHANGED,level=100,scale=100
+08-13 04:15:13.661  5793  5793 I SystemUi--Statusbar: BatteryRepository-->level: 100 -- isSavingMode: false
+--------- beginning of system
+08-13 04:15:13.665  2976  3426 D OplusDisplayBrightnessBroadcastReceiver: onReceive action = android.intent.action.BATTERY_CHANGED , listeners = [com.android.server.display.OplusFeatureHDREnhanceBrightness$PhoneInfoReceiver@848eca8, com.android.server.display.OplusFeatureEdrEnhanceBrightness$PhoneInfoReceiver@5959edf]
+08-13 04:15:13.665  6395  6395 D SubsysBroadcastManager: onReceive action:android.intent.action.BATTERY_CHANGED
+08-13 04:15:13.668  6288  6288 D DeviceStatisticsService: onReceive: action= android.intent.action.BATTERY_CHANGED
+08-13 04:15:13.672  9840  9840 I PTC.APPCORE.EventBroadcastReceiver: onReceive, action=android.intent.action.BATTERY_CHANGED
+08-13 04:15:13.672  5756  6250 I DeepThinkerSDK: [APP] ClientConnection: getDeepThinkerBridge start
+08-13 04:15:13.672  5756  6250 I DeepThinkerSDK: [APP] ClientConnection: getDeepThinkerBridge end
+08-13 04:15:13.672  5756  6250 I DeepThinkerSDK: [APP] UserDomainManager: businessId : 401 threshold : 0.6 learnPeriod:30
+08-13 04:15:13.673  9840  9840 I PTC.APPCORE.BatteryLevelReceiver: current battery = batteryPercentage, not need change
+08-13 04:15:13.673  5756  6277 E Battery : a: getAISleepDuration: predictResult is null.
+08-13 04:15:13.673 22798 22798 D CustomLogManagerService: onReceive android.intent.action.BATTERY_CHANGED
+08-13 04:15:13.673  5756  6277 E Battery : ChargeProtectionUtils: mCanlendarTmp.isEmpty()!
+08-13 04:15:13.677  5756  6250 I DeepThinkerSDK: [APP] UserDomainManager: PerformanceOfLongCharging{probabilityOfLocation=0.0, probabilityOfApps=0.0, probabilityOfTime=0.43333334, probabilityOfTotal=0.0, duration=0}
+08-13 04:15:13.814  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:13.956  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:13.964  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225881081,totalTxBytes:550540448,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775857809
+08-13 04:15:13.996  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:14.434  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:14.816  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:15.430  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4837,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:15.431  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-15
+08-13 04:15:15.432  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:15.458  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:15.675 22798 12599 D CustomLogManagerService: WorkHandler msg.what :5
+08-13 04:15:15.676 22798 12599 D CustomLogManagerService: user experience toggle off
+08-13 04:15:15.818  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:16.482  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:16.644  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:16.683  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:16.687  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:16.819  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:17.505  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:17.821  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:17.970  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:17.976  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225881307,totalTxBytes:550540552,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775858139
+08-13 04:15:18.014  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:18.217  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:18.530  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:18.822  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:19.541  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:19.543  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:19.552  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:19.596  6294  6672 D CommonApp-120-10138: DefaultState EVENT_SCENARIOS_CHANGE
+08-13 04:15:19.597  6294  6672 D CommonApp-120-10138: scene=COMMON pn=com.esseanalytics.android
+08-13 04:15:19.696  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:19.716  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:19.722  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:19.824  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:20.433  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4953,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:20.433  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-20
+08-13 04:15:20.434  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:20.577  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:20.825  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:21.446  2976  4675 V AlarmManager: sending alarm Alarm{385ac18 type 3 origWhen 1555103923 whenElapsed 1555103923 android} uid 1000 whenElapsed 1555103923 windowLength 22491 maxWhenElapsed 1555126414 repeatInterval 0 action null component null tag *job.delay* flags 0x0 procName system_server
+08-13 04:15:21.447  2976  4675 D OplusProxyWakeLock: acquireProxyWakeLock failed, prevent uid: 1000 tag:*alar  WorkSource{10310 com.duolingo} result: TAG_NULL
+08-13 04:15:21.450  2976  4675 V AlarmManager: sending alarm Alarm{6661c56 type 3 origWhen 1555125416 whenElapsed 1555125416 android} uid 1000 whenElapsed 1555125416 windowLength 626094 maxWhenElapsed 1555751510 repeatInterval 0 action null component null tag *CountQuotaTracker.cleanup* flags 0x8 procName system_server
+08-13 04:15:21.450  2976  4675 E AlarmManager: Attempt to decrement existing alarm count 0 by 1 for uid 1000
+08-13 04:15:21.460  2976  6923 I OplusHansManager : unfreeze uid: 10310 com.duolingo pids: [13378] reason: Wakelock *alar WorkSource{10310 com.duolingo} scene: LcdOn
+08-13 04:15:21.462  2976  6396 I OplusHansManager : uid=10310, pkg=com.duolingo F exit(), F stay=54, reason=Wakelock *alar WorkSource{10310 com.duolingo}
+08-13 04:15:21.462  2976  6403 I OplusHansManager : up_BC uid=10310 pkg=com.duolingo
+08-13 04:15:21.463  2976  6403 I OplusBinderProxy: un_pb uid: 10310 pid: 13378 rst: true , Desc: android.view.accessibility.IAccessibilityManagerClient/4
+08-13 04:15:21.463  2976  6403 I OplusBinderProxy: proxyBinder uid: 10310 pkg: com.duolingo proxy: false calling: OFreezer
+08-13 04:15:21.482  1757 32261 E TetherController: property_get sys.radio.data.modem_share_flag return 0, 1!
+08-13 04:15:21.482 31415 31415 D BoundBrokerSvc: onUnbind: Intent { act=com.google.android.gms.appset.service.START dat=chimera-action:/... cmp=com.google.android.gms/.chimera.GmsApiService mCallingUid=10166 }
+08-13 04:15:21.486 13378 13378 D WM-DelayedWorkTracker: Scheduling work 2babe059-f217-4bbb-ac62-2255ec1424ef
+08-13 04:15:21.486 13378 13378 D WM-GreedyScheduler: Starting work for 2babe059-f217-4bbb-ac62-2255ec1424ef
+08-13 04:15:21.492 13378 13461 D WM-Processor: wis: processing WorkGenerationalId(workSpecId=2babe059-f217-4bbb-ac62-2255ec1424ef, generation=0)
+08-13 04:15:21.495 13378 13378 D WM-SystemJobService: onStartJob for WorkGenerationalId(workSpecId=2babe059-f217-4bbb-ac62-2255ec1424ef, generation=0)
+08-13 04:15:21.502 13378 13378 D WM-WorkerWrapper: Starting work for com.duolingo.profile.suggestions.RecommendationHintsUploadWorker
+08-13 04:15:21.502 13378 13499 D WM-Processor: Work WorkGenerationalId(workSpecId=2babe059-f217-4bbb-ac62-2255ec1424ef, generation=0) is already enqueued for processing
+08-13 04:15:21.537 13378 13461 I WM-WorkerWrapper: Worker result SUCCESS for Work [ id=2babe059-f217-4bbb-ac62-2255ec1424ef, tags={ com.duolingo.profile.suggestions.RecommendationHintsUploadWorker } ]
+08-13 04:15:21.546 13378 13378 D WM-Processor: wis 2babe059-f217-4bbb-ac62-2255ec1424ef executed; reschedule = false
+08-13 04:15:21.546 13378 13378 D WM-SystemJobService: 2babe059-f217-4bbb-ac62-2255ec1424ef executed on JobScheduler
+08-13 04:15:21.553 13378 13461 D WM-GreedyScheduler: Cancelling work ID 2babe059-f217-4bbb-ac62-2255ec1424ef
+08-13 04:15:21.562 13378 13461 D WM-SystemJobScheduler: Scheduling work ID 2babe059-f217-4bbb-ac62-2255ec1424efJob ID 17808
+08-13 04:15:21.564 13378 13461 D WM-GreedyScheduler: Ignoring {WorkSpec: ebe994de-95ce-4679-9842-4a43acccdb74}. Requires device idle.
+08-13 04:15:21.600  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:21.826  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:21.982  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:21.987  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225882559,totalTxBytes:550540552,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775859391
+08-13 04:15:22.020  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:22.625  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:22.718  2976  6400 I OplusHansManager : unfreeze uid: 10276 com.facebook.katana pids: [13472] reason: Packet scene: LcdOn
+08-13 04:15:22.719  2976  6396 I OplusHansManager : uid=10276, pkg=com.facebook.katana F exit(), F stay=35, reason=Packet
+08-13 04:15:22.720  2976  6403 I OplusHansManager : up_BC uid=10276 pkg=com.facebook.katana
+08-13 04:15:22.720  2976  6403 I OplusBinderProxy: proxyBinder uid: 10276 pkg: com.facebook.katana proxy: false calling: OFreezer
+08-13 04:15:22.721  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:22.727 13472 13522 W CrashLoopRemedyLog: unable to delete remedy log, instaCrash: true
+08-13 04:15:22.730  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:22.732  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:22.828  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:23.073  7262  7361 E horae   : 0: back:29983,frame:29627,front:30165, 2, +(-1365), 1 ,28800,30380,31809,31142, target_temp:30165, algo:0
+08-13 04:15:23.223  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:23.421  2976  4660 D FusionLightExtImpl: processRawLux stop to shot
+08-13 04:15:23.423  2976  4660 D FusionLightExtImpl: processRawLux ShotOnce, after outEvent->light = 9.076283, comp_lux = 0.561371, RGB(10.000000, 8.000000, 5.000000), C = 2.000000, threshold = 1000, mBrightLevel = 602
+08-13 04:15:23.650  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:23.829  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:24.672  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:24.674  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:24.676  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:24.831  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:25.435  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4950,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:25.435  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-25
+08-13 04:15:25.437  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:25.698  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:25.746  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:25.760  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:25.764  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:25.833  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:25.993  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:25.997  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225883280,totalTxBytes:550540918,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775860478
+08-13 04:15:26.029  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:26.469  2976  6396 I OplusHansManager : uid=10310, pkg=com.duolingo F enter(), M stay=5
+08-13 04:15:26.477  2976  6396 I OplusHansManager : freeze uid: 10310 com.duolingo pids: [13378] scene: LcdOn
+08-13 04:15:26.478  2976  6403 I OplusHansManager : p_BC uid=10310 pkg=com.duolingo
+08-13 04:15:26.478  2976  6403 I OplusBinderProxy: proxyBinder uid: 10310 pkg: com.duolingo proxy: true calling: OFreezer
+08-13 04:15:26.574  2976  5531 D InetDiagMessage: Destroyed 0 sockets, proto=IPPROTO_TCP, family=AF_INET, states=14
+08-13 04:15:26.578  2976  5531 D InetDiagMessage: Destroyed 0 sockets, proto=IPPROTO_TCP, family=AF_INET6, states=14
+08-13 04:15:26.578  2976  5531 D InetDiagMessage: Destroyed live tcp sockets for uids={10310} in 9ms
+08-13 04:15:26.582  2976  5531 D InetDiagMessage: Destroyed 0 sockets, proto=IPPROTO_TCP, family=AF_INET, states=14
+08-13 04:15:26.584  2976  5531 D InetDiagMessage: Destroyed 0 sockets, proto=IPPROTO_TCP, family=AF_INET6, states=14
+08-13 04:15:26.585  2976  5531 D InetDiagMessage: Destroyed live tcp sockets for uids={20310} in 7ms
+08-13 04:15:26.605  6294  6672 D CommonApp-120-10138: DefaultState EVENT_SCENARIOS_CHANGE
+08-13 04:15:26.605  6294  6672 D CommonApp-120-10138: scene=COMMON pn=com.esseanalytics.android
+08-13 04:15:26.721  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:26.835  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:27.479  8881  8883 D IHansComunication: HANS sendMessageToKernel: threadId = 496852806768, netLinkSetup = 1, type = FROZEN_TRANS, targetUid = 10310, pkgCmd = PKG_CMD_MAX
+08-13 04:15:27.745  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:27.837  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:28.419  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:28.769  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:28.777  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:28.793  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:28.799  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:28.839  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:29.794  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:29.841  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:30.004  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:30.010  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225883879,totalTxBytes:550541370,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775861529
+08-13 04:15:30.030  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:30.438  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4950,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:30.438  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-30
+08-13 04:15:30.439  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:30.555  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:30.556  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:30.817  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:30.842  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:31.813  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:31.840  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:31.841  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:31.843  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:31.846  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:32.584  6395  6866 D DiagnoseService: handleMessage: 1001
+08-13 04:15:32.585  6395  6866 D RadioProxyJ: [PHONE0][10584]> getDiagPktVersionMismatchDb
+08-13 04:15:32.588  2989  3017 D QmiVsClient: getDiagPktVersionMismatchDb - enter
+08-13 04:15:32.591  2989  3020 D QmiVsClient: getDiagPktVersionMismatchDb callback - enter
+08-13 04:15:32.591  2989  3020 E QmiVsClient: error : PARAM_CHECK_RESP_NO_RETURN 94
+08-13 04:15:32.591  2989  3020 D QmiClient: QmiErrorToRadioApiError qmiError 94, radio result 2
+08-13 04:15:32.592  2989  3017 D VsProxy : handleMessage msg is 4001
+08-13 04:15:32.592  2989  3017 D RadioProxy: getDiagPktVersionMismatchDb : response cb for instance 0
+08-13 04:15:32.607  6395 24335 D SubsysRadioResponse: responseDiagPacketVersionMismatchDb() recordNumber = 0
+08-13 04:15:32.608  6395 24335 D RadioProxyJ: [PHONE0][10584]< getDiagPktVersionMismatchDbResponse 
+08-13 04:15:32.608  6395  6866 D DiagnoseService: handleMessage: 1002
+08-13 04:15:32.608  6395  6866 D DiagnoseService: GET_DIAG_PACKET_VERSION_MISMATCH_DONE with error NOT_SUPPORT
+08-13 04:15:32.727  2976  6396 I OplusHansManager : uid=10276, pkg=com.facebook.katana F enter(), M stay=10
+08-13 04:15:32.734  2976  6396 I OplusHansManager : freeze uid: 10276 com.facebook.katana pids: [13472] scene: LcdOn
+08-13 04:15:32.735  2976  6403 I OplusHansManager : p_BC uid=10276 pkg=com.facebook.katana
+08-13 04:15:32.735  8881  8883 D IHansComunication: HANS sendMessageToKernel: threadId = 496852806768, netLinkSetup = 1, type = PKG, targetUid = 10276, pkgCmd = ADD_ONE_UID
+08-13 04:15:32.736  2976  6403 I OplusBinderProxy: proxyBinder uid: 10276 pkg: com.facebook.katana proxy: true calling: OFreezer
+08-13 04:15:32.844  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:32.865  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:33.618  6294  6672 D CommonApp-120-10138: DefaultState EVENT_SCENARIOS_CHANGE
+08-13 04:15:33.618  6294  6672 D CommonApp-120-10138: scene=COMMON pn=com.esseanalytics.android
+08-13 04:15:33.619  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:33.737  8881  8883 D IHansComunication: HANS sendMessageToKernel: threadId = 496852806768, netLinkSetup = 1, type = FROZEN_TRANS, targetUid = 10276, pkgCmd = PKG_CMD_MAX
+08-13 04:15:33.846  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:33.889  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:34.014  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:34.021  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225883879,totalTxBytes:550541370,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775861529
+08-13 04:15:34.053  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:34.847  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:34.858  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:34.881  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:34.885  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:34.913  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:35.440  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4871,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:35.441  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-35
+08-13 04:15:35.441  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:35.850  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:35.938  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:36.697  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:36.699  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:36.852  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:36.961  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:37.509  1757 32261 E TetherController: property_get sys.radio.data.modem_share_flag return 0, 1!
+08-13 04:15:37.853  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:37.898  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:37.923  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:37.929  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:37.986  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:38.026  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:38.031  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225884508,totalTxBytes:550541370,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775862158
+08-13 04:15:38.059  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:38.073 10547 22732 D ShellSubscriberWorkerThread: the first 8 bytes empty, and RestData length > 8 
+08-13 04:15:38.819  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:38.855  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:39.012  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:39.856  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:40.034  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:40.442  1948  2032 D vendor.oplus.hardware.charger-V6-service: ret_value:136, read content:,289,-2740,4343,4343,0,500,2200,100,100,1,4,-1,4961,100,1,1048704,1,1,0,0,4395,0,7,0,7,0,1,0,288,0,4,2,0,0,61,61,61,0,0,0,0,0,0,0,0,0,0
+08-13 04:15:40.443  1948  2032 D vendor.oplus.hardware.charger-V6-service: gmtime: 2026-08-13-04-15-40
+08-13 04:15:40.444  1948  2032 D vendor.oplus.hardware.charger-V6-service: usb_online:1, ac_online:0, wireless_online:-2147483648
+08-13 04:15:40.624  6294  6672 D CommonApp-120-10138: DefaultState EVENT_SCENARIOS_CHANGE
+08-13 04:15:40.625  6294  6672 D CommonApp-120-10138: scene=COMMON pn=com.esseanalytics.android
+08-13 04:15:40.858  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:40.943  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL
+08-13 04:15:40.965  6395  6395 D VendorWifiService: onEvent event:9,action:1
+08-13 04:15:40.968  2976  5630 D OplusWifiPower_TriggerCenter: mComponentCallback: wifistat
+08-13 04:15:41.057  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:41.859  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:42.035  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->updateNetworkSpeed: isConnected:true,isSwitchOn:true
+08-13 04:15:42.044  5793  5992 I SystemUi--Statusbar: OplusNetworkSpeedControllExImpl-->getTotalByte: totalRxBytes:6225884508,totalTxBytes:550541370,loopbackTxBytes:281860,loopbackRxBytes:281860 ,totalBytes:6775862158
+08-13 04:15:42.080  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:42.081  5793  5793 I SystemUi--Keyguard: KeyguardUtils-->density is 0 sInitialDisplayDensity:480
+08-13 04:15:42.582  1948  1948 D vendor.oplus.hardware.charger-V6-service: get_ui_charge_icon_type 0 0 0 0 0
+08-13 04:15:42.585  1948  1948 D vendor.oplus.hardware.charger-V6-service: oplus_chg_get_cpa_power 2500 charge_online 1 retention_topic 0
+08-13 04:15:42.594  5793  5793 I SystemUi--Statusbar: BatteryControllerExt-->updateBatteryChangeIntent():broadcast=android.intent.action.BATTERY_CHANGED,level=100,scale=100
+08-13 04:15:42.595  5793  5793 I SystemUi--Statusbar: BatteryRepository-->level: 100 -- isSavingMode: false
+08-13 04:15:42.598  2976  3426 D OplusDisplayBrightnessBroadcastReceiver: onReceive action = android.intent.action.BATTERY_CHANGED , listeners = [com.android.server.display.OplusFeatureHDREnhanceBrightness$PhoneInfoReceiver@848eca8, com.android.server.display.OplusFeatureEdrEnhanceBrightness$PhoneInfoReceiver@5959edf]
+08-13 04:15:42.598  6395  6395 D SubsysBroadcastManager: onReceive action:android.intent.action.BATTERY_CHANGED
+08-13 04:15:42.601  6288  6288 D DeviceStatisticsService: onReceive: action= android.intent.action.BATTERY_CHANGED
+08-13 04:15:42.605  5756  6250 I DeepThinkerSDK: [APP] ClientConnection: getDeepThinkerBridge start
+08-13 04:15:42.606  5756  6250 I DeepThinkerSDK: [APP] ClientConnection: getDeepThinkerBridge end
+08-13 04:15:42.606 22798 22798 D CustomLogManagerService: onReceive android.intent.action.BATTERY_CHANGED
+08-13 04:15:42.606  9840  9840 I PTC.APPCORE.EventBroadcastReceiver: onReceive, action=android.intent.action.BATTERY_CHANGED
+08-13 04:15:42.606  5756  6250 I DeepThinkerSDK: [APP] UserDomainManager: businessId : 401 threshold : 0.6 learnPeriod:30
+08-13 04:15:42.606  5756  6277 E Battery : a: getAISleepDuration: predictResult is null.
+08-13 04:15:42.606  5756  6277 E Battery : ChargeProtectionUtils: mCanlendarTmp.isEmpty()!
+08-13 04:15:42.607  9840  9840 I PTC.APPCORE.BatteryLevelReceiver: current battery = batteryPercentage, not need change
+08-13 04:15:42.609  5756  6250 I DeepThinkerSDK: [APP] UserDomainManager: PerformanceOfLongCharging{probabilityOfLocation=0.0, probabilityOfApps=0.0, probabilityOfTime=0.43333334, probabilityOfTotal=0.0, duration=0}
+08-13 04:15:42.861  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:43.104  6294  6672 D CommonApp-120-10138: transport layer data is invalid
+08-13 04:15:43.822  2049  7081 D SurfaceFlinger: captureDisplay from pid 2049 uid -1 display 4630946253560767361
+08-13 04:15:43.863  1948  2033 D BatteryChargeControl: bcc get no support from charging protocol
+08-13 04:15:43.981  2976  5524 D WifiStaIfaceHidlImpl: getCachedScanData is not implemented by HIDL

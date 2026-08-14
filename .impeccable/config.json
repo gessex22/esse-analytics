@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "ai-color-palette",
+        "value": "*",
+        "files": [
+          "frontend/src/components/YoutubeUploadView.tsx"
+        ],
+        "createdAt": "2026-08-14T02:10:52.065Z",
+        "reason": "purple-to-pink gradient is the Instagram brand identity on Instagram-only connect/publish buttons (pre-existing, not touched by this change), not an arbitrary AI palette choice"
+      }
+    ]
+  }
+}

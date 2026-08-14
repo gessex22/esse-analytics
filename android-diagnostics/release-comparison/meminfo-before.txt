@@ -1,0 +1,69 @@
+Applications Memory Usage (in Kilobytes):
+Uptime: 804551305 Realtime: 1561399798
+
+** MEMINFO in pid 30245 [com.esseanalytics.android] **
+                   Pss  Private  Private  SwapPss      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    19934    19884        0        4    24108    36864    25084    11779
+  Dalvik Heap     8434     8336        0        0    16752    13323     6662     6661
+ Dalvik Other     4364     2400        0        0     7100                           
+        Stack     1728     1728        0        0     1736                           
+       Ashmem       15        0        0        0      752                           
+      Gfx dev        0        0        0        0        4                           
+    Other dev       20        0       20        0      532                           
+     .so mmap     6138      536      212        0    59576                           
+    .jar mmap     1469        0       76        0    46112                           
+    .apk mmap      202        0       24        0     2080                           
+    .ttf mmap      448        0      104        0     1436                           
+    .dex mmap     5084        0     5076        0     5852                           
+    .oat mmap      437        0       12        0    16168                           
+    .art mmap      995      700        0        0    26128                           
+   Other mmap     3832     3644      128        0     5996                           
+   EGL mtrack    42796    42796        0        0    42796                           
+    GL mtrack     2556     2556        0        0     2556                           
+      Unknown     1196      888      304        0     2636                           
+        TOTAL    99652    83468     5956        4   262320    50187    31746    18440
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:     9036                          42880
+         Native Heap:    19884                          24108
+                Code:     6044                         135148
+               Stack:     1728                           1736
+            Graphics:    45352                          45356
+       Private Other:     7380
+              System:    10228
+             Unknown:                                   13092
+ 
+           TOTAL PSS:    99652            TOTAL RSS:   262320       TOTAL SWAP PSS:        4
+ 
+ Objects
+               Views:       12         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:       46        AssetManagers:        0
+       Local Binders:       19        Proxy Binders:       74
+       Parcel memory:        8         Parcel count:       34
+    Death Recipients:        0             WebViews:        0
+ 
+ SQL
+         MEMORY_USED:      497
+  PAGECACHE_OVERFLOW:      167          MALLOC_SIZE:       46
+ 
+ DATABASES
+      pgsz     dbsz   Lookaside(b) cache hits cache misses cache size  Dbname
+PER CONNECTION STATS
+         4       32             21     1    32     2  /data/user/0/com.esseanalytics.android/databases/essenalytics.db
+         4        8                    0     0     0    (attached) temp
+         4       32             86    30    23     5  /data/user/0/com.esseanalytics.android/databases/essenalytics.db (1)
+         4      104            118     8    63     9  /data/user/0/com.esseanalytics.android/no_backup/androidx.work.workdb
+         4        8                    0     0     0    (attached) temp
+         4      104             69    41    60     6  /data/user/0/com.esseanalytics.android/no_backup/androidx.work.workdb (1)
+POOL STATS
+     cache hits  cache misses    cache size  Dbname
+             31            59            90  /data/user/0/com.esseanalytics.android/databases/essenalytics.db
+             49           127           176  /data/user/0/com.esseanalytics.android/no_backup/androidx.work.workdb
+
+
+

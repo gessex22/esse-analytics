@@ -327,14 +327,8 @@ export function StatsView({ onOpenVideo }: { onOpenVideo?: (fileId: string, titl
   useEffect(() => { load(); }, [filter]);
 
   return (
-    <div className="space-y-5 max-w-3xl">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-semibold text-foreground">Estadísticas</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {filter === 'all' ? 'Los últimos 10 videos publicados, con las vistas sumadas entre todas las redes.' : `Los últimos 10 videos publicados en ${PLATFORM_CFG[filter].label}.`}
-          </p>
-        </div>
+    <div className="space-y-5">
+      <div className="flex items-center justify-end gap-4">
         <button
           onClick={load}
           disabled={loading}

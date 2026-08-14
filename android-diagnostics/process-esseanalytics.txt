@@ -1,0 +1,94 @@
+---- TIME 13/8/2026 4:16:09?a.m. ----
+ACTIVITY MANAGER RUNNING PROCESSES (dumpsys activity processes)
+  All known processes:
+  *APP* UID 10138 ProcessRecord{7d827c7 13363:com.esseanalytics.android/u0a138}
+    user #0 uid=10138 gids={3003, 50138, 20138, 9997}
+    mRequiredAbi=arm64-v8a instructionSet=arm64
+    class=com.esseanalytics.android.app.EsseAnalyticsApp
+    dir=/data/app/~~ihgYYxb2JAVByVBdxdk4Nw==/com.esseanalytics.android-9KkGdI8xn0wg7cG9TkCnhQ==/base.apk publicDir=/data/app/~~ihgYYxb2JAVByVBdxdk4Nw==/com.esseanalytics.android-9KkGdI8xn0wg7cG9TkCnhQ==/base.apk data=/data/user/0/com.esseanalytics.android
+    packageList={com.esseanalytics.android}
+    compat={480dpi}
+    thread=android.app.IApplicationThread$Stub$Proxy@3856a3f
+    pid=13363
+    lastActivityTime=-1m53s301ms    startUpTime=-1m53s443ms    startElapsedTime=-1m53s443ms
+    startSeq=20690
+    mountMode=DEFAULT
+    lastRssTime=-1m53s448ms rssProcState=20 rssStatType=0 nextRssTime=-1m43s314ms
+    lastRss=0.00 lastCachedRss=0.00
+    trimMemoryLevel=0
+    procStateMemTracker: best=4 () / pending state=1 highest=1 1.0x
+    lastRequestedGc=-1m53s312ms lastLowMemory=-1m53s312ms reportLowMemory=false
+    currentHostingComponentTypes=0x0 historicalHostingComponentTypes=0x0
+    reportedInteraction=true time=-1m53s331ms
+    adjSeq=815715 lruSeq=1067568
+    oom adj: max=1001 curRaw=0 setRaw=0 cur=0 set=0
+    mCurSchedGroup=3 setSchedGroup=3 systemNoUi=false
+    curProcState=2 mRepProcState=2 setProcState=2 lastStateTime=-1m53s314ms
+    curCapability=LCMNFUA setCapability=LCMNFUA
+
+    hasShownUi=true pendingUiClean=true
+    cached=false empty=false
+    foregroundActivities=true (rep=true)
+    scheduleServiceTimeoutPending=false
+    Published Providers:
+      - androidx.startup.InitializationProvider
+        -> ContentProviderRecord{1e79f0c u0 com.esseanalytics.android/androidx.startup.InitializationProvider}
+    Connected Providers:
+      - 15c9055/com.android.providers.settings/.SettingsProvider->13363:com.esseanalytics.android/u0a138 s1/1 u0/0 +1m52s285ms
+    lastCompactTime=0 lastCompactProfile=null
+    hasPendingCompaction=false    isFreezeExempt=false isPendingFreeze=false isFrozen=false
+    earliestFreezableTimeMs=--
+    Activities:
+      - ActivityRecord{954dfc4 u0 com.esseanalytics.android/.app.MainActivity t1887}
+    Recent Tasks:
+      - Task{84fc5e2 #1887 type=standard A=10138:com.esseanalytics.android}
+     Configuration={1.0 ?mcc??mnc [es_US] ldltr sw360dp w360dp h800dp 480dpi nrml long port night finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} s.967 fontWeightAdjustment=0mThemeChanged= 0, mThemeChangedFlags= 0, mFlipFont= 0, mScenario= 0, mAccessibleChanged= -1, mUxIconConfig= 3468921665126662177, mMaterialColor= 2, mUserId= 0, mFontUserId= 0, mFontVariationSettings= 226, mFoldingAngle = -1.0, mIconPackName= , mDarkModeBackgroundMaxL= 0.0, mDarkModeDialogBgMaxL= 27.0, mDarkModeForegroundMinL= 100.0, mOplusConfigType= 1, mOplusChangedConfigs= 0, OpSans= -1, mBurmeseFontFlag= 2, mFlag= 0, mFlexibleActivitySuitable= -1, mPuttDisplayFlag= -1}
+     OverrideConfiguration={1.0 ?mcc??mnc [es_US] ldltr sw360dp w360dp h800dp 480dpi nrml long port night finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined mRotation=ROTATION_0} s.2 fontWeightAdjustment=0mThemeChanged= 0, mThemeChangedFlags= 0, mFlipFont= 0, mScenario= 0, mAccessibleChanged= -1, mUxIconConfig= 3468921665126662177, mMaterialColor= 2, mUserId= 0, mFontUserId= 0, mFontVariationSettings= 226, mFoldingAngle = -1.0, mIconPackName= , mDarkModeBackgroundMaxL= 0.0, mDarkModeDialogBgMaxL= 27.0, mDarkModeForegroundMinL= 100.0, mOplusConfigType= 1, mOplusChangedConfigs= 0, OpSans= -1, mBurmeseFontFlag= 2, mFlag= 0, mFlexibleActivitySuitable= -1, mPuttDisplayFlag= -1}
+     mLastReportedConfiguration={1.0 ?mcc??mnc [es_US] ldltr sw360dp w360dp h800dp 480dpi nrml long port night finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 1080, 2400) mAppBounds=Rect(0, 0 - 1080, 2400) mMaxBounds=Rect(0, 0 - 1080, 2400) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined mAlwaysOnTop=undefined mRotation=ROTATION_0} s.967 fontWeightAdjustment=0mThemeChanged= 0, mThemeChangedFlags= 0, mFlipFont= 0, mScenario= 0, mAccessibleChanged= -1, mUxIconConfig= 3468921665126662177, mMaterialColor= 2, mUserId= 0, mFontUserId= 0, mFontVariationSettings= 226, mFoldingAngle = -1.0, mIconPackName= , mDarkModeBackgroundMaxL= 0.0, mDarkModeDialogBgMaxL= 27.0, mDarkModeForegroundMinL= 100.0, mOplusConfigType= 1, mOplusChangedConfigs= 0, OpSans= -1, mBurmeseFontFlag= 2, mFlag= 0, mFlexibleActivitySuitable= -1, mPuttDisplayFlag= -1}
+     mActivityStateFlags=W|V|R|VT|taskLayer=1
+     mWaitActivityToAttach=false
+    ProcessRecordExtImpl:  ExecutingServices: 0  PubProviders: 0  CurReceivers: 0  virtualFreeze: false  mFirstTopInteraction = -1
+     processName=com.esseanalytics.android mUxState=3
+
+  OOM levels:
+    -900: SYSTEM_ADJ (  263,168K)
+    -800: PERSISTENT_PROC_ADJ (  263,168K)
+    -700: PERSISTENT_SERVICE_ADJ (  263,168K)
+      0: FOREGROUND_APP_ADJ (  263,168K)
+     100: VISIBLE_APP_ADJ (  329,728K)
+     200: PERCEPTIBLE_APP_ADJ (  395,264K)
+     225: PERCEPTIBLE_MEDIUM_APP_ADJ (  460,800K)
+     250: PERCEPTIBLE_LOW_APP_ADJ (  460,800K)
+     300: BACKUP_APP_ADJ (  790,528K)
+     400: HEAVY_WEIGHT_APP_ADJ (  790,528K)
+     500: SERVICE_ADJ (  790,528K)
+     600: HOME_APP_ADJ (  790,528K)
+     700: PREVIOUS_APP_ADJ (  790,528K)
+     800: SERVICE_B_ADJ (  790,528K)
+     900: CACHED_APP_MIN_ADJ (  790,528K)
+     999: CACHED_APP_MAX_ADJ (1,153,024K)
+
+  Process OOM control (76 total, non-act at 4, non-svc at 4):
+    Proc # 0: fg     T/A/TOP  LCMNFUA  t: 0 13363:com.esseanalytics.android/u0a138 (top-activity)
+        oom: max=1001 curRaw=0 setRaw=0 cur=0 set=0
+        state: cur=TOP  set=TOP  lastRss=0.00 lastCachedRss=0.00
+        cached=false empty=false hasAboveClient=false
+
+  mHomeProcess: ProcessRecord{9d4808 6159:com.android.launcher/u0a182}
+  mPreviousProcess: null
+
+  Raw LRU list (dumpsys activity lru):
+    Activities:
+    #75: fg     TOP  LCMNFUA 13363:com.esseanalytics.android/u0a138 act:activities|recents
+
+  Process LRU list (sorted by oom_adj, 76 total, non-act at 4, non-svc at 4):
+    Proc # 0: fg     T/A/TOP  LCMNFUA  t: 0 13363:com.esseanalytics.android/u0a138 (top-activity)
+
+  PID mappings:
+    PID #13363: ProcessRecord{7d827c7 13363:com.esseanalytics.android/u0a138}
+  mPreviousProcessVisibleTime: +9d5h42m18s442ms
+  mDeviceIdleAllowlist=[1000, 1001, 1002, 2000, 10060, 10061, 10062, 10063, 10064, 10065, 10067, 10079, 10091, 10096, 10097, 10099, 10106, 10129, 10136, 10149, 10164, 10171, 10172, 10180, 10187, 10189, 10192, 10195, 10199, 10215, 10226, 10232, 10234, 10237, 10238, 10248, 10250, 10251, 10254, 10273, 10276, 10296, 10317, 10408]
+  mDeviceIdleExceptIdleAllowlist=[1000, 1001, 1002, 2000, 10060, 10061, 10062, 10063, 10064, 10065, 10067, 10079, 10091, 10096, 10097, 10099, 10106, 10129, 10136, 10149, 10164, 10171, 10172, 10180, 10187, 10189, 10192, 10195, 10199, 10215, 10226, 10232, 10234, 10237, 10238, 10248, 10250, 10251, 10252, 10254, 10273, 10276, 10296, 10317, 10408]
+  mDeviceIdleTempAllowlist=[]
+  mFgsStartTempAllowList:
+  mForceBackgroundCheck=false

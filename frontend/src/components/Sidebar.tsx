@@ -65,16 +65,23 @@ export function Sidebar({ effectiveNav, isNavVisible, onNavClick }: SidebarProps
             <button
               key={label}
               onClick={() => onNavClick(i)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-full mb-0.5 text-sm transition-colors ${
+              className={`relative isolate w-full flex items-center gap-3 px-3 py-2.5 rounded-full mb-0.5 text-sm transition-colors ${
                 isActive
-                  ? "bg-secondary text-foreground font-medium"
+                  ? "text-foreground font-medium"
                   : "text-muted-foreground hover:text-foreground hover:bg-white/5"
               }`}
             >
-              <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? "text-primary" : ""}`} />
-              <span className="flex-1 text-left">{label}</span>
+              {isActive && (
+                <motion.span
+                  layoutId="sidebar-nav-indicator"
+                  className="absolute inset-0 -z-10 rounded-full bg-secondary"
+                  transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                />
+              )}
+              <Icon className={`relative z-10 w-4 h-4 flex-shrink-0 ${isActive ? "text-primary" : ""}`} />
+              <span className="relative z-10 flex-1 text-left">{label}</span>
               {!ACTIVE_VIEWS.has(i) && (
-                <span className="text-[9px] border border-border rounded px-1 text-muted-foreground/50 leading-tight">
+                <span className="relative z-10 text-[9px] border border-border rounded px-1 text-muted-foreground/50 leading-tight">
                   PRONTO
                 </span>
               )}
