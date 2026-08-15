@@ -415,6 +415,11 @@ export function DashboardView({
         })
       : items[0];
 
+  // `item.fecha_creacion` es la fecha de creación del archivo cuando el
+  // evento encontró un grupo de estadísticas. El Dashboard debe conservar la
+  // fecha del evento que acaba de elegir como “último publicado”.
+  const displayedPublishedAt = latestHistory?.publishedAt ?? item?.fecha_creacion;
+
   // El fileId de `item` viene de la central (Mongo _id) -- la miniatura y el
   // player son locales (SQLite), así que hace falta resolver el id local por
   // fileName antes de poder pedirlos (mismo patrón que StatsView.tsx).
@@ -599,7 +604,7 @@ export function DashboardView({
                     {item.fileName}
                   </h3>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Publicado {formatDate(item.fecha_creacion)}
+                    Publicado {displayedPublishedAt ? formatDate(displayedPublishedAt) : "—"}
                   </p>
                   <div className="flex flex-wrap items-center gap-3 mt-4">
                     <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
