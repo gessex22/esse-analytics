@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { Readable } from 'stream';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { FileModel } from '../models/file.model';
 import { applyPlatformPublish } from './backup.controller';
 import {
   resolveRemoteLibraryFilePath,
@@ -468,12 +469,13 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
   const { platforms, platformsDiscarded, platformLinks } = req.body;
   try {
     const userId = req.user!.id;
-    // Se necesita el estado ANTES del update para dos cosas: el merge de
-    // platformLinks (ya existía) y ahora también para saber qué plataformas
-    // son una novedad real (ver el best-effort de abajo).
+    // Se necesita el estado ANTES del update para tres cosas: el merge de
+    // platformLinks (ya existía), saber qué plataformas son una novedad real
+    // (ver el best-effort de abajo) y ahora también qué descartes son nuevos
+    // (para propagarlos a FileModel, ver más abajo).
     const before = await RemoteLibraryVideoModel.findOne(
       { _id: req.params.id, userId },
-      { platforms: 1, platformLinks: 1, fileName: 1, contentId: 1 },
+      { platforms: 1, platformsDiscarded: 1, platformLinks: 1, fileName: 1, contentId: 1 },
     ).lean();
     if (!before) { res.status(404).json({ error: 'Video no encontrado' }); return; }
 
@@ -515,6 +517,34 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
           publishedAt: link.publishedAt ? new Date(link.publishedAt) : undefined,
         }).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] applyPlatformPublish falló:', err.message));
       }
+    }
+
+    // Bug real confirmado 2026-08-15 (ver docs/bug-reports.md,
+    // BUG-2026-08-15-03): applyPlatformPublish arriba y en backup.controller.ts
+    // ya propaga ALTAS (files -> Nube), pero nada propagaba DESCARTES en
+    // ninguna dirección -- un descarte hecho acá (celular) quedaba invisible
+    // para siempre en FileModel, y por lo tanto para el pull de escritorio
+    // (getBackupFiles, que lee FileModel como fuente de verdad). Mismo
+    // criterio conservador que ya usa applyPlatformPublish para las altas: no
+    // pisa una plataforma que FileModel ya tiene como badge/confirmada real
+    // (filter platforms: $nin) -- un descarte hecho en Nube no puede tirar
+    // abajo un link real que ya existe del lado central.
+    const beforeDiscarded: string[] = before.platformsDiscarded ?? [];
+    const newlyDiscarded: string[] = Array.isArray(platformsDiscarded)
+      ? platformsDiscarded.filter((p: string) => !beforeDiscarded.includes(p))
+      : [];
+    if (newlyDiscarded.length > 0 && (before.fileName || before.contentId)) {
+      const fileQuery = before.contentId
+        ? { userId, content_id: before.contentId }
+        : { userId, file_name: before.fileName };
+      // as any: mismo escape ya usado en otros callers de FileModel/PlatformVideoModel
+      // en este backend (ver applyPlatformPublish) -- el filtro combina claims de
+      // dos formas de fileQuery (por content_id o por file_name) + $nin, y el
+      // overload de Mongoose no lo resuelve solo pese a ser válido en runtime.
+      FileModel.updateOne(
+        { ...fileQuery, platforms: { $nin: newlyDiscarded } } as any,
+        { $addToSet: { platforms_discarded: { $each: newlyDiscarded } } },
+      ).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar descarte a FileModel falló:', err.message));
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });
