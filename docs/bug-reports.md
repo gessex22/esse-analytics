@@ -34,6 +34,113 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-15-02 — TikTok: badge huérfano + platformUrl nunca se corrige tras resolver el id real
+
+- Estado: `corregido`; pendiente de verificación con una publicación real.
+- Reportado: 2026-08-15
+- Plataformas: Central (afecta a los 3 clientes que la consultan)
+- Severidad: alta (dos videos reales mostraban "Pendiente de datos"/link roto en TikTok)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Dos casos reales encontrados en la cuenta del usuario, ambos con el último
+video del Dashboard mostrando TikTok "Pendiente de datos" o con el link roto:
+
+1. "final -raytracing de iphone.mp4" tenía el badge `tiktok` marcado en
+   `FileModel.platforms` sin ningún `PlatformVideoModel` vinculado (huérfano)
+   -- id, link y métricas inexistentes.
+2. "final - rucos con ia.mp4" sí tenía su TikTok real vinculado (con
+   `platformId` numérico correcto y métricas reales), pero `platformUrl`
+   seguía apuntando al `publish_id` temporal de la operación de subir
+   (`.../video/v_pub_file~v2-1...`), no al video real.
+
+### Investigación
+
+Caso 1: el badge no tiene forma de auto-repararse solo -- si el registro real
+nunca se creó (o se perdió), no hay stats/refresco en vivo que lo traiga de
+vuelta; requiere intervención manual con el link real del video.
+
+Caso 2 es un bug de código real y reproducible para CUALQUIER TikTok futuro
+que tarde en resolver: `tiktok-upload.controller.ts` arma `platformId` y
+`platformUrl` con el `publish_id` crudo cuando TikTok no devuelve el id real
+(`publicaly_available_post_id`) dentro de la ventana de polling de 5 minutos
+al publicar. `resolvePendingTikTokIds` (sync.controller.ts) reintenta resolver
+el id real en cada refresco de stats y sí lo corrige en `PlatformVideoModel`
+y `UploadHistoryModel` -- pero **solo el campo `platformId`, nunca
+`platformUrl`**. Tampoco `getFileStats`/`getGroupStats` tocan `platformUrl`
+en su refresco en vivo (su `bulkOps.$set` solo escribe
+`views/likes/comments/thumbnail`). Resultado: el video queda con stats
+funcionando pero el link roto **para siempre**, sin ningún camino de
+auto-corrección.
+
+### Corrección
+
+- Datos: los dos registros puntuales de la cuenta del usuario corregidos a
+  mano en Mongo (vinculación real vía `applyPlatformPublish` para el caso 1,
+  `platformUrl` reconstruida para el caso 2), con verificación antes/después
+  de cada mutación.
+- Código: `resolvePendingTikTokIds` (`backend/src/controllers/sync.controller.ts`)
+  ahora reconstruye y persiste también `platformUrl`
+  (`https://www.tiktok.com/@{open_id}/video/{id resuelto}`, mismo patrón que
+  usa `tiktok-upload.controller.ts` al publicar) en el mismo momento que
+  corrige `platformId`, en `PlatformVideoModel` y `UploadHistoryModel`. Esto
+  arregla el caso 2 hacia adelante para cualquier publicación futura que
+  tarde en resolver, sin intervención manual.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: mismo conteo de errores preexistentes que
+  en `main` (27, ninguno nuevo introducido por este cambio) -- el proyecto no
+  tiene typecheck limpio en CI, no es una regresión.
+- Pendiente: confirmar en producción con una publicación de TikTok real que
+  tarde en resolver (`publicaly_available_post_id` fuera de la ventana de 5
+  min) que `platformUrl` queda corregida en el siguiente refresco de stats.
+- No cubre el caso 1 (badge huérfano) de forma genérica -- si vuelve a
+  aparecer un badge sin `PlatformVideoModel` real detrás, sigue requiriendo
+  diagnóstico e intervención manual como esta vez.
+
+### Historial
+- 2026-08-15 — Claude: diagnóstico verificado directo en Mongo, corrección de
+  datos puntual + fix de código en `resolvePendingTikTokIds`.
+
+## BUG-2026-08-15-01 — Dashboard iOS omitía métricas de TikTok en el último video
+
+- Estado: `corregido`; pendiente de verificación en dispositivo iOS.
+- Reportado: 2026-08-15
+- Plataformas: iOS, Central
+- Severidad: alta (la tarjeta principal mostraba un rendimiento incompleto)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Abrir Dashboard en iOS después de publicar el último video en TikTok. La
+tarjeta de «Último video publicado» no mostraba las métricas de TikTok.
+
+### Investigación
+
+El Dashboard solo solicitaba `GET /api/sync/file-stats` cuando el último evento
+no figuraba en la respuesta resumida de `group-stats`. Si el archivo sí estaba
+en esa lista, iOS reutilizaba ese slot aunque fuera cacheado o incompleto para
+TikTok, sin disparar el refresco puntual que consulta sus estadísticas.
+
+### Corrección
+
+`DashboardView` ahora pide `file-stats` siempre para el archivo del último
+evento y lo prioriza únicamente cuando corresponde a ese mismo evento. La
+respuesta puntual refresca las métricas de TikTok y evita que un fallback de un
+video anterior se muestre durante una recarga.
+
+### Verificación y pendiente
+
+- Pendiente: compilar y probar en Xcode (no disponible en este entorno).
+- Caso mínimo: publicar un TikTok, abrir/refrescar Dashboard y verificar
+  vistas, likes y comentarios tanto en la fila TikTok como en el total.
+
+### Historial
+
+- 2026-08-15 — Codex: incidente registrado y flujo de carga corregido.
+
 ## BUG-2026-08-13-01 — Calendario TikTok mostraba un último video distinto de Historial
 
 - Estado: `corregido`; pendiente de verificación en un dispositivo iOS con los datos afectados.

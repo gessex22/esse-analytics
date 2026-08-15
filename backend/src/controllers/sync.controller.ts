@@ -5,6 +5,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 import { syncYouTubeChannel, getYouTubeVideos, getRecentYouTubeVideosLive, getVideoStats as getYoutubeVideoStats } from '../services/youtube.service';
 import { getRecentInstagramMedia, getMediaStats, PlatformRecentItem } from '../services/instagram.service';
 import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats, resolveTikTokVideoId } from '../services/tiktok.service';
+import { getValidToken as getValidTikTokToken } from './tiktok-upload.controller';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
@@ -434,7 +435,7 @@ function statsCacheWindowMs(publishedAt?: Date | string | null): number {
 // quedaba con id inválido para siempre, sin stats/miniatura/link real. Se
 // reintenta acá, en cada refresco de stats, así se autocorrige la primera vez
 // que el id real ya esté disponible en la API de TikTok.
-async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; platformId: string }[]): Promise<void> {
+async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; platformId: string; platformUrl?: string }[]): Promise<void> {
   const pending = pvs.filter(pv => pv.platform === 'tiktok' && !/^\d+$/.test(pv.platformId));
   if (pending.length === 0) return;
   await Promise.all(pending.map(async (pv) => {
@@ -443,9 +444,22 @@ async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; 
       if (!resolved || resolved === pv.platformId) return;
       const oldId = pv.platformId;
       pv.platformId = resolved; // corrige en memoria para que este mismo request ya pida stats con el id bueno
+      // Bug real confirmado 2026-08-15: acá solo se corregía platformId, nunca
+      // platformUrl -- el video quedaba con el id real (stats/thumbnail andando)
+      // pero el link seguía armado con el publish_id crudo del momento de
+      // publicar (video/v_pub_file~...) para siempre, porque ni getFileStats
+      // ni getGroupStats tocan platformUrl en su refresco en vivo (solo
+      // views/likes/comments/thumbnail). Se reconstruye acá con el mismo
+      // patrón que tiktok-upload.controller.ts usa al publicar.
+      let resolvedUrl: string | undefined;
+      try {
+        const token = await getValidTikTokToken(userId);
+        resolvedUrl = `https://www.tiktok.com/@${token.open_id}/video/${resolved}`;
+        pv.platformUrl = resolvedUrl;
+      } catch { /* sin token válido -- se sigue con solo el id corregido, como antes */ }
       await PlatformVideoModel.updateOne(
         { userId, platform: 'tiktok', platformId: oldId },
-        { $set: { platformId: resolved } },
+        { $set: { platformId: resolved, ...(resolvedUrl ? { platformUrl: resolvedUrl } : {}) } },
       );
       // UploadHistoryModel es una colección aparte (el log que lee Historial
       // en mobile/web remoto) -- sin esto, se queda con el publish_id crudo
@@ -455,7 +469,7 @@ async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; 
       // que nunca se arregla solo.
       await UploadHistoryModel.updateOne(
         { userId, platform: 'tiktok', platformId: oldId },
-        { $set: { platformId: resolved } },
+        { $set: { platformId: resolved, ...(resolvedUrl ? { platformUrl: resolvedUrl } : {}) } },
       ).catch(() => { /* duplicado (ya existe un doc con ese id real) -- no es crítico, Historial ya lo dedupea por fileName del lado desktop */ });
     } catch { /* duplicado (ya existe un doc con ese id real) o falla de red -- se reintenta en el próximo refresh */ }
   }));
