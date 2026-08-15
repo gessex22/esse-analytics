@@ -118,6 +118,23 @@ export async function syncYouTubeChannel(userId: string): Promise<{ total: numbe
   return { total: allIds.length, shorts, upserted };
 }
 
+// Fecha real de publicación de UN video puntual -- la usa applyPlatformPublish
+// cuando el caller no manda publishedAt (típico: un link pegado a mano para un
+// video ya publicado hace tiempo, ver setPlatformLink en local-backend). Sin
+// esto, applyPlatformPublish caía a `new Date()` y el video quedaba marcado
+// como "publicado ahora" aunque en realidad fuera viejo (bug real detectado
+// 2026-08-15 con un link de Instagram de abril mostrado como recién
+// publicado). getVideoDetails ya pide `part=snippet`, que trae publishedAt.
+export async function getVideoPublishedAt(videoId: string): Promise<Date | null> {
+  try {
+    const [item] = await getVideoDetails([videoId]);
+    const raw = item?.snippet?.publishedAt;
+    return raw ? new Date(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Stats en vivo para un puñado puntual de videos (ej. la vista de Estadísticas,
 // acotada a 5 videos) — a diferencia de getYouTubeVideos, no lee de Mongo.
 export async function getVideoStats(ids: string[]): Promise<Record<string, { views: number; likes: number; comments: number; thumbnail?: string }>> {

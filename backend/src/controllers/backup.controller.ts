@@ -11,6 +11,9 @@ import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { recordAuditEvent } from '../services/audit.service';
+import { getVideoPublishedAt as getYoutubePublishedAt } from '../services/youtube.service';
+import { getMediaPublishedAt as getInstagramPublishedAt } from '../services/instagram.service';
+import { getVideoPublishedAt as getTiktokPublishedAt } from '../services/tiktok.service';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -895,7 +898,6 @@ export async function applyPlatformPublish(userId: string, data: {
   const platform = data.platform as any;
   let platformId = data.platformId;
   const { platformUrl, fileName, contentId, title } = data;
-  const publishedAtDate = data.publishedAt ?? new Date();
   const matchStatus = data.matchStatus ?? 'manual';
 
   // Un link de Instagram pegado a mano solo trae el shortcode del permalink
@@ -925,6 +927,26 @@ export async function applyPlatformPublish(userId: string, data: {
       if (resolved) platformId = resolved;
     } catch { /* sigue con el valor original -- no bloquea el link/badge */ }
   }
+
+  // Sin publishedAt del caller (típico: un link pegado a mano para un video
+  // que ya estaba publicado de antes, ver setPlatformLink en local-backend) --
+  // antes se caía directo a `new Date()` y el video quedaba marcado como
+  // "publicado ahora" aunque fuera viejo. Bug real detectado 2026-08-15 con
+  // un link de Instagram de abril mostrado como recién publicado (afecta el
+  // orden de Estadísticas por plataforma, que ordena por publishedAt). Va
+  // DESPUÉS de resolver platformId arriba -- con el id ya numérico/real, no
+  // con el shortcode/publish_id crudo. Best-effort: si la plataforma no
+  // responde (token vencido, red, video privado), se cae a `new Date()` como
+  // antes -- nunca bloquea el link/badge por esto.
+  let publishedAtDate = data.publishedAt;
+  if (!publishedAtDate) {
+    try {
+      if (platform === 'youtube') publishedAtDate = (await getYoutubePublishedAt(platformId)) ?? undefined;
+      else if (platform === 'instagram') publishedAtDate = (await getInstagramPublishedAt(userId, platformId)) ?? undefined;
+      else if (platform === 'tiktok') publishedAtDate = (await getTiktokPublishedAt(userId, platformId)) ?? undefined;
+    } catch { /* best-effort -- sigue al fallback de abajo */ }
+  }
+  publishedAtDate = publishedAtDate ?? new Date();
 
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;

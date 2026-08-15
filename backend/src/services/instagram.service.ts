@@ -106,6 +106,23 @@ async function fetchInsightViews(mediaId: string, accessToken: string): Promise<
   }
 }
 
+// Fecha real de publicación de UN media puntual -- mismo motivo que
+// getVideoPublishedAt en youtube.service.ts (ver ese comentario). Graph API
+// trae `timestamp` con la fecha real, aunque el link se haya recién resuelto
+// hoy en la app.
+export async function getMediaPublishedAt(userId: string, mediaId: string): Promise<Date | null> {
+  try {
+    const tokens = await loadTokens(userId);
+    if (!isUsableInstagramConnection(tokens)) return null;
+    const res = await fetch(`${FB_GRAPH}/${mediaId}?fields=timestamp&access_token=${tokens!.access_token}`);
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    return data.timestamp ? new Date(data.timestamp) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Stats en vivo para un puñado puntual de media ids (ej. vista de Estadísticas).
 // Graph API no soporta traer varios media ids sueltos en una sola llamada, así
 // que va uno por uno — está bien acotado a los ~5 videos de esa vista.

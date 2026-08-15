@@ -108,6 +108,30 @@ export async function getRecentTikTokVideos(userId: string, limit: number, curso
   return { items, nextCursor };
 }
 
+// Fecha real de publicación de UN video puntual -- mismo motivo que
+// getVideoPublishedAt (YouTube) / getMediaPublishedAt (Instagram), mismo
+// endpoint /video/query/ que getVideoStatsByIds pero pidiendo create_time.
+export async function getVideoPublishedAt(userId: string, videoId: string): Promise<Date | null> {
+  if (!/^\d+$/.test(videoId)) return null;
+  try {
+    const token = await getValidToken(userId);
+    const res = await fetch(`${TK_BASE}/video/query/?fields=id,create_time`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ filters: { video_ids: [videoId] } }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as any;
+    const createTime = data.data?.videos?.[0]?.create_time;
+    return typeof createTime === 'number' ? new Date(createTime * 1000) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Stats en vivo para un puñado puntual de video ids (ej. vista de Estadísticas)
 // vía /v2/video/query/ — a diferencia de /video/list/ (que trae "los últimos N"),
 // este permite pedir videos puntuales por id.

@@ -34,6 +34,172 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-15-04 — Link resuelto a mano para una publicación vieja se guardaba con fecha "hoy"
+
+- Estado: `corregido`; pendiente de verificación con un link real que no tenga registro local previo.
+- Reportado: 2026-08-15
+- Plataformas: Central (afecta a los 3 clientes que llaman a `applyPlatformPublish`)
+- Severidad: media (rompe el orden "más reciente" de Estadísticas por plataforma, no las métricas en sí)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Al resolver un link para un video que ya estaba publicado hace tiempo en una
+plataforma pero nunca tuvo un `PlatformVideoModel`/registro local (badge
+huérfano, mismo patrón que BUG-2026-08-15-02/03), el `publishedAt` guardado
+quedaba en el momento en que se resolvió el link ("hoy"), no la fecha real de
+publicación. Caso real: Instagram de "clip - enemigos tiene.mp4", publicado
+el 25/04, resuelto hoy -- quedó con `publishedAt: 2026-08-15T10:40:20Z` hasta
+que se corrigió a mano contra la API real de Instagram (`timestamp:
+2026-04-26T04:34:20Z`).
+
+### Investigación
+
+`applyPlatformPublish` (`backend/src/controllers/backup.controller.ts`)
+default a `new Date()` cuando el caller no manda `publishedAt`. Ya existía una
+salvaguarda parcial en `local-backend/src/controllers/video.controller.ts::
+setPlatformLink` (reusar `previousPublication.published_at` si existía un
+registro local previo para ese archivo+plataforma) -- pero **solo cubre la
+corrección de un link ya conocido localmente**, no la primera vez que se
+resuelve un badge huérfano (no hay `previousPublication` de la cual sacar la
+fecha). Ya había un incidente igual documentado en un comentario del código
+mismo, fechado 2026-08-14, con TikTok -- ese fix solo tapó el síntoma en el
+Calendario (omitiendo la fecha ahí cuando no hay una confiable), nunca
+arregló la causa en `PlatformVideoModel`/`FileModel`.
+
+### Corrección
+
+Tres funciones nuevas, una por plataforma, que consultan la fecha real de
+publicación directo a la API (todas best-effort, `null` si falla):
+- `youtube.service.ts::getVideoPublishedAt(videoId)` -- reusa
+  `getVideoDetails` (ya pedía `part=snippet`, que trae `publishedAt`).
+- `instagram.service.ts::getMediaPublishedAt(userId, mediaId)` -- Graph API
+  `fields=timestamp`.
+- `tiktok.service.ts::getVideoPublishedAt(userId, videoId)` -- mismo
+  `/video/query/` que `getVideoStatsByIds`, pidiendo `create_time`.
+
+`applyPlatformPublish` ahora, cuando el caller no manda `publishedAt`, llama
+a la función correspondiente (con el `platformId` ya resuelto a su forma
+numérica/real, no el shortcode/publish_id crudo) antes de caer a `new
+Date()`. Si la plataforma no responde (token vencido, red, video privado), se
+comporta exactamente igual que antes -- nunca bloquea el link/badge por esto.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit`: mismo conteo de errores preexistentes que `main` (27),
+  ninguno nuevo.
+- Pendiente: probar con un link real (badge huérfano, plataforma conectada
+  con token válido) y confirmar que `publishedAt` queda con la fecha real, no
+  la de hoy.
+- No cubre el caso donde la plataforma SÍ responde pero con datos
+  incompletos/erróneos (ej. Graph API sin `timestamp` en la respuesta) --
+  ahí sigue cayendo a `new Date()` como antes, mismo comportamiento previo al
+  fix.
+
+### Historial
+- 2026-08-15 — Claude: encontrado en vivo (usuario probando el selector de
+  servidor "PC local"), causa identificada, corregido con fetch best-effort a
+  la API real de cada plataforma.
+
+## BUG-2026-08-15-03 — Estado de publicación histórico sin enlace se interpreta distinto entre Nube y móviles
+
+- Estado: `abierto`
+- Reportado: 2026-08-15
+- Plataformas: Central, Nube, iOS, Android
+- Severidad: alta (un mismo video puede aparecer terminado en Android y disponible en iOS)
+- Reportado por: usuario
+
+### Planteamiento del problema
+
+Los videos históricos, publicados antes de usar EsseAnalytics o publicados por
+un canal externo, deben poder marcarse como publicados sin que el usuario tenga
+que conseguir y registrar un enlace de cada plataforma. En esos casos el badge
+es válido, pero no existe un `platformId`/URL desde el cual consultar métricas.
+
+Actualmente `platforms` representa a la vez «publicado» y «publicado con una
+identidad verificable». Biblioteca remota puede tener badges sin `platformLinks`,
+y su estado puede diferir del catálogo central/backup. Los clientes interpretan
+el resultado de forma distinta:
+
+- Android oculta de Subir un video de Nube cuando las tres plataformas están
+  resueltas por badges o descartes.
+- iOS parte de su catálogo local y puede mostrarlo; al abrir el formulario
+  incorpora después los badges de Nube.
+- Métricas solo pueden obtenerse cuando existe un `PlatformVideo` con id nativo.
+
+Ejemplo confirmado: `clip - enemigos tiene.mp4` figura con tres badges en Nube
+sin enlaces, mientras el catálogo central conserva únicamente TikTok marcado,
+YouTube descartado e Instagram pendiente. Por eso se oculta en Android pero
+puede listarse en iOS con badges distintos.
+
+### Resultado esperado
+
+Una publicación histórica sin link sigue contando como publicada y resuelta
+para la cola, pero se identifica explícitamente como tal. Todos los clientes
+ven el mismo estado y no intentan solicitar métricas donde no existe una
+identidad de plataforma.
+
+### Solución propuesta
+
+1. Definir por plataforma tres estados explícitos:
+   - `confirmed`: publicación con `platformId` (y URL opcional); permite link y métricas.
+   - `badge_only`: publicación histórica/manual sin ID ni URL; muestra «Sin enlace / métricas no disponibles».
+   - `discarded`: plataforma descartada; no se publica ni se consulta.
+2. Mantener `platforms` por compatibilidad como la lista de `confirmed` y
+   `badge_only`, pero guardar la procedencia/estado explícito por plataforma
+   (por ejemplo, `platformPublicationStates`). No inferir `confirmed` solo por
+   la presencia del badge.
+3. Hacer que Nube sea la fuente de verdad para un video con `contentId` y que
+   el sync propague el estado completo, no una unión acumulativa de badges.
+   La unión actual no puede corregir una marca histórica equivocada.
+4. Android e iOS deben usar el mismo criterio de cola: tanto `confirmed` como
+   `badge_only` y `discarded` son terminales; solo `pending` es publicable.
+5. El Dashboard/Estadísticas solo solicitan métricas para `confirmed`. Para
+   `badge_only` deben mostrar un estado claro en lugar de ceros o un error.
+6. Migrar los registros existentes sin link a `badge_only`; conservar como
+   `confirmed` únicamente los que tengan `platformLinks` o `PlatformVideo`
+   verificable. Los casos donde las fuentes difieren requieren una revisión
+   puntual antes de sobrescribir la decisión histórica del usuario.
+
+### Verificación propuesta
+
+1. Crear un video histórico con tres `badge_only`: debe desaparecer de la cola
+   tanto en Android como en iOS y mostrar los tres badges sin métricas.
+2. Crear un video con TikTok `confirmed`, YouTube `discarded` e Instagram
+   pendiente: debe seguir disponible exclusivamente para Instagram en ambos
+   móviles.
+3. Publicar desde iOS, Android y Desktop: el resultado debe crear
+   `confirmed` con ID y mantener el mismo estado en Nube y catálogo central.
+
+### Historial
+
+- 2026-08-15 — Codex: causa funcional documentada; pendiente implementar el
+  modelo explícito y la migración de datos.
+- 2026-08-15 — Claude: verificado el ejemplo citado ("clip - enemigos tiene.mp4")
+  directo en Mongo -- confirmado real (mismo `contentId`, `files` 2/3 resuelto
+  vs `remote_library_videos` 3/3). Escaneada la cuenta completa por
+  `contentId` compartido: 1117 videos con match entre las dos colecciones, 11
+  divergentes, 8 con divergencia de cola real (`queueDivergent`: un lado
+  3/3 resuelto y el otro no). Confirmado además en código que
+  `applyPlatformPublish` (`backup.controller.ts`) ya trata a `FileModel`
+  como fuente primaria (propaga altas de `files` → Nube, nunca al revés) y
+  que **ningún camino propaga descartes en ninguna dirección** -- por eso
+  las 8 divergencias son una mezcla: unas ganaron un badge en Nube que nunca
+  llegó a `files`, otras se descartaron en `files` (Editar links de
+  escritorio) sin llegar nunca a Nube.
+  **Reconciliados los 10 registros divergentes** (los 8 + 2 menores que
+  coincidían en conteo pero no en el detalle) a mano en Mongo, con `files`
+  como fuente de verdad en cada uno (criterio confirmado por el usuario:
+  Nube es almacenamiento dinámico/temporal, no la fuente primaria) y
+  verificación antes/después por registro. Re-escaneo posterior de toda la
+  cuenta: **0 divergencias restantes**.
+  Esto arregla el SÍNTOMA de datos actual, no la causa -- sin propagación de
+  descartes en ninguna dirección, cualquier "Editar links" en escritorio o
+  cualquier descarte hecho directo en Nube desde el celular puede volver a
+  divergir. La causa de fondo sigue abierta y requiere la propuesta de
+  arriba (o como mínimo, propagar también los descartes en
+  `applyPlatformPublish`/`updateFilePlatforms`/`RemoteLibraryAPI.updatePlatforms`).
+
 ## BUG-2026-08-15-02 — TikTok: badge huérfano + platformUrl nunca se corrige tras resolver el id real
 
 - Estado: `corregido`; pendiente de verificación con una publicación real.
