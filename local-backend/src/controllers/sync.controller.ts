@@ -4,6 +4,8 @@ import { platformVideoRepo } from '../db/platform-video.repo';
 import { configRepo } from '../db/config.repo';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
+import { historyOutboxRepo } from '../db/history-outbox.repo';
+import { flushHistoryOutbox } from '../services/history-outbox.service';
 import { CENTRAL_API, LAB_MODE } from '../config';
 
 const CENTRAL = CENTRAL_API;
@@ -297,9 +299,24 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
 // fileId por content_id o file_name (el celular no conoce el id local) --
 // best-effort si no encuentra el archivo (igual queda el registro de
 // historial, solo sin badge en Videos).
-export const recordUploadEvent = (req: Request, res: Response): void => {
+//
+// FIX 2026-08-15, mismo día -- BUG-2026-08-15-07 encontrado por el usuario
+// con más detalle: esta ruta resolvía el gap original (404) pero abría uno
+// nuevo -- escribía acá y respondía 200 OK, pero NUNCA reenviaba el evento a
+// la central. Un cliente (ej. iOS con el selector de servidor apuntando a
+// "PC local") terminaba con su publicación visible SOLO en la SQLite de
+// esta PC -- Electron veía todo bien, pero web/Android/el mismo iPhone
+// cuando volviera a modo Central nunca se enteraban, sin ningún reintento
+// (los 3 intentos del cliente ya habían recibido 200 y no volvían a
+// llamar). Se encola en el mismo `history_outbox` que ya usa
+// reportUploadEvent (mismo mecanismo, mismo camino de reintento) y se
+// intenta reenviar de una con el MISMO Authorization que ya validó
+// verifyToken -- JWT_SECRET es compartido entre local-backend y la central
+// (el login siempre pasa por la central, que lo emite), así que el token
+// sirve tal cual, sin pedir uno nuevo.
+export const recordUploadEvent = (req: AuthRequest, res: Response): void => {
   try {
-    const { platform, platformId, platformUrl, fileName, contentId, title, publishedAt, deviceId, source } = req.body ?? {};
+    const { platform, platformId, platformUrl, fileName, contentId, title, publishedAt, deviceId, source, deviceName } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -319,6 +336,22 @@ export const recordUploadEvent = (req: Request, res: Response): void => {
       source: source ?? undefined,
     });
     if (file) fileRepo.addPlatform(file.id, platform);
+
+    const outboxId = historyOutboxRepo.enqueue({
+      platform, platform_id: platformId, platform_url: platformUrl,
+      file_name: fileName ?? file?.file_name, content_id: contentId ?? file?.content_id,
+      title, published_at: publishedAt ?? new Date().toISOString(),
+      source: source ?? 'mobile', device_id: deviceId, device_name: deviceName,
+    });
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      // No bloquea la respuesta al cliente -- ya escribió local, eso es lo
+      // que le importa a quien llamó. El reenvío a la central es
+      // fire-and-forget PERO ahora durable: si falla acá, flushHistoryOutbox
+      // lo reintenta en el próximo push/arranque (ver history-outbox.service.ts).
+      flushHistoryOutbox(authHeader).catch(() => { /* el outbox ya lo dejó pending, se reintenta solo */ });
+    }
+    void outboxId;
 
     res.json({ ok: true });
   } catch (err: any) {

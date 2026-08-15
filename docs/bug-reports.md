@@ -34,6 +34,166 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-15-08 — recordUploadEvent (local-backend) escribía en SQLite local pero nunca reenviaba a la central
+
+- Estado: `corregido`.
+- Reportado: 2026-08-15
+- Plataformas: Local-backend, iOS/Android en modo "PC local"
+- Severidad: alta -- explica el caso real y concreto que motivó BUG-2026-08-15-06/07
+- Reportado por: usuario (diagnóstico preciso, con el flujo completo iOS→PC local→central)
+
+### Diagnóstico (confirmado, no hipótesis)
+
+Recorrido real de la publicación de "final - peores windows.mp4" en
+Instagram, con el selector de servidor nuevo (ver PLAN de esa feature)
+apuntando a "PC local":
+
+```
+iOS → Instagram: publicación real, exitosa
+iOS → SyncAPI.recordPublish() → POST /api/sync/record-publish
+   → CentralAPI.baseURL era "PC local" (local-backend), NO la central
+   → local-backend::recordUploadEvent (agregado esa misma mañana, BUG-2026-08-15-07)
+       → escribe en platform_videos/files de SQLite local
+       → responde 200 OK
+       → NUNCA reenvía nada a la central
+central: nunca se entera de este evento puntual
+```
+
+Como iOS recibió `200 OK`, no hubo ningún motivo para reintentar del lado
+del cliente -- el fallo era 100% invisible, ni siquiera un error que
+mostrarle al usuario. Explica por completo por qué Electron mostraba todo
+bien (lee su SQLite) mientras web/Android/el mismo iPhone en modo Central no
+veían nada de esto.
+
+No contradice el resto de lo encontrado hoy: `PlatformVideoModel` en la
+central sí tenía datos reales de este video por otro camino (probablemente
+sync/matching manual en algún momento de la sesión), pero el evento de
+historial puntual de ESTA publicación específica jamás llegó orgánicamente.
+
+### Corrección
+
+`local-backend/src/controllers/sync.controller.ts::recordUploadEvent`
+ahora, además de escribir en SQLite local:
+1. Encola el evento en `history_outbox` (la misma tabla/mecanismo de
+   BUG-2026-08-15-07 -- un solo outbox para los dos flujos: el de
+   Electron subiendo directo, y el de un cliente reportando una
+   publicación externa).
+2. Intenta reenviarlo a la central de una, reusando el mismo
+   `Authorization` que ya validó `verifyToken` en este request --
+   `JWT_SECRET` es compartido entre `local-backend` y la central (el login
+   siempre pasa por la central, que lo emite), así que el token sirve tal
+   cual, sin pedir uno nuevo ni loguear de nuevo.
+3. Si el reenvío falla, queda `pending` en el mismo outbox -- se reintenta
+   en el próximo `pushFilesToCloudInBackground` o al arrancar el server,
+   igual que cualquier otro evento pendiente.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit`: 48 errores, mismo baseline, ninguno nuevo.
+- Pendiente: repetir el escenario real (publicar desde iOS en modo "PC
+  local") y confirmar que el evento llega a la central sin intervención
+  manual, sin necesitar otro backfill.
+
+### Historial
+- 2026-08-15 — Claude: causa exacta confirmada por el usuario (flujo
+  completo iOS→PC local→central), verificada leyendo el código propio
+  agregado esa misma mañana, corregida reusando el outbox de
+  BUG-2026-08-15-07.
+
+## BUG-2026-08-15-07 — reportUploadEvent perdía el evento en silencio si fallaba el POST a la central (sin reintento, sin registro)
+
+- Estado: `corregido`; pendiente verificar en un fallo real (red caída / token vencido en el momento de publicar).
+- Reportado: 2026-08-15
+- Plataformas: Local-backend, Web/iOS/Android (consumidores del historial)
+- Severidad: alta (causa de fondo real, aunque no explique BUG-2026-08-15-06 puntualmente -- ver ese incidente)
+- Reportado por: usuario (con análisis de otra sesión/agente)
+
+### Diagnóstico
+
+`local-backend/src/services/upload-history.service.ts::reportUploadEvent`
+reportaba el evento de publicación a la central (`POST /api/sync/history`)
+como "best-effort" puro: si el fetch fallaba (red, token vencido, la central
+caída, cualquier HTTP no-2xx), solo hacía `console.warn` y el evento se
+perdía **para siempre**, sin quedar registrado en ningún lado ni
+reintentarse. Los 3 uploaders (`youtube/instagram/tiktok-upload.controller.ts`)
+dependen de esta única llamada.
+
+Síntoma resultante: Electron queda "correcto" (lee su propia SQLite,
+`platform_videos`, que sí se actualiza en el mismo request de subida) pero
+web/iOS/Android -- que dependen de `UploadHistoryModel` en la central --
+nunca se enteran, sin ningún error visible en ningún lado. El respaldo
+posterior (`pushFilesToCloudInBackground`/`bulkUpsertBackupFiles`) tampoco
+lo repara: sincroniza catálogo y links, pero nunca crea el registro de
+historial.
+
+**Nota importante**: se verificó a fondo (ver BUG-2026-08-15-06) que este
+bug NO explica por sí solo el síntoma puntual de esa fecha -- el archivo
+que se investigaba ahí ("final - peores windows.mp4") sí llegó a
+`UploadHistoryModel` (vía el backfill de BUG-2026-08-15-05, no
+orgánicamente). Este es un defecto real y de fondo, confirmado leyendo el
+código, pero la causa exacta de BUG-2026-08-15-06 sigue sin cerrar.
+
+**ACTUALIZACIÓN, mismo día -- segundo bug real encontrado en el propio
+código de hoy**: el usuario señaló el caso exacto -- la publicación de
+"peores windows" se hizo desde **iOS con el selector de servidor nuevo
+apuntando a "PC local"** (ver BUG-2026-08-15-08 más abajo). iOS publicó
+directo a Instagram y llamó a `SyncAPI.recordPublish()` -- pero como
+`CentralAPI.baseURL` era el local-backend, no la central, ese POST llegó al
+`recordUploadEvent` que se había agregado ESTA MISMA MAÑANA (más arriba en
+este mismo incidente) para cerrar el 404. Ese endpoint nuevo escribía en la
+SQLite local y respondía `200 OK` -- pero **nunca reenviaba nada a la
+central**, así que desde la perspectiva de iOS la publicación "ya se
+reportó bien" y nunca reintentó. Ver BUG-2026-08-15-08 para el fix completo
+(mismo outbox, aplicado también a este endpoint).
+
+### Corrección
+
+**Outbox persistente en SQLite** (`local-backend`):
+- Tabla nueva `history_outbox` (`src/db/database.ts`), con estado
+  `pending`/`delivered`/`failed` y contador de intentos.
+- `src/db/history-outbox.repo.ts`: CRUD (`enqueue`, `findPending`,
+  `markDelivered`, `markRetry`, `markPermanentlyFailed`).
+- `src/services/history-outbox.service.ts::flushHistoryOutbox`: intenta
+  entregar todo lo `pending`, best-effort por fila (una que falla no bloquea
+  al resto). 4xx que no sea 401/429 se marca `failed` (no se reintenta por
+  siempre algo que la central va a rechazar siempre); todo lo demás
+  (network error, 5xx, 401, 429) queda `pending` para el próximo intento.
+- `reportUploadEvent` ahora encola SIEMPRE antes de intentar la entrega
+  inmediata -- si falla, el evento ya está persistido, no se pierde.
+- Disparadores del reintento (sin sumar un `setInterval` nuevo, reusando los
+  puntos que ya existen para "algo cambió, sincronizá"):
+  - `pushFilesToCloudInBackground` (cada publicación/edición de link).
+  - Arranque del server (`server.ts`), usando el token cacheado del owner
+    (`configRepo.get('owner_token')`) -- cubre el caso de haber cerrado la
+    app con algo pendiente sin ninguna acción nueva que lo dispare.
+- `GET /api/local/health` ahora expone `pendingHistoryEvents` -- el
+  frontend ya pega ese endpoint en cada carga (`useBackendType.ts`), así que
+  no hace falta un poll nuevo.
+- **Frontend** (`App.tsx`): banner "N publicaciones pendientes de
+  sincronizar con la nube — se reintentan solas" cuando `isLocal &&
+  pendingHistoryEvents > 0` -- mismo patrón visual que el banner de
+  Laboratorio/Modo remoto que ya existían, en vez de ocultar el fallo como
+  antes.
+
+### Verificación y pendiente
+
+- `local-backend`: `npx tsc --noEmit` -- 48 errores, mismo baseline que
+  `main`, ninguno nuevo.
+- `frontend`: `npm run build` -- compila limpio.
+- Pendiente: probar un fallo real (cortar red o vencer el token a mano
+  durante una subida) y confirmar que el evento queda `pending`, el banner
+  aparece, y se entrega solo en el próximo push/reinicio.
+- No implementado: retry con backoff exponencial (hoy reintenta en cada
+  disparador sin esperar más tiempo entre intentos fallidos consecutivos) --
+  aceptable por ahora porque los disparadores ya son poco frecuentes
+  (publicar, arrancar la app), no un loop ajustado.
+
+### Historial
+- 2026-08-15 — Claude: diagnóstico verificado leyendo el código citado por
+  el usuario/otra sesión, confirmado exacto. Implementado outbox completo
+  (tabla + reintento automático + indicador visual), verificado por
+  compilación en los 2 paquetes.
+
 ## BUG-2026-08-15-06 — Web (modo remoto) sigue mostrando "clip - enemigos tiene.mp4" como último publicado pese a que la central tiene el dato correcto verificado
 
 - Estado: `en investigación` — **sin resolver, handoff para otra sesión**.

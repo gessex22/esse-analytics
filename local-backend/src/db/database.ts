@@ -127,6 +127,35 @@ db.exec(`
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     device_id TEXT NOT NULL
   );
+
+  -- Outbox de eventos de historial pendientes de confirmar en la central --
+  -- ver docs/bug-reports.md BUG-2026-08-15-07. reportUploadEvent (upload-
+  -- history.service.ts) encolaba el POST a /api/sync/history como
+  -- "best-effort": si fallaba (red, token vencido, 500), solo hacía
+  -- console.warn y se perdía para siempre -- la subida seguía OK localmente
+  -- (Electron leía su propia SQLite) pero web/iOS/Android, que dependen de
+  -- UploadHistoryModel en la central, nunca se enteraban. Ahora el evento se
+  -- encola ACÁ primero (durable) antes de intentar entregarlo -- solo se
+  -- marca 'delivered' con una respuesta 2xx real de la central.
+  CREATE TABLE IF NOT EXISTS history_outbox (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform     TEXT    NOT NULL,
+    platform_id  TEXT    NOT NULL,
+    platform_url TEXT,
+    file_name    TEXT,
+    content_id   TEXT,
+    title        TEXT,
+    published_at TEXT,
+    source       TEXT,
+    device_id    TEXT,
+    device_name  TEXT,
+    status       TEXT    NOT NULL DEFAULT 'pending', -- pending | delivered | failed
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
 `);
 
 // Migrations

@@ -25,6 +25,9 @@ import { remoteLibraryProxy } from './routes/remote-library-proxy.routes';
 import { initWatcherFromConfig } from './watcher';
 import { startPlugin } from './plugins';
 import { LAB_MODE } from './config';
+import { configRepo } from './db/config.repo';
+import { flushHistoryOutbox } from './services/history-outbox.service';
+import { historyOutboxRepo } from './db/history-outbox.repo';
 
 dotenv.config();
 
@@ -85,4 +88,23 @@ app.listen(PORT, '0.0.0.0', () => {
   // está instalado, se arranca solo al iniciar — sin switch manual en la UI.
   // No-op seguro si no está instalado (startPlugin lo maneja sin tirar error).
   startPlugin('esse_remote_access');
+
+  // Reintento de arranque para el outbox de historial (BUG-2026-08-15-07):
+  // si quedó algo 'pending' de la sesión anterior (ej. se cerró la app con
+  // la central caída a mitad de un push), esto lo reintenta apenas levanta
+  // el server, sin esperar a la próxima publicación. Usa el token cacheado
+  // del owner (ver local-admin.routes.ts::setOwner) -- best-effort, puede
+  // estar vencido si pasaron más de 7 días sin loguearse; si falla, el
+  // próximo flush disparado por una acción real con sesión fresca lo cubre
+  // igual.
+  const pendingAtStartup = historyOutboxRepo.countPending();
+  if (pendingAtStartup > 0) {
+    console.log(`[history-outbox] ${pendingAtStartup} evento(s) pendiente(s) de sesiones anteriores, reintentando...`);
+    const cachedToken = configRepo.get('owner_token');
+    if (cachedToken) {
+      flushHistoryOutbox(`Bearer ${cachedToken}`).then(({ delivered, stillPending }) => {
+        console.log(`[history-outbox] arranque: ${delivered} entregado(s), ${stillPending} siguen pendientes`);
+      }).catch(err => console.warn('[history-outbox] flush de arranque falló:', err.message));
+    }
+  }
 });

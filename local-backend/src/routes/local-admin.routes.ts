@@ -7,6 +7,7 @@ import { configRepo } from '../db/config.repo';
 import { db } from '../db/database';
 import { fileRepo } from '../db/file.repo';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
+import { historyOutboxRepo } from '../db/history-outbox.repo';
 import { CENTRAL_API, JWT_SECRET, LAB_MODE } from '../config';
 
 const router = Router();
@@ -320,8 +321,11 @@ router.get('/api/local/session', (_req, res) => {
 // GET /api/local/health -- el frontend ya lo pega en cada carga para decidir
 // modo local/central (useBackendType); labMode viaja acá para no agregar un
 // segundo request solo para la etiqueta "Laboratorio · Datos simulados".
+// pendingHistoryEvents (BUG-2026-08-15-07): mismo criterio, se suma acá en
+// vez de un endpoint aparte -- el frontend ya pega esto en cada carga, así
+// que el banner "Pendiente de sincronizar" se entera sin poll extra.
 router.get('/api/local/health', (_req, res) => {
-  res.json({ local: true, db: 'sqlite', labMode: LAB_MODE });
+  res.json({ local: true, db: 'sqlite', labMode: LAB_MODE, pendingHistoryEvents: historyOutboxRepo.countPending() });
 });
 
 // POST /api/local/admin/import-calendar — recupera platform_config (último publicado,

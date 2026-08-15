@@ -7,6 +7,7 @@ import { ensurePreloadForNextVideos } from '../services/calendar-sync.service';
 import { CENTRAL_API } from '../config';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { stopWatcher } from '../watcher';
+import { flushHistoryOutbox } from '../services/history-outbox.service';
 
 const CENTRAL = CENTRAL_API;
 
@@ -180,6 +181,13 @@ export function pushFilesToCloudInBackground(authHeader?: string): void {
   setImmediate(() => {
     pushFilesToCloud(authHeader).catch(err => {
       console.warn('[backup] push automático tras publicar falló:', err.message);
+    });
+    // Mismo disparador que el push de catálogo -- "algo cambió, sincronizá"
+    // ya cubre publicar/editar links/etc. Reintenta acá cualquier evento de
+    // historial que haya quedado 'pending' (ver BUG-2026-08-15-07), sin
+    // sumar un timer propio.
+    flushHistoryOutbox(authHeader).catch(err => {
+      console.warn('[history-outbox] flush tras publicar falló:', err.message);
     });
   });
 }

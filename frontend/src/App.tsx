@@ -123,7 +123,7 @@ function LogoutDialog({
 
 export default function App() {
   const { user, token, logout, loading } = useAuth();
-  const { isLocal, isLabMode } = useBackendType();
+  const { isLocal, isLabMode, pendingHistoryEvents } = useBackendType();
   const { notifications, cloudOpen, unread: notifUnread, markRead } = useNotificationCenter(isLocal);
   const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
@@ -671,6 +671,25 @@ export default function App() {
               {user.hasCloudStorage
                 ? "Modo remoto — funciones limitadas, pero podés subir y gestionar tu Biblioteca en la nube desde la pestaña «Nube»."
                 : "Modo remoto — funciones limitadas. Para subir y gestionar videos usá la app en tu PC."}
+            </span>
+          </div>
+        )}
+
+        {/* Outbox de historial (BUG-2026-08-15-07): antes, si el POST a la
+            central fallaba (red, token vencido, 500), el evento se perdía en
+            silencio -- Electron seguía mostrando la publicación bien (lee su
+            propia SQLite) pero web/iOS/Android nunca se enteraban, sin
+            ningún aviso. Ahora queda encolado y se reintenta solo, pero
+            mientras haya algo pendiente vale la pena mostrarlo en vez de
+            ocultar el fallo -- isLocal porque el outbox es un concepto de
+            local-backend, no existe en modo remoto/central. */}
+        {isLocal && pendingHistoryEvents > 0 && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-sky-500/10 border-b border-sky-500/20 text-sky-200/90 text-xs sm:text-sm">
+            <Tv2 className="w-4 h-4 flex-shrink-0 text-sky-400" />
+            <span>
+              {pendingHistoryEvents === 1
+                ? "1 publicación pendiente de sincronizar con la nube — se reintenta sola."
+                : `${pendingHistoryEvents} publicaciones pendientes de sincronizar con la nube — se reintentan solas.`}
             </span>
           </div>
         )}
