@@ -888,8 +888,8 @@ export async function applyPlatformPublish(userId: string, data: {
   title?: string | null;
   publishedAt?: Date;
   matchStatus?: string;
-}): Promise<{ linkedFileId: any | null }> {
-  if (!data.platformId) return { linkedFileId: null };
+}): Promise<{ linkedFileId: any | null; publishedAt: Date }> {
+  if (!data.platformId) return { linkedFileId: null, publishedAt: data.publishedAt ?? new Date() };
   // any: llega de request bodies (recordUploadEvent, confirmLink, uploaders)
   // que ya validan el valor contra su propia lista de plataformas antes de
   // llegar acá -- este helper es compartido por varios callers con sus
@@ -998,6 +998,14 @@ export async function applyPlatformPublish(userId: string, data: {
         { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
       );
     }
+    // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
+    // platform+platformId no debe volver a pisarse por una llamada repetida
+    // (reintento de recordUploadEvent, outbox de local-backend reenviando un
+    // evento viejo, etc.) -- si no, una corrección manual hecha en Mongo (o
+    // una fecha real ya resuelta por getXPublishedAt) queda expuesta a que la
+    // siguiente llamada la vuelva a pisar con `new Date()`. Bug real: BUG-2026-08-15-06,
+    // "clip - enemigos tiene.mp4" corregido a mano y vuelto a aparecer como
+    // "recién publicado" horas después por un reintento con el mismo platformId.
     await PlatformVideoModel.updateOne(
       { userId, platform, platformId },
       {
@@ -1005,11 +1013,11 @@ export async function applyPlatformPublish(userId: string, data: {
           userId, platform, platformId,
           platformUrl:  platformUrl ?? '',
           title:        title ?? '',
-          publishedAt:  publishedAtDate,
           linkedFileId,
           matchStatus,
           lastSyncedAt: new Date(),
         },
+        $setOnInsert: { publishedAt: publishedAtDate },
       },
       { upsert: true },
     );
@@ -1049,7 +1057,7 @@ export async function applyPlatformPublish(userId: string, data: {
     }
   }
 
-  return { linkedFileId };
+  return { linkedFileId, publishedAt: publishedAtDate };
 }
 
 // POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —
@@ -1073,8 +1081,29 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
     }
-    const publishedAtDate = publishedAt ? new Date(publishedAt) : new Date();
+    // OJO: NO defaultear acá a `new Date()`. Antes esta línea calculaba su
+    // propio fallback y se lo pasaba a applyPlatformPublish ya resuelto
+    // (truthy), lo que hacía que el fetch best-effort de la fecha real
+    // (getYoutube/Instagram/TiktokPublishedAt, ver `if (!publishedAtDate)`
+    // más abajo en applyPlatformPublish) NUNCA se ejecutara para este
+    // caller -- BUG-2026-08-15-06: un link viejo de Instagram quedaba con
+    // publishedAt="ahora" en cada reintento/republish del mismo evento,
+    // incluso después de corregirlo a mano en Mongo. Ahora se deja
+    // `undefined` cuando el caller no lo manda, y se usa la fecha que
+    // applyPlatformPublish efectivamente resolvió (real o `new Date()` como
+    // último fallback) para el registro de Historial también.
+    const publishedAtInput = publishedAt ? new Date(publishedAt) : undefined;
 
+    const { publishedAt: publishedAtDate } = await applyPlatformPublish(userId, {
+      platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title,
+      deviceId, source,
+      publishedAt: publishedAtInput, matchStatus: 'manual',
+    });
+
+    // publishedAt en $setOnInsert (no $set): mismo criterio que
+    // PlatformVideoModel en applyPlatformPublish -- una vez fijado para este
+    // platform+platformId, un reintento posterior (retry del cliente, outbox
+    // de local-backend reenviando el mismo evento) no debe volver a pisarlo.
     await UploadHistoryModel.updateOne(
       { userId, platform, platformId },
       {
@@ -1086,21 +1115,15 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
           fileName:    fileName    ?? null,
           contentId:   contentId   ?? null,
           title:       title       ?? null,
-          publishedAt: publishedAtDate,
           // Best-effort: iOS/Android todavía no lo mandan en todos los
           // callers -- si no viene, no se pisa un operationId previo con null
           // (ej. un reintento sin ese campo actualizando el mismo platformId).
           ...(operationId ? { operationId } : {}),
         },
+        $setOnInsert: { publishedAt: publishedAtDate },
       },
       { upsert: true },
     );
-
-    await applyPlatformPublish(userId, {
-      platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title,
-      deviceId, source,
-      publishedAt: publishedAtDate, matchStatus: 'manual',
-    });
 
     // Fase 5 (auditoría): a diferencia de UploadHistoryModel (que UPDATEA el
     // registro por platform+platformId -- una republicación pisa el

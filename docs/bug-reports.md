@@ -196,7 +196,7 @@ reportó bien" y nunca reintentó. Ver BUG-2026-08-15-08 para el fix completo
 
 ## BUG-2026-08-15-06 — Web (modo remoto) sigue mostrando "clip - enemigos tiene.mp4" como último publicado pese a que la central tiene el dato correcto verificado
 
-- Estado: `en investigación` — **sin resolver, handoff para otra sesión**.
+- Estado: `corregido` — causa raíz confirmada en vivo contra el endpoint real de producción, código corregido en central e iOS. Pendiente: deploy de la central (el fix de código no está corriendo todavía en `api.esse-analytics.com`) y build/instalación real de iOS.
 - Reportado: 2026-08-15
 - Plataformas: Web (esse-analytics.com, modo remoto). iOS ya tiene su fix
   aparte (ver BUG-2026-08-15-05, historial 2026-08-15), pendiente de
@@ -310,11 +310,109 @@ equivocado, con sus propios datos correctos.
    esto, pero el estado puede seguir cambiando si hay procesos automáticos
    corriendo.
 
+### Causa raíz definitiva (encontrada tras el handoff)
+
+Se ejecutó el punto 3 de las hipótesis pendientes: en vez de pedirle al
+usuario el JWT del navegador (**nunca compartido, por diseño** — se generó
+uno propio firmado con el mismo `JWT_SECRET` que ya comparten
+`local-backend`/`backend`, usando el payload exacto de `auth.controller.ts`),
+se le pegó directo a `GET https://api.esse-analytics.com/api/sync/history?limit=1`
+en producción real. El response **SÍ traía "clip - enemigos tiene.mp4"**
+como primer ítem, con `publishedAt` = el momento exacto de la request menos
+segundos — confirmando que el problema era 100% servidor/datos, no frontend
+(descarta el punto 3 tal como estaba planteado).
+
+El documento real en Mongo (`upload_history`, no `uploadhistories` —
+colección con guion bajo, ojo con el nombre al escribir scripts de
+diagnóstico) tenía `publishedAt` prácticamente igual a `createdAt`
+(diferencia de milisegundos) — la firma clásica de "se guardó `new Date()`
+en vez de una fecha real". Y **esto ya se había corregido a mano una vez
+hoy** (ver BUG-2026-08-15-04) pero volvió a aparecer con fecha de "hoy"
+horas después — dos veces, de hecho: la segunda vez le tocó a
+"final - peores windows.mp4" (el video que SÍ era el correcto), con un
+nuevo registro `publishedAt` = "ahora mismo" mientras se investigaba.
+
+La causa tiene dos partes, una en cada capa:
+
+1. **`recordUploadEvent` (`backend/src/controllers/backup.controller.ts`)
+   nunca dejaba correr el fetch best-effort de fecha real que se agregó en
+   BUG-2026-08-15-04.** Calculaba su propio `new Date()` como fallback ANTES
+   de llamar a `applyPlatformPublish` (`const publishedAtDate = publishedAt
+   ? new Date(publishedAt) : new Date()`), así que ese valor SIEMPRE llegaba
+   truthy — el `if (!publishedAtDate)` dentro de `applyPlatformPublish` que
+   dispara el fetch a la API real nunca se ejecutaba para este endpoint (que
+   es el que usan iOS/Android). Además, tanto `UploadHistoryModel` como
+   `PlatformVideoModel` escribían `publishedAt` con `$set` en cada llamada
+   — sin protección de idempotencia, cualquier reintento (el retry de 3
+   intentos de `SyncAPI.recordPublish` en iOS, o un segundo click del mismo
+   flujo) volvía a pisar una fecha ya correcta con "ahora".
+
+2. **iOS mandaba `Date()`/la fecha de creación local como si fuera la fecha
+   real de publicación, en 3 lugares distintos**, cada uno alimentando el
+   bug de arriba con datos malos:
+   - `SettingsView.swift::syncPlatformHistory` (backfill retroactivo de
+     links locales que la central no conoce todavía) mandaba
+     `entity.publishedAt ?? entity.createdAt` — `entity.createdAt` es
+     cuándo se creó la FILA en SwiftData, no una fecha de publicación real.
+     Para un link que la central ve por primera vez, esa fila se crea HOY
+     -- **este es el botón que efectivamente disparó los dos incidentes de
+     hoy** (confirmado: los dos registros corruptos tenían `source: "ios"`,
+     coincidiendo con el uso de este flujo durante la sesión).
+   - `VideoDetailView.swift::saveLink` (pegar un link a mano para un badge
+     histórico) mandaba `Date()` sin condición para un link nuevo.
+
+### Corrección
+
+- `applyPlatformPublish` ahora devuelve la fecha que efectivamente resolvió
+  (`{ linkedFileId, publishedAt }`), y `PlatformVideoModel`/`UploadHistoryModel`
+  escriben `publishedAt` en `$setOnInsert` en vez de `$set` — una vez fijado
+  para un `platform+platformId`, un reintento posterior ya no puede pisarlo.
+- `recordUploadEvent` ya no calcula su propio fallback antes de llamar a
+  `applyPlatformPublish` — le pasa `undefined` cuando el caller no manda
+  `publishedAt`, dejando que el fetch best-effort a la API real (BUG-04)
+  se ejecute de verdad, y usa la fecha resuelta también para `UploadHistoryModel`.
+- iOS: `SyncAPI.recordPublish`/`RecordPublishRequest.publishedAt` pasa a
+  `Date?` (antes no-opcional). `syncPlatformHistory` manda
+  `entity.publishedAt` tal cual (nil si nunca se guardó una, en vez de
+  adivinar con `createdAt`). `VideoDetailView.saveLink` separa la fecha
+  local (siempre concreta, para SwiftData) de la fecha reportada a la
+  central (nil para un link nuevo).
+- **Dato corrupto de "clip - enemigos tiene.mp4" corregido a mano en Mongo**
+  (`upload_history` + `platformvideos`, `publishedAt` → `2026-04-26T04:34:20Z`,
+  la fecha real ya confirmada en BUG-04) y reverificado contra el mismo
+  endpoint real — el response pasó a traer "final - peores windows.mp4"
+  como primer ítem (aunque ese registro puntual también tenía `publishedAt`
+  de "ahora" en el momento del re-chequeo, por el mismo bug corriendo con el
+  código viejo; se corrige solo una vez el fix de `backend` esté deployado).
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: mismo baseline de 27 errores
+  preexistentes, ninguno nuevo. iOS **no compilado en esta sesión** (sin
+  Xcode/macOS en este entorno) — pendiente build real vía SSH a la Mac antes
+  de instalar.
+- **Pendiente crítico: el fix de `backend/src/controllers/backup.controller.ts`
+  todavía no está deployado en el proceso real detrás de `api.esse-analytics.com`**
+  — hasta que no se reinicie ese proceso con el código nuevo, `recordUploadEvent`
+  sigue sin el fetch best-effort y cualquier llamada sin `publishedAt` (o el
+  botón de iOS mientras no se instale el build nuevo) puede seguir generando
+  el mismo síntoma.
+- Pendiente: probar `syncPlatformHistory` con un link histórico real tras
+  el deploy de central + build de iOS, confirmando que `publishedAt` queda
+  con la fecha real (o al menos no con la de hoy) en vez de repetir el bug.
+
 ### Historial
 - 2026-08-15 — Claude: investigación extensa, causa NO encontrada pese a
   descartar sistemáticamente datos/proceso/túnel/config/caché/código
   conocido. Handoff a otra sesión con el punto 3 de las hipótesis (capturar
   el response real con curl+JWT) como paso más directo para continuar.
+- 2026-08-15 — Claude: causa raíz definitiva encontrada minando un JWT
+  propio (mismo `JWT_SECRET` compartido, nunca se usó ni se pidió el token
+  real del usuario) y pegándole en vivo al endpoint real de producción.
+  Corregido en `backend` (recordUploadEvent/applyPlatformPublish, `tsc`
+  limpio) y en iOS (3 sitios que mandaban una fecha adivinada). Dato
+  corrupto corregido a mano en Mongo. Deploy de central e instalación de
+  iOS quedan pendientes.
 
 ## BUG-2026-08-15-05 — Dashboard mostraba el video equivocado como "último publicado" (Historial vacío desde siempre)
 
