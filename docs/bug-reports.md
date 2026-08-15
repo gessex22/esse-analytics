@@ -34,6 +34,128 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-15-06 — Web (modo remoto) sigue mostrando "clip - enemigos tiene.mp4" como último publicado pese a que la central tiene el dato correcto verificado
+
+- Estado: `en investigación` — **sin resolver, handoff para otra sesión**.
+- Reportado: 2026-08-15
+- Plataformas: Web (esse-analytics.com, modo remoto). iOS ya tiene su fix
+  aparte (ver BUG-2026-08-15-05, historial 2026-08-15), pendiente de
+  build/instalación real en el dispositivo -- no confundir los dos.
+- Severidad: alta (tarjeta principal del Dashboard)
+- Reportado por: usuario
+
+### Síntoma
+
+En `esse-analytics.com` (modo remoto, banner amarillo "Modo remoto —
+funciones limitadas" visible), la tarjeta "Último video publicado" muestra
+**"clip - enemigos tiene.mp4"** (Instagram, 153 vistas / 3 likes / 1
+comentario, "Publicado sáb, 25 abr") -- screenshot real adjuntado por el
+usuario en el chat de esta sesión. El video correcto según el historial ya
+arreglado en Mongo es **"final - peores windows.mp4"** (Instagram, hoy
+2026-08-15 11:11).
+
+Los números mostrados (153/3/1) son datos REALES y correctos -- son las
+métricas reales de "enemigos tiene" (correctas, arregladas hoy mismo con la
+fecha real de la API de Instagram, ver historial de BUG-2026-08-15-02/04).
+El problema no es que el dato esté mal: es que se muestra el video
+equivocado, con sus propios datos correctos.
+
+### Todo lo que YA se descartó, con evidencia (no repetir esta investigación)
+
+1. **No es un problema de datos en Mongo.** Verificado repetidas veces,
+   la última justo antes de este reporte: `UploadHistoryModel` para
+   `userId=6a3794fb81e6fb54aca72461` (username `esse`, confirmado -- es el
+   único user con ese username, sin ambigüedad) tiene 150 registros, el
+   `.find({userId}).sort({publishedAt:-1, createdAt:-1}).limit(5)` (query
+   EXACTA de `getUploadHistory`, `backend/src/controllers/backup.controller.ts:1140`)
+   devuelve "final - peores windows.mp4" en el puesto #1. El registro de
+   "enemigos tiene" en esa misma colección tiene su `publishedAt` correcto
+   en abril (`2026-04-26T04:34:20Z`), no fue tocado por nada después del
+   backfill.
+2. **No es un problema del proceso corriendo.** La central real corre en
+   una Mac (`macgessemberg22` por SSH, ver [[ios_ssh_build]] para el acceso),
+   proceso `tsx watch src/server.ts` en
+   `/Volumes/Almacenamiento externo samsung/proyecto/esse-analytics/backend/`
+   (⚠️ checkout DISTINTO a `/Users/gessemberg/builds/content-automation-dashboard`,
+   que existe pero está vacío/sin usar -- no confundir los dos si se vuelve a
+   tocar esa Mac). Confirmado: mismo remote git (`gessex22/esse-analytics`),
+   `HEAD` en el último commit pusheado hoy, `git status` limpio. Mismo
+   `MONGO_URI` (`cluster0.elkjyvb.mongodb.net/renders_manager`) que se usó en
+   todos los scripts de verificación/backfill de esta sesión.
+3. **El túnel está vivo y respondiendo.** `curl https://api.esse-analytics.com/api/health`
+   → `{"ok":true,"mongoState":1}`, probado en el momento de escribir esto.
+4. **El frontend apunta a la URL correcta.** `frontend/src/config.ts::API_BASE`
+   = `https://api.esse-analytics.com` cuando `isCloudflarePages` (el caso de
+   la web pública) -- mismo endpoint que se verificó vivo en el punto 3.
+5. **No es caché del navegador.** Probado por el usuario en ventana de
+   incógnito (sin extensiones, sin caché, sin Service Worker previo) -- mismo
+   resultado.
+6. **No es un problema de `confirmLink`/`applyPlatformPublish` para ESTE
+   video puntual.** Ambos archivos ("enemigos tiene" y "peores windows")
+   tienen sus registros correctos y completos en `PlatformVideoModel` y
+   `FileModel` -- ya verificado en detalle en incidentes anteriores de hoy.
+7. **El código de `getUploadHistory` (central) no se tocó en ningún fix de
+   hoy** -- siempre fue `.find({userId, platform?}).sort({publishedAt:-1,
+   createdAt:-1})`, sin filtros adicionales, confirmado leyendo el archivo
+   completo dos veces.
+8. **El código de `DashboardView.tsx` (frontend web) tampoco se tocó hoy** --
+   se leyó completo (`load()`, el cálculo de `item`/`matchedHistory`/
+   `fallbackStats`) y la lógica se ve correcta: sí resetea `fallbackStats`
+   correctamente a diferencia del bug que SÍ se encontró y arregló en iOS
+   (ver más abajo), no debería tener el mismo problema.
+
+### Lo que SÍ se encontró y arregló en el camino (relacionado pero no la causa de este síntoma en la web)
+
+- **iOS**: `DashboardView.swift::latestForDisplay` tenía un fallback que
+  devolvía `fallbackStats` viejo sin validar que coincidiera con el
+  historial actual -- corregido y pusheado (`essenalytics-ios` commit
+  `1a7699b`), build real verificado, **pero nunca instalado en el
+  dispositivo del usuario** (falta abrir Xcode y correr). Si se retoma este
+  bug, primero confirmar que el usuario ya instaló ese build antes de asumir
+  que el problema de iOS sigue vivo.
+- **`local-backend` no tenía `POST /api/sync/history`** -- agregado hoy
+  (`content-automation-dashboard` commit `e3b74eb`), cierra el gap para
+  publicaciones futuras hechas desde el celular en modo "PC local", pero
+  **no es la causa de este síntoma** (el síntoma es en modo remoto/web,
+  hablando con la central directo, no con `local-backend`).
+- **`UploadHistoryModel` estaba vacío para toda la cuenta** -- backfileado
+  (150 registros, ver BUG-2026-08-15-05). Confirmado que sigue así de bien
+  varias veces durante esta misma investigación.
+
+### Hipótesis sin probar (por dónde seguir)
+
+1. **¿Hay una segunda instancia de la central corriendo en algún lado** (otro
+   proceso, otra Mac, un deploy en la nube tipo Render/Fly.io/Railway) que
+   también resuelva `api.esse-analytics.com` o que el Cloudflare Tunnel esté
+   apuntando a un target distinto del proceso que se inspeccionó por SSH?
+   Vale la pena revisar la config del túnel (`cloudflared`, en la Mac) para
+   confirmar que apunta al puerto/proceso correcto, no asumirlo.
+2. **¿El navegador está resolviendo `api.esse-analytics.com` a una IP
+   vieja/cacheada por DNS?** Un `nslookup`/`dig` desde la máquina del usuario
+   (no desde acá) descartaría esto.
+3. **¿Hay algo en el response real (no solo en Mongo) que difiera?** Sería
+   ideal capturar la respuesta real de
+   `GET https://api.esse-analytics.com/api/sync/history?limit=1` con el JWT
+   real del usuario (Network tab del navegador, o `curl` con el token
+   copiado de ahí) -- esto no se pudo hacer desde esta sesión por no tener
+   credenciales, y es probablemente el paso más directo para partir en dos
+   la investigación: si el response YA trae "enemigos tiene", el problema es
+   100% servidor (algo no visto en los puntos 1-8 de arriba); si trae
+   "peores windows" pero la UI muestra "enemigos", el problema es 100%
+   frontend (un bug no encontrado en la lectura de `DashboardView.tsx`).
+4. Confirmar con el usuario si en algún momento **actualizó `esse_local.db`
+   o corrió algo que pudiera haber generado un registro NUEVO de "enemigos"
+   en Mongo con un `publishedAt` más reciente** después del último chequeo
+   de esta sesión -- se verificó "ahora mismo" en el momento de escribir
+   esto, pero el estado puede seguir cambiando si hay procesos automáticos
+   corriendo.
+
+### Historial
+- 2026-08-15 — Claude: investigación extensa, causa NO encontrada pese a
+  descartar sistemáticamente datos/proceso/túnel/config/caché/código
+  conocido. Handoff a otra sesión con el punto 3 de las hipótesis (capturar
+  el response real con curl+JWT) como paso más directo para continuar.
+
 ## BUG-2026-08-15-05 — Dashboard mostraba el video equivocado como "último publicado" (Historial vacío desde siempre)
 
 - Estado: `corregido`; backfill aplicado, pendiente verificar Dashboard en los 3 clientes.
@@ -101,6 +223,18 @@ pero tampoco queda registrada en ningún lado).
 - 2026-08-15 — Claude: causa raíz encontrada (historial global vacío, no un
   problema puntual de "PC local"), backfill aplicado, 2 fixes de código para
   que no vuelva a pasar.
+- 2026-08-15 — Claude: tras el backfill, el usuario reportó que el Dashboard
+  de iOS seguía mostrando "clip - enemigos tiene.mp4" en vez del correcto.
+  Causa DISTINTA, del lado cliente: `DashboardView.swift::latestForDisplay`
+  tenía un segundo `if let fallbackStats { return fallbackStats }` SIN el
+  chequeo `fallbackMatchesLatestHistory` (a diferencia del primero) --
+  `fallbackStats` es deliberadamente persistente entre refreshes, así que
+  cuando `latest` fallaba en encontrar el archivo del historial YA correcto
+  dentro de `items` (afuera del top-5 de `group-stats` por `fecha_creacion`
+  vieja), esa línea servía sin darse cuenta datos STALE de un video previo
+  completamente distinto. Corregido: se saca esa línea, cae al placeholder
+  honesto (nombre + sin métricas) en vez de datos de otro video. Build real
+  verificado (exit 0, 0 errores).
 
 ## BUG-2026-08-15-04 — Link resuelto a mano para una publicación vieja se guardaba con fecha "hoy"
 
