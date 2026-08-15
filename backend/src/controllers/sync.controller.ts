@@ -103,13 +103,37 @@ export const confirmLink = async (req: AuthRequest, res: Response): Promise<void
     // el link del pull del PC, el Calendario y Nube nunca se enteraban de este
     // vínculo. Sin file_name no hay mucho que propagar (los otros stores
     // matchean por nombre), pero best-effort igual si el archivo no lo tiene.
-    const linkedFile = await FileModel.findById(fileId).select('file_name').lean();
+    const linkedFile = await FileModel.findById(fileId).select('file_name content_id').lean();
     if (linkedFile) {
       await applyPlatformPublish(userId, {
         platform: updated.platform, platformId: updated.platformId, platformUrl: updated.platformUrl,
         fileName: linkedFile.file_name,
         title: updated.title, publishedAt: updated.publishedAt, matchStatus: 'manual',
       });
+      // BUG real encontrado 2026-08-15: confirmar un match a mano nunca
+      // escribía en UploadHistoryModel (a diferencia de recordUploadEvent,
+      // que sí) -- el Dashboard ("Último video publicado") depende
+      // exclusivamente de esa colección, y con ella vacía siempre caía al
+      // fallback de "el más reciente por fecha_creacion" (la fecha del
+      // ARCHIVO, no de la publicación), mostrando el video equivocado. En
+      // esta cuenta, TODAS las publicaciones históricas se resolvieron por
+      // este camino (link a mano), así que UploadHistoryModel nunca tuvo ni
+      // un solo registro. Ver docs/bug-reports.md.
+      await UploadHistoryModel.updateOne(
+        { userId, platform: updated.platform, platformId: updated.platformId },
+        {
+          $setOnInsert: {
+            userId, platform: updated.platform, platformId: updated.platformId,
+            deviceId: 'confirm-link', source: 'confirm-link',
+            platformUrl: updated.platformUrl ?? null,
+            fileName: linkedFile.file_name,
+            contentId: linkedFile.content_id ?? null,
+            title: updated.title ?? null,
+            publishedAt: updated.publishedAt ?? new Date(),
+          },
+        },
+        { upsert: true },
+      ).catch(() => { /* best-effort -- un fallo acá no debe invalidar el link ya confirmado */ });
     }
 
     res.json({ ok: true });

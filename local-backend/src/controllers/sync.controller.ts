@@ -287,6 +287,45 @@ export const getUploadHistory = async (req: Request, res: Response): Promise<voi
   }
 };
 
+// POST /api/sync/history (alias /api/sync/record-publish) — mismo contrato
+// que recordUploadEvent en la central (backup.controller.ts), pero escribe en
+// la SQLite de ESTA PC en vez de Mongo. Bug real encontrado 2026-08-15: un
+// cliente (celular) apuntando a "PC local" que reportaba una publicación no
+// tenía a dónde escribirlo acá -- esta ruta no existía, 404 mudo (el caller
+// lo trata como best-effort), y el Dashboard/Historial de ESTA PC nunca se
+// enteraba de publicaciones hechas desde el celular en modo LAN. Resuelve el
+// fileId por content_id o file_name (el celular no conoce el id local) --
+// best-effort si no encuentra el archivo (igual queda el registro de
+// historial, solo sin badge en Videos).
+export const recordUploadEvent = (req: Request, res: Response): void => {
+  try {
+    const { platform, platformId, platformUrl, fileName, contentId, title, publishedAt, deviceId, source } = req.body ?? {};
+    if (!platform || !platformId) {
+      res.status(400).json({ message: 'platform y platformId son requeridos.' });
+      return;
+    }
+
+    let file = contentId ? fileRepo.findByContentId(contentId) : undefined;
+    if (!file && fileName) file = fileRepo.findByName(fileName);
+
+    platformVideoRepo.upsert({
+      platform, platform_id: platformId,
+      platform_url: platformUrl ?? undefined,
+      published_at: publishedAt ?? new Date().toISOString(),
+      linked_file_id: file?.id,
+      match_status: 'manual',
+      title: title ?? undefined,
+      device_id: deviceId ?? undefined,
+      source: source ?? undefined,
+    });
+    if (file) fileRepo.addPlatform(file.id, platform);
+
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // GET /api/sync/group-stats?limit=5 — para la vista de Estadísticas. Siempre arma
 // los candidatos ACÁ desde la SQLite local (files.platforms), sin importar el tier:
 // es la fuente más fresca para lo publicado desde esta misma app -- delegar a la

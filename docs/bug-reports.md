@@ -34,6 +34,74 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-15-05 — Dashboard mostraba el video equivocado como "último publicado" (Historial vacío desde siempre)
+
+- Estado: `corregido`; backfill aplicado, pendiente verificar Dashboard en los 3 clientes.
+- Reportado: 2026-08-15
+- Plataformas: Central, iOS, Android, Web, Local-backend (PC local)
+- Severidad: alta (afecta la tarjeta principal del Dashboard en todos los clientes)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El Dashboard ("Último video publicado") mostraba un video que no era el más
+recientemente publicado -- confirmado con "final - peores windows.mp4"
+apareciendo como "último" en vez del real más reciente.
+
+### Investigación
+
+`UploadHistoryModel` (central) tenía **0 documentos en toda la cuenta**,
+pese a tener 150 `PlatformVideoModel` reales con links/métricas. Causa: la
+mayoría de las publicaciones de esta cuenta se resolvieron con "Editar
+links"/match manual (`confirmLink` en `sync.controller.ts`), que actualiza
+`PlatformVideoModel`/`FileModel` vía `applyPlatformPublish` pero **nunca
+escribía en `UploadHistoryModel`** -- a diferencia de `recordUploadEvent`
+(subida en vivo desde la app), que sí lo hace. Con el historial siempre
+vacío, el Dashboard (iOS/Android/web) cae a su fallback documentado ("sin
+historial, mostrar el primero de `group-stats`", ordenado por
+`fecha_creacion` -- la fecha de CREACIÓN del archivo, no de publicación),
+mostrando casi cualquier cosa menos lo realmente más reciente.
+
+De paso, investigando por qué un video publicado desde el celular en modo
+"PC local" tampoco aparecía: **`local-backend` no tenía ningún `POST
+/api/sync/history` ni `/api/sync/record-publish`** -- sin ese endpoint, un
+cliente apuntando a la LAN de la PC en vez de a la central no tiene dónde
+reportar una publicación (404 mudo, best-effort, no rompe la subida en sí
+pero tampoco queda registrada en ningún lado).
+
+### Corrección
+
+1. **Backfill** (`backend`, corrido a mano en Mongo): un `UploadHistoryModel`
+   por cada `PlatformVideoModel` real+vinculado existente (150 registros
+   creados), usando sus propios `publishedAt`/`platformUrl`/etc. Corrige el
+   síntoma actual de inmediato en todos los clientes que leen de la central.
+2. **`confirmLink`** (`backend/src/controllers/sync.controller.ts`) ahora
+   también escribe en `UploadHistoryModel` (mismo patrón `upsert` que
+   `recordUploadEvent`), para que esto no vuelva a pasar con futuros matches
+   manuales.
+3. **`recordUploadEvent` nuevo en `local-backend`**
+   (`src/controllers/sync.controller.ts` + `src/routes/sync.routes.ts`,
+   `POST /api/sync/history` y alias `/api/sync/record-publish`) -- mismo
+   contrato que la central, pero escribe en la SQLite de la PC
+   (`platform_videos` + `files.platforms`), resolviendo el archivo por
+   `content_id`/`file_name` ya que el celular no conoce el id local.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/` (27) y `local-backend/` (48): mismo
+  conteo de errores preexistentes en ambos, ninguno nuevo.
+- Backfill verificado: 150/150 insertados, top 3 por `publishedAt` desc ya
+  muestra el orden real correcto.
+- Pendiente: confirmar visualmente que el Dashboard de iOS/Android/web ya
+  muestra el video correcto tras el backfill, y probar el flujo completo
+  (celular en modo PC local publicando algo nuevo) para confirmar que
+  `local-backend` ahora sí lo registra.
+
+### Historial
+- 2026-08-15 — Claude: causa raíz encontrada (historial global vacío, no un
+  problema puntual de "PC local"), backfill aplicado, 2 fixes de código para
+  que no vuelva a pasar.
+
 ## BUG-2026-08-15-04 — Link resuelto a mano para una publicación vieja se guardaba con fecha "hoy"
 
 - Estado: `corregido`; pendiente de verificación con un link real que no tenga registro local previo.
