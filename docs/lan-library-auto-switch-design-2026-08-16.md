@@ -855,3 +855,30 @@ una PC ajena.
   Electron, copiar el nombre "Biblioteca LAN" para su UI también, en vez de
   dejarlo sin nombre definido — coherencia de producto entre
   desktop-secundaria y mobile.
+
+### Fase 6 (pendiente, no arrancar sin que el usuario lo pida) — Descargar + Subir en modo Central
+
+Dos pedidos explícitos del usuario, anotados para después de probar lo ya
+implementado:
+
+1. **"Descargar" en `PCLocalVideoDetailView`** (mismo botón que ya tiene
+   `RemoteVideoDetailView` para Nube) — bajar los bytes del video de la PC
+   al almacenamiento propio del teléfono, creando un `FileEntity` local.
+   A diferencia de "Editar link"/toggle de estado (que solo exponían rutas
+   que local-backend ya tenía), esto es una pieza de import nueva: no hay
+   hoy un `ImportUseCase.importFromLAN(...)` equivalente a
+   `importFromRemoteLibrary` — hay que diseñar de dónde saca los bytes
+   (`LocalBackendUploadAPI.streamURL`, ya existe) y cómo dedupea contra lo
+   que ya esté importado (mismo criterio que `ImportUseCase` ya usa para
+   Nube, por nombre+duración+formato).
+2. **"Subir" (pestaña, `PCLocalPublishView`/la cola completa) solo funciona
+   en modo servidor "PC local"** — a diferencia de Biblioteca LAN (Videos),
+   que ya es aditiva (funciona en modo Central + IP manual/Bonjour, sin
+   cambiar de servidor). `UploadView.body` sigue gateando
+   `PCLocalPublishView` detrás de `ServerPresetStore.activeMode == .pcLocal`
+   exclusivamente (`UploadView.swift`) — nadie tocó esa condición en esta
+   sesión. Si se quiere que la cola completa de "Subir" también sea aditiva
+   en modo Central, es el mismo patrón que ya se aplicó a Biblioteca LAN
+   (`activeLANBaseURL`/`LANLibraryPreferences`), pero aplicado a
+   `UploadView` en vez de `LibraryView` -- no evaluado todavía si conviene
+   fusionar ambos casos o mantenerlos separados.
