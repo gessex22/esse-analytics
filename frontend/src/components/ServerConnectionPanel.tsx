@@ -80,17 +80,25 @@ export function ServerConnectionPanel({ onConnected }: { onConnected?: () => voi
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(`${target}/api/local/health`, { cache: "no-store", signal: controller.signal });
+      // FIX 2026-08-16 (Fase 5, docs/lan-library-auto-switch-design-2026-08-16.md):
+      // antes pegaba a /api/local/health -- ese endpoint es para el AUTO-chequeo
+      // del frontend contra SU PROPIO backend (useBackendType.ts: banner de
+      // Laboratorio, pendingHistoryEvents), no para que un cliente ajeno
+      // verifique "¿sos vos, EsseAnalytics?" de otra PC. /api/health
+      // (server.ts) es el endpoint genérico de identidad+entorno, mismo que
+      // ya usa ServerHealthCheck.swift en iOS -- alinea los dos clientes al
+      // mismo contrato en vez de que cada uno pruebe algo distinto.
+      const res = await fetch(`${target}/api/health`, { cache: "no-store", signal: controller.signal });
       clearTimeout(timeout);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json().catch(() => ({}));
-      if (data?.local !== true) {
+      if (data?.service !== "esse-local-backend") {
         setTestState({ kind: "error", message: "Esa dirección respondió, pero no es un local-backend de EsseAnalytics." });
         return;
       }
       setTestState({
         kind: "success",
-        message: data.labMode ? "Conectado (Laboratorio -- datos simulados)." : "Conectado.",
+        message: data.environment === "lab" ? "Conectado (Laboratorio -- datos simulados)." : "Conectado.",
       });
       applyAndReload(target);
     } catch (err: any) {
