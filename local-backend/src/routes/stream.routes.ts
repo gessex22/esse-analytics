@@ -2,12 +2,19 @@ import { Router } from 'express';
 import { fileRepo } from '../db/file.repo';
 import path from 'path';
 import fs from 'fs';
+import { verifyTokenFromHeaderOrQuery, requireOwnerOrNoOwnerSet } from '../middleware/auth.middleware';
 
 const router = Router();
 
-router.get('/api/videos/stream/:id', async (req, res) => {
+// FIX 2026-08-16 (Fase 0, docs/lan-library-auto-switch-design-2026-08-16.md):
+// ninguna de las 2 rutas de acá pedía NADA de auth antes -- cualquiera en la
+// misma LAN que adivinara/enumerara un fileId podía reproducir o descargar
+// el video de cualquier PC, sesión o no. AVURLAsset no manda headers custom,
+// por eso verifyTokenFromHeaderOrQuery (acepta ?token=) en vez de verifyToken
+// a secas -- mismo patrón que ya usa la central para sus streams equivalentes.
+router.get('/api/videos/stream/:id', verifyTokenFromHeaderOrQuery, requireOwnerOrNoOwnerSet, async (req, res) => {
   try {
-    const doc = fileRepo.findById(req.params.id);
+    const doc = fileRepo.findById(req.params.id as string);
     if (!doc || doc.status === 'ELIMINADO_DISCO') return res.status(404).json({ error: 'Video no disponible' });
     const filePath = path.resolve(doc.file_path);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado en disco' });
@@ -36,9 +43,9 @@ router.get('/api/videos/stream/:id', async (req, res) => {
   }
 });
 
-router.get('/api/videos/download/:id', async (req, res) => {
+router.get('/api/videos/download/:id', verifyTokenFromHeaderOrQuery, requireOwnerOrNoOwnerSet, async (req, res) => {
   try {
-    const doc = fileRepo.findById(req.params.id);
+    const doc = fileRepo.findById(req.params.id as string);
     if (!doc || doc.status === 'ELIMINADO_DISCO') return res.status(404).json({ error: 'Video no disponible' });
     const filePath = path.resolve(doc.file_path);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Archivo no encontrado' });
