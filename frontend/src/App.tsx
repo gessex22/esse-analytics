@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  Bell, Upload, Clock, Tv2, LogOut, AlertTriangle, Loader2, MonitorOff, X, FolderOpen,
+  Bell, Upload, Clock, Tv2, LogOut, AlertTriangle, Loader2, MonitorOff, X, FolderOpen, WifiOff,
 } from "lucide-react";
 import { Taller } from "./components/Taller";
 import { PublishingQueue } from "./components/PublishingQueue";
@@ -26,9 +26,10 @@ import { HistoryView } from "./components/HistoryView";
 import { Sidebar, MobileNav, NAV_ORDER, navItems } from "./components/Sidebar";
 import { ViewShell } from "./components/ViewShell";
 import { useNotificationCenter } from "./hooks/useNotificationCenter";
+import { useServerReachability } from "./hooks/useServerReachability";
 import logoImg from "./assets/esseAnalytics.png";
 import { backupService, videoService } from "./services/api";
-import { API_BASE } from "./config";
+import { API_BASE, IS_LAN_CLIENT } from "./config";
 
 // Vistas que requieren el dispositivo central (SQLite + archivos físicos).
 // En remoto se ocultan: Videos, Subir, Taller, Gemas. Historial ya no está acá --
@@ -125,6 +126,11 @@ export default function App() {
   const { user, token, logout, loading } = useAuth();
   const { isLocal, isLabMode, pendingHistoryEvents } = useBackendType();
   const { notifications, cloudOpen, unread: notifUnread, markRead } = useNotificationCenter(isLocal);
+  // Opción C, cliente LAN: si la PC principal se apaga o cae el WiFi a mitad
+  // de sesión, esto lo detecta con un poll (no-op cuando IS_LAN_CLIENT es
+  // false) para mostrar un aviso claro en vez de que cada vista falle por su
+  // cuenta en silencio o quede en un spinner colgado.
+  const { reachable: serverReachable } = useServerReachability();
   const isMobile = useIsMobile();
   const isPremium = !!user && (user.isOwner || user.tier === "premium");
 
@@ -226,7 +232,11 @@ export default function App() {
   }, [user?.username, isLocal]);
 
   useEffect(() => {
-    if (!user || !isPremium || !isLocal) return;
+    // IS_LAN_CLIENT (Opción C, cliente LAN): este aviso trata de "¿la carpeta
+    // de videos de la cuenta ya existe en ESTE equipo?" -- sin sentido cuando
+    // este frontend está hablando con el local-backend de OTRA PC (la carpeta
+    // vive ahí, no acá). Ver docs/single-primary-install-plan-2026-08-14.md.
+    if (!user || !isPremium || !isLocal || IS_LAN_CLIENT) return;
     let cancelled = false;
 
     backupService.getLocalStatus().then(local => {
@@ -285,7 +295,10 @@ export default function App() {
   // Biblioteca, y nada lleva ahí si no sabés que existe.
   const [needsVideoFolder, setNeedsVideoFolder] = useState(false);
   useEffect(() => {
-    if (!user || !isLocal || user.role !== "todopoderoso") { setNeedsVideoFolder(false); return; }
+    // IS_LAN_CLIENT: idem newMachineAlert -- "configurá tu carpeta" no aplica,
+    // la carpeta a configurar (si hace falta) es la de la PC principal, no la
+    // de esta instalación cliente.
+    if (!user || !isLocal || IS_LAN_CLIENT || user.role !== "todopoderoso") { setNeedsVideoFolder(false); return; }
     let cancelled = false;
     backupService.getLocalStatus()
       .then(local => { if (!cancelled) setNeedsVideoFolder(!local.videosDir); })
@@ -303,9 +316,17 @@ export default function App() {
   // (que una secundaria no pueda escanear/configurar carpeta) ya está
   // aplicado server-side en local-backend con o sin esto; acá se oculta nav
   // local y se ofrece "reclamar como principal".
+  // IS_LAN_CLIENT: este sistema (Fases A-E) responde "¿la PC que ATIENDE este
+  // request es la primaria de la cuenta?" -- en cliente LAN esa PC es la
+  // primaria (otro Electron, hablando de SU PROPIO rol), no "esta
+  // instalación". Preguntarlo acá mostraría el banner/modal de "reclamar
+  // como principal" sobre la PC de otra persona, algo que este modo no debe
+  // decidir -- por eso se salta entero, tratando isSecondaryInstall como
+  // false siempre en este modo. Ortogonal a propósito, ver alcance del
+  // Opción C en docs/single-primary-install-plan-2026-08-14.md.
   const [installationRole, setInstallationRole] = useState<"primary" | "secondary" | null>(null);
   useEffect(() => {
-    if (!user || !isLocal) { setInstallationRole(null); return; }
+    if (!user || !isLocal || IS_LAN_CLIENT) { setInstallationRole(null); return; }
     let cancelled = false;
     backupService.getInstallationStatus()
       .then(({ role }) => { if (!cancelled) setInstallationRole(role); })
@@ -660,6 +681,29 @@ export default function App() {
           <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-violet-500/15 border-b border-violet-500/30 text-violet-200 text-xs sm:text-sm font-medium">
             <span aria-hidden>🧪</span>
             <span>Laboratorio · Datos simulados</span>
+          </div>
+        )}
+
+        {/* Banner: PC principal inalcanzable (Opción C, cliente LAN) -- persistente
+            mientras dure, se saca solo apenas el próximo poll vuelve a conectar
+            (ver useServerReachability). Antes de esto, quedarse sin conexión con
+            la primaria no tenía ningún aviso global: cada vista fallaba (o se
+            quedaba cargando) por su cuenta, sin explicar por qué. */}
+        {IS_LAN_CLIENT && !serverReachable && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-red-500/10 border-b border-red-500/20 text-red-300 text-xs sm:text-sm">
+            <WifiOff className="w-4 h-4 flex-shrink-0 text-red-400" />
+            <span className="flex-1">
+              No se pudo conectar con la PC principal ({API_BASE}). ¿Sigue prendida y en la misma red?
+            </span>
+          </div>
+        )}
+
+        {/* Banner informativo: conectado a otra PC por LAN (Opción C) -- para
+            que nunca sea ambiguo de dónde sale el catálogo que se está viendo. */}
+        {IS_LAN_CLIENT && serverReachable && (
+          <div className="flex items-center gap-2 px-4 sm:px-6 py-2 bg-sky-500/10 border-b border-sky-500/20 text-sky-200/90 text-xs sm:text-sm">
+            <Tv2 className="w-4 h-4 flex-shrink-0 text-sky-400" />
+            <span>Conectado a otra PC por LAN ({API_BASE}) — catálogo y publicación de esa instalación.</span>
           </div>
         )}
 

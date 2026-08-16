@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // de Windows / Finder en Mac). Devuelve la ruta elegida, o null si se canceló.
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:selectFolder'),
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
+  // Busca otras PCs EsseAnalytics anunciadas por Bonjour en la LAN (Opción C,
+  // cliente LAN -- ver ServerConnectionPanel.tsx). Tarda ~3s (ventana fija de
+  // escaneo mDNS en main.ts), resuelve con la lista encontrada hasta ese momento.
+  discoverServers: (): Promise<{ name: string; host: string; port: number; labMode: boolean }[]> =>
+    ipcRenderer.invoke('bonjour:discover'),
   // El frontend lo usa para decidir si mostrar "Elegir carpeta" (Electron) o
   // solo el campo de texto manual (mismo frontend servido por LAN/túnel sin
   // Electron, o web remota) -- ver LibraryPanel.tsx.

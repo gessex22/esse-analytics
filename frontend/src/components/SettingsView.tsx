@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from "react";
-import { Check, Palette, ShieldCheck, Activity, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft } from "lucide-react";
+import { Check, Palette, ShieldCheck, Activity, Tv2, FolderOpen, AlertTriangle, Database, Loader2, Cloud, Link2, FileText, ChevronRight, ChevronLeft, Router } from "lucide-react";
 import { useTheme, THEMES, ThemeId } from "../hooks/useTheme";
 import { SecurityPanel } from "./SecurityPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -7,25 +7,37 @@ import { LibraryPanel } from "./LibraryPanel";
 import { FriedenPanel } from "./FriedenPanel";
 import { AccountsPanel } from "./AccountsPanel";
 import { ActivityView } from "./ActivityView";
+import { ServerConnectionPanel } from "./ServerConnectionPanel";
 import { useAuth } from "../hooks/useAuth";
-import { API_BASE } from "../config";
+import { API_BASE, IS_LAN_CLIENT } from "../config";
 
+// requiresOwnDisk: secciones que tocan el DISCO/CARPETA/watcher de ESTA
+// instalación puntual (escanear, guardar video_folder, borrar la SQLite
+// local). Sin sentido -- y peligroso -- exponerlas cuando este frontend está
+// hablando con el local-backend de OTRA PC por LAN (Opción C, cliente LAN,
+// ver frontend/src/config.ts::IS_LAN_CLIENT): "Zona de peligro" de
+// LibraryPanel y "Resetear aplicación" de DatosPanel operarían sobre los
+// datos de la PC principal, no los de quien está mirando la pantalla.
 const ALL_SECTIONS = [
-  { id: "colores",    label: "Colores",        icon: Palette,     roles: ["todopoderoso", "editor"], localOnly: false, description: "Elegí la paleta de color de la app" },
-  { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false, description: "Flujo de publicación y carpeta de videos" },
-  { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true,  description: "Cuentas conectadas de YouTube, Instagram y TikTok" },
-  { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false, description: "Seguridad de la cuenta" },
+  { id: "colores",    label: "Colores",        icon: Palette,     roles: ["todopoderoso", "editor"], localOnly: false, requiresOwnDisk: false, description: "Elegí la paleta de color de la app" },
+  { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false, requiresOwnDisk: true,  description: "Flujo de publicación y carpeta de videos" },
+  { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true,  requiresOwnDisk: false, description: "Cuentas conectadas de YouTube, Instagram y TikTok" },
+  { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false, requiresOwnDisk: false, description: "Seguridad de la cuenta" },
   // Auditoría central de dispositivos (Fase 5) -- antes ítem propio del sidebar
   // (índice 11), movida acá para no ocupar un slot de nav por una vista de
   // "consultar de vez en cuando" (mismo patrón que Settings > Security log en
   // otros productos), y de paso queda alcanzable en mobile vía Ajustes. No es
   // local-only: lee GET /api/audit-events directo de la central. roles replica
   // el filtro que tenía antes en App.tsx (isNavVisible): todo el mundo salvo editor.
-  { id: "actividad",  label: "Actividad",      icon: Activity,    roles: ["todopoderoso", "visitante"], localOnly: false, description: "Inicios de sesión, conexiones y publicaciones de tu cuenta" },
-  { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false, description: "Emparejar entre plataformas y vincular con archivo local" },
-  { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true,  description: "Acceso remoto y respaldo en la nube" },
-  { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true,  description: "Gestioná los datos guardados en esta instalación" },
-  { id: "licencias",  label: "Licencias",       icon: FileText,    roles: ["todopoderoso", "editor"], localOnly: false, description: "Software de terceros incluido en la aplicacion" },
+  { id: "actividad",  label: "Actividad",      icon: Activity,    roles: ["todopoderoso", "visitante"], localOnly: false, requiresOwnDisk: false, description: "Inicios de sesión, conexiones y publicaciones de tu cuenta" },
+  { id: "sync",       label: "Sincronización",  icon: Tv2,         roles: ["todopoderoso"],           localOnly: false, requiresOwnDisk: false, description: "Emparejar entre plataformas y vincular con archivo local" },
+  { id: "frieden",    label: "Remoto y Backup", icon: Cloud,       roles: ["todopoderoso"],           localOnly: true,  requiresOwnDisk: true,  description: "Acceso remoto y respaldo en la nube" },
+  { id: "datos",      label: "Datos locales",   icon: Database,    roles: ["todopoderoso"],           localOnly: true,  requiresOwnDisk: true,  description: "Gestioná los datos guardados en esta instalación" },
+  // Solo Electron (gateado abajo por window.electronAPI, no acá -- roles no
+  // alcanza porque es un chequeo de entorno, no de cuenta). No es local-only:
+  // tiene sentido incluso hablando con la central, para volver a "Esta PC".
+  { id: "servidor",   label: "Servidor",       icon: Router,      roles: ["todopoderoso", "editor"], localOnly: false, requiresOwnDisk: false, description: "A qué PC le habla esta instalación" },
+  { id: "licencias",  label: "Licencias",       icon: FileText,    roles: ["todopoderoso", "editor"], localOnly: false, requiresOwnDisk: false, description: "Software de terceros incluido en la aplicacion" },
 ];
 
 function ColoresPanel() {
@@ -308,8 +320,14 @@ export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo, i
 
   const visibleSections = ALL_SECTIONS.filter(s => {
     if (!s.roles.includes(role)) return false;
+    // "Servidor" (Opción C, cliente LAN): solo existe en el build de Electron
+    // -- servido por LAN/túnel sin la app de escritorio, o web remota,
+    // window.electronAPI no existe y elegir "otra PC" no tiene forma de
+    // descubrirla ni ningún backend propio al que volver.
+    if (s.id === "servidor") return !!window.electronAPI;
     // Seguridad: solo tiene sentido en la central (remoto) y para el dueño de la cuenta.
     if (s.id === "seguridad") return !isLocal && !!isOwner;
+    if (s.requiresOwnDisk && IS_LAN_CLIENT) return false;
     if (s.localOnly) return isLocal;
     return true;
   });
@@ -323,6 +341,7 @@ export function SettingsView({ role, isLocal, isPremium, isOwner, onOpenVideo, i
     sync:       <SyncPanel onOpenVideo={onOpenVideo} />,
     frieden:    <FriedenPanel isPremium={!!isPremium} />,
     datos:      <DatosPanel />,
+    servidor:   <ServerConnectionPanel />,
     licencias:  <LicenciasPanel />,
   };
 

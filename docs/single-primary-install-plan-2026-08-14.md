@@ -1,12 +1,20 @@
-> **Estado: diseño decidido, con plan de ejecución escrito.** Se optó por
-> Opción A (gate duro) + subida simple ad-hoc para no perder la capacidad de
-> publicar desde una secundaria. Ver "Decisión final" más abajo para el
-> detalle completo — las secciones 1-5 originales quedan como el
-> razonamiento que llevó a la decisión, no las releas como si aún
-> estuvieran abiertas. **El plan de implementación fase por fase, ya
-> revisado y con una corrección de contrato aplicada, vive en
-> `docs/primary-install-implementation-plan-2026-08-14.md`** — ese es el
-> documento a seguir para implementar, no este.
+> **Estado (actualizado 2026-08-16): Fase G (ex-"subida ad-hoc") pausada sin
+> implementar. La Opción C — la secundaria como cliente LAN de la primaria,
+> igual que mobile — es la alternativa preferida para retomarla, y ya tiene
+> una primera implementación en la rama `feat/electron-lan-client-secondary`
+> (sin mergear a `main`).** No la des por "hecha" todavía: está implementada
+> y validada por el contrato HTTP (ver "Opción C — implementación real"
+> más abajo para el detalle exacto de qué se probó y con qué método), pero
+> **sin probar con dos PCs físicas reales en la misma LAN** — falta esa
+> prueba antes de considerarla lista para mergear. Las secciones 1-5
+> originales de más abajo quedan como el razonamiento que llevó a la
+> decisión de gate duro + Fase G, no las releas como si aún estuvieran
+> abiertas tal cual. **El plan de implementación fase por fase de las Fases
+> A-E (instalación primaria única, `requirePrimaryDevice`, `primaryDeviceId`,
+> banner "Reclamar como principal") vive en
+> `docs/primary-install-implementation-plan-2026-08-14.md`** — esas fases
+> están implementadas y son ORTOGONALES a la Opción C descrita acá abajo,
+> no la tocan ni dependen de ella.
 
 # Plan: una sola instalación local "escritora" por cuenta
 
@@ -241,3 +249,194 @@ futuro si se necesita.
   `backup.routes.ts`, pero vale la pena que lo confirme quien lo implemente).
 - Decidir si la mejora opcional de miniatura-en-upload-ad-hoc entra en el
   alcance inicial o se deja para después.
+
+> **Actualización 2026-08-16**: lo de arriba (picker nativo + subida ad-hoc)
+> era el plan para la Fase G. Sigue siendo válido como fallback, pero abajo
+> hay una alternativa evaluada que lo supera en experiencia — ver "Opción C".
+> Fases A-E (quién es la primaria, gate `requirePrimaryDevice`, banner
+> "Reclamar como principal") **ya están implementadas y pusheadas**
+> (`ab3051d`, `46bce3b`, ver `docs/HANDOFF-mongo-y-primaria-2026-08-14.md`)
+> — nada de esto las toca ni las reemplaza, son ortogonales. Esto es
+> específicamente sobre qué hace una secundaria una vez que el gate ya la
+> identificó como tal (Fase G, sin arrancar todavía).
+
+## Opción C (evaluada 2026-08-16): la secundaria como cliente LAN de la primaria, igual que mobile
+
+Propuesta del usuario en conversación: en vez de que la secundaria suba UN
+archivo suelto sin catálogo (Fase G tal como estaba diseñada), que **ni
+siquiera use su propio local-backend para la biblioteca compartida** — que
+apunte su frontend, vía LAN, directo al local-backend de la PC primaria, y
+listo. Exactamente el patrón que `essenalytics-ios` ya construyó y probó
+para su modo "PC local" (`ServerSettingsView.swift`/`PCLocalPublishView.swift`,
+agregado 2026-08-15) — reusar un contrato ya validado en vez de inventar uno
+nuevo y más pobre.
+
+### Por qué es mejor que la subida ad-hoc para Fase G
+
+| | Subida ad-hoc (plan original de Fase G) | Opción C — cliente LAN |
+|---|---|---|
+| Qué ve la secundaria | Nada — solo un picker de archivo suelto del SO | El catálogo real y completo de la primaria (Videos, Subir, con reproductor y todo — desktop ya tiene UI rica, a diferencia de la versión reducida que hubo que construir para mobile) |
+| Miniatura/transcripción | No hay (archivo no persiste en catálogo trackeado) | Sin problema — los bytes siguen viviendo solo en la primaria, que es quien ya genera todo eso |
+| Trabajo nuevo del lado servidor | Ninguno (reusa los 3 uploaders vía `fileId` efímero) | Ninguno — el local-backend de la primaria ya expone `GET /api/videos`, thumbnail, stream, los 3 endpoints de upload; es el MISMO contrato que ya consume `LocalBackendUploadAPI.swift` en iOS |
+| Trabajo nuevo del lado cliente | Nuevo endpoint + flujo de picker+upload temporal | `API_BASE` (`frontend/src/config.ts:12`) deja de ser fijo a `window.location.origin` — necesita un override persistido, igual que `CentralAPI.customServerURLString`/`ServerPresetStore` en iOS. Más una pantalla de selección de servidor en Electron (puede reusar el descubrimiento Bonjour que `electron/src/main.ts` YA anuncia — es el mismo servicio `_esseanalytics._tcp` que `LocalPCDiscovery.swift` ya consume del lado iOS, cero trabajo nuevo de descubrimiento) |
+| Login antes de sesión | No aplica (la secundaria ya tiene su propia sesión) | Mismo problema que iOS ya resolvió (loguearse contra un servidor elegido, no el de siempre) — reusar el mismo patrón, no inventarlo |
+
+### Qué falta para validar esto de verdad
+
+1. Confirmar que las rutas de `local-backend` que consumiría la secundaria
+   (`GET /api/videos`, stream, thumbnail, los 3 `/upload`) no asumen en
+   ningún lado "quien pega este request es la misma máquina" — deberían
+   estar bien (ya las consume el celular por LAN sin problema), pero vale
+   la pena que quien implemente lo verifique explícitamente.
+2. Decidir qué pasa con el local-backend BUNDLADO de la secundaria en este
+   modo — sigue corriendo igual (Electron siempre lo levanta), simplemente
+   el frontend no le habla a él para la biblioteca compartida. Confirmar
+   que no hay otro código que asuma que `API_BASE == mi propio backend`
+   (ver `frontend/src/services/api.ts`, además de las URLs de
+   thumbnail/stream/tus ya listadas en ese archivo).
+3. Diseñar la pantalla de selección de servidor en Electron/Ajustes (mirror
+   de `ServerSettingsView.swift`) — no existe hoy, el desktop nunca tuvo
+   necesidad de esto porque siempre hablaba consigo mismo.
+
+**Recomendación**: si se retoma Fase G, evaluar Opción C como reemplazo
+directo del plan de "subida ad-hoc", no como alternativa a discutir en
+paralelo — da mejor experiencia con una cantidad de trabajo nuevo
+comparable, reusando infraestructura (Bonjour, contrato HTTP) ya construida
+y probada en producción por mobile.
+
+## Opción C — implementación real (2026-08-16, rama `feat/electron-lan-client-secondary`)
+
+Lo de arriba quedó implementado. Resumen honesto de qué se construyó, qué se
+probó de verdad (y con qué método) y qué sigue pendiente de hardware real —
+ver también el reporte de la sesión que lo hizo para el detalle completo.
+
+### Qué se construyó
+
+- **`frontend/src/config.ts`**: `API_BASE` ahora puede tener un override
+  persistido en `localStorage` (`IS_LAN_CLIENT`, `setServerOverride`),
+  con `window.location.origin`/central como default si no hay override.
+  Cambiarlo fuerza un reload (mismo criterio que `CentralAPI` en iOS: no es
+  reactivo en caliente).
+- **`frontend/src/components/ServerConnectionPanel.tsx`** (nuevo): selector
+  "Esta PC" / "Otra PC en la red", con descubrimiento Bonjour vía IPC,
+  campo manual de IP:puerto, y test de conexión real contra
+  `GET /api/local/health` antes de aplicar el override. Conectar con éxito
+  borra el token guardado (JWT de un backend no vale para otro) y recarga.
+  Montado en dos lugares, igual que `ServerSettingsView.swift`: Ajustes >
+  Servidor (con sesión, `SettingsView.tsx`) y un modal desde `LoginPage.tsx`
+  (sin sesión — resuelve el mismo problema que iOS ya tuvo: loguearse contra
+  el servidor elegido antes de tener token).
+- **`electron/src/main.ts`/`preload.ts`**: nuevo `ipcMain.handle('bonjour:discover')`
+  que busca el servicio `_esseanalytics._tcp` (el mismo que ya se anuncia)
+  durante 3s y devuelve lo encontrado; expuesto como
+  `window.electronAPI.discoverServers()`.
+- **`frontend/src/hooks/useServerReachability.ts`** (nuevo): poll a
+  `GET /api/health` cada 15s, SOLO activo si `IS_LAN_CLIENT` — banner en
+  `App.tsx` si la primaria deja de responder (pérdida de conexión/WiFi/PC
+  apagada), en vez de un spinner colgado o un fallo silencioso por vista.
+- **`App.tsx`/`SettingsView.tsx`**: en modo cliente LAN se oculta lo que
+  depende del DISCO de esta instalación puntual (banner "configurá tu
+  carpeta", banner "PC no principal", el chequeo de `installationRole` de
+  las Fases A-E — ortogonal, no se reemplaza ni se toca —, y las secciones
+  de Ajustes "Biblioteca"/"Datos locales"/"Remoto y Backup", que si se
+  usaran acá operarían sobre el disco/SQLite de la PC PRINCIPAL, no de
+  quien mira la pantalla). El catálogo, reproductor, Subir, Taller y Gemas
+  siguen visibles normalmente — `isLocal` sigue dando `true` porque la
+  primaria SÍ es un local-backend real.
+
+### Qué se validó de verdad, y cómo
+
+Sin 2 PCs físicas disponibles en este entorno, se usó la técnica descrita
+en el pedido original: 2 `local-backend` en puertos distintos en la misma
+máquina, uno de ellos ("primaria") con una carpeta de prueba con un archivo
+de video sintético.
+
+- `npm run lint` y `npm run build` de `frontend/` limpios con el código nuevo.
+- `npx tsc -p tsconfig.json --noEmit` de `electron/` limpio (incluye el
+  handler de Bonjour nuevo).
+- `local-backend` real (no central, no lab) levantado en un puerto aislado
+  (**nunca el 4000 real** — se detectó por accidente que ese puerto tenía la
+  instalación real de EsseAnalytics de este equipo corriendo, ver nota de
+  seguridad abajo), con un JWT firmado a mano con el mismo `JWT_SECRET` que
+  se le pasó al proceso (esto se salta el login real contra la central, que
+  no está disponible en este entorno — no valida el login en sí, que es
+  preexistente y no toca este cambio).
+- Con eso, confirmado con `curl` simulando un origen HTTP distinto
+  (`Origin: http://127.0.0.1:5555`, el mismo tipo de cross-origin que tendría
+  el frontend de la secundaria):
+  - `GET /api/local/health` sin token → responde `{local:true,...}`, exactamente
+    lo que usa `ServerConnectionPanel` para el test de conexión.
+  - `Access-Control-Allow-Origin: *` en todas las respuestas — confirma en la
+    práctica lo que el plan original dejaba como "a confirmar": el `cors()`
+    default de `local-backend/src/server.ts` SÍ es permisivo para cualquier
+    origen, sin necesidad de proxear por IPC como contemplaba el punto 2 del
+    "Qué falta para validar" de más arriba.
+  - `POST /api/videos/scan/config` + `POST /api/videos/scan` sobre la carpeta
+    de prueba → detecta el archivo (`scanned:1, added:1`).
+  - `GET /api/videos` con token → devuelve el catálogo con el archivo recién
+    escaneado.
+  - `GET /api/videos/stream/:id` con `Range` → `206 Partial Content` con
+    `Content-Range`/`Accept-Ranges` correctos y el mismo header CORS —
+    confirma que el streaming del reproductor funciona cross-origin.
+  - `GET /api/videos/:id/thumbnail` → `404` (esperado: el archivo de prueba
+    es un binario sintético, no un video real que ffprobe pueda leer — no
+    prueba la generación de miniatura en sí, solo que la ruta responde bien
+    formada cross-origin).
+  - `POST /api/youtube/upload` con un `fileId` real → `{"error":"NO_AUTH",...}`
+    (esperado: sin cuenta de YouTube conectada en esta instalación de prueba)
+    — confirma que el endpoint de publicación es alcanzable cross-origin y
+    responde con el error de negocio correcto, no con un fallo de ruteo/CORS.
+  - `GET /api/videos` sin token → `401 {"message":"Token requerido."}` — el
+    gate de auth sigue aplicando igual hablando cross-origin.
+
+  **Nota de seguridad de esta sesión (no un bug del código, un hallazgo del
+  entorno de prueba)**: el primer intento de levantar un `local-backend` de
+  prueba usó el puerto 4000 por default y, sin darse cuenta, coincidió con
+  el puerto en el que ya estaba corriendo la instalación REAL de
+  EsseAnalytics de esta máquina (`EsseAnalytics.exe`, confirmado con
+  `netstat`/`tasklist` por PID). Un `POST` de prueba con JSON mal formado
+  llegó a esa instancia real pero falló en el parseo del body ANTES de
+  tocar ningún handler (sin mutación) — no se escribió nada en los datos
+  reales del usuario. Se cortó esa prueba de inmediato y se rehizo entera
+  en el puerto 47001, confirmado aislado con `netstat` antes de continuar.
+  Vale la pena que quien retome esto en máquinas reales use puertos no-4000
+  para cualquier prueba similar, o confirme primero que no hay una
+  instalación real corriendo.
+
+### Qué NO se validó (pendiente de hardware real, explícito)
+
+- **Descubrimiento Bonjour cruzando dos máquinas físicas distintas en la
+  misma red WiFi real.** El handler de `ipcMain.handle('bonjour:discover')`
+  se revisó por lectura de código (mismo patrón que el `publish()` ya
+  probado en producción por mobile) y compila, pero nunca se ejecutó de
+  verdad — este entorno no tiene una ventana de Electron interactiva ni una
+  segunda máquina en la misma LAN.
+- **La ventana de Electron real corriendo la UI nueva** (`ServerConnectionPanel`,
+  el modal en `LoginPage`, la sección "Servidor" en Ajustes) — se validó
+  por lectura de código + que compila, no con clicks reales. Este entorno no
+  puede lanzar Electron de forma interactiva/gráfica.
+- **Pérdida de conexión real** (WiFi cayendo a mitad de sesión) — solo se
+  probó el mecanismo de detección (`useServerReachability` pollea
+  `/api/health`) por lectura de código; matar el proceso de un
+  `local-backend` de prueba a mitad de operación (cubierto parcialmente por
+  el punto de arriba sobre cerrar el puerto 47001) confirma que el poll
+  detectaría un `ECONNREFUSED`, pero no se disparó el banner real en una UI
+  corriendo.
+- **Login end-to-end contra un servidor elegido** (el flujo completo:
+  `ServerConnectionPanel` → conectar → `LoginPage` sin sesión → loguearse
+  contra la central real a través de la primaria) — el JWT usado en las
+  pruebas de arriba se firmó a mano para saltar la dependencia de la central
+  real (no accesible desde este entorno), así que el contrato de rutas
+  protegidas quedó validado pero NO el viaje completo de credenciales través
+  del proxy `auth-proxy.routes.ts` de la primaria.
+- **Publicación real** en YouTube/Instagram/TikTok desde una secundaria
+  (se confirmó que el endpoint responde con el error de negocio esperado
+  sin cuenta conectada, no que una subida real completa funcione).
+
+### Siguiente paso recomendado
+
+Antes de mergear: repetir la validación de arriba con dos instalaciones de
+Electron reales en la misma LAN (o al menos dos ventanas de Electron en la
+misma máquina, cada una con su propio `local-backend` empaquetado en
+puertos distintos) — eso cubre Bonjour real y la UI real, que son
+exactamente los dos huecos que este entorno no puede cerrar por sí solo.

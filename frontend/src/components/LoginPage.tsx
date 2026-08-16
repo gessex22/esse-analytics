@@ -1,8 +1,10 @@
 import { useState, useEffect, FormEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { Router, X } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { useBackendType } from "../hooks/useBackendType";
 import { API_BASE } from "../config";
+import { ServerConnectionPanel } from "./ServerConnectionPanel";
 import logoImg from "../assets/esseAnalytics.png";
 
 async function setLocalOwner() {
@@ -48,6 +50,14 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
   const [wipeConfirm, setWipeConfirm] = useState("");
   const [wiping, setWiping]           = useState(false);
   const [wipeError, setWipeError]     = useState<string | null>(null);
+
+  // Opción C (cliente LAN, docs/single-primary-install-plan-2026-08-14.md):
+  // hace falta poder elegir servidor ANTES de tener sesión -- si no, no hay
+  // forma de loguearse contra el local-backend de otra PC la primera vez.
+  // Mismo problema que ya resolvió ServerSettingsView.swift del lado iOS
+  // (sheet montado desde LoginView). Solo tiene sentido en el build de
+  // Electron -- servido por LAN/túnel o web remota no tiene a qué "otra PC" volver.
+  const [serverPanelOpen, setServerPanelOpen] = useState(false);
 
   // En local: ver si esta instancia ya está vinculada a una cuenta
   useEffect(() => {
@@ -520,10 +530,53 @@ export function LoginPage({ onBack }: { onBack?: () => void }) {
           </motion.form>
         )}
 
+        {/* Elegir servidor -- solo Electron, ver ServerConnectionPanel.tsx */}
+        {!!window.electronAPI && (
+          <button
+            type="button"
+            onClick={() => setServerPanelOpen(true)}
+            className="w-full flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors text-center mt-4"
+          >
+            <Router className="w-3 h-3" /> Conectar a otra PC en la red
+          </button>
+        )}
+
         <p className="text-center text-[10px] text-muted-foreground/40 font-mono mt-6">
           v{__APP_VERSION__}
         </p>
       </motion.div>
+
+      {/* Modal de selección de servidor -- reusa ServerConnectionPanel tal cual
+          se usa en Ajustes > Servidor (con sesión); acá se monta como sheet,
+          sin sesión, mismo patrón que ServerSettingsView.swift presentado
+          desde LoginView en iOS. */}
+      <AnimatePresence>
+        {serverPanelOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center px-4"
+            onClick={() => setServerPanelOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              className="bg-card border border-border rounded-xl shadow-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Servidor</span>
+                <button onClick={() => setServerPanelOpen(false)} className="text-muted-foreground hover:text-foreground">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <ServerConnectionPanel />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

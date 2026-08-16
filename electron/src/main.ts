@@ -8,6 +8,13 @@ let bonjour: InstanceType<typeof Bonjour> | null = null;
 let announcedService: ReturnType<InstanceType<typeof Bonjour>['publish']> | null = null;
 const PORT = 4000;
 
+interface DiscoveredServer {
+  name: string;
+  host: string;
+  port: number;
+  labMode: boolean;
+}
+
 // Ver electron/package.json (script "dev:lab") y local-backend/src/config.ts.
 // SOLO se activa si quien lanzó `electron .` ya tenía ESSENALYTICS_LAB_MODE=1
 // en el entorno (heredado del shell) -- nunca hay una preferencia de la app
@@ -161,6 +168,44 @@ app.whenReady().then(() => {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+
+  // Descubrimiento de otras PCs EsseAnalytics en la LAN (Opción C, cliente LAN
+  // -- docs/single-primary-install-plan-2026-08-14.md). Mismo servicio Bonjour
+  // (`_esseanalytics._tcp.`) que este mismo proceso ya anuncia arriba
+  // (startServer) y que LocalPCDiscovery.swift ya consume del lado iOS -- acá
+  // se BUSCA en vez de anunciar. Instancia de Bonjour separada de `bonjour`
+  // (la de arriba es solo para publish/unpublish de esta PC) para no pisar su
+  // ciclo de vida; se crea y destruye por cada búsqueda, no queda corriendo
+  // de fondo entre llamados. Ventana fija de 3s: suficiente para que mDNS
+  // resuelva en una LAN doméstica típica sin dejar al usuario esperando de más.
+  ipcMain.handle('bonjour:discover', async (): Promise<DiscoveredServer[]> => {
+    return new Promise((resolve) => {
+      const scanner = new Bonjour();
+      const found: DiscoveredServer[] = [];
+      const seen = new Set<string>();
+      const browser = scanner.find({ type: 'esseanalytics', protocol: 'tcp' });
+      browser.on('up', (service: any) => {
+        const address: string | undefined = Array.isArray(service.addresses)
+          ? service.addresses.find((a: string) => a.includes('.')) || service.addresses[0]
+          : service.host;
+        if (!address || !service.port) return;
+        const key = `${address}:${service.port}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        found.push({
+          name: service.name || `EsseAnalytics PC (${address})`,
+          host: address,
+          port: service.port,
+          labMode: service.txt?.labMode === '1',
+        });
+      });
+      setTimeout(() => {
+        browser.stop();
+        scanner.destroy();
+        resolve(found);
+      }, 3000);
+    });
   });
 });
 
