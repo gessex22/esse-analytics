@@ -34,6 +34,236 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-16-03 — Modo "PC local" (LAN) en iOS: cola con nombre+flechas pero sin reproductor/miniatura
+
+- Estado: `abierto` — causa raíz confirmada leyendo el código, sin corregir todavía.
+- Reportado: 2026-08-16
+- Plataformas: iOS
+- Severidad: baja
+- Reportado por: usuario (desde "batiphone", ver memoria de sesión sobre dispositivos)
+
+### Síntoma y pasos para reproducir
+
+Con el celular en modo "PC local" (`ServerSettingsView` → apuntar por LAN al
+local-backend de la PC), en "Subir" se puede navegar la cola con las flechas
+◀️▶️ y se ve el nombre del archivo, pero no hay forma de VER el video antes
+de publicar — no hay miniatura ni reproductor.
+
+### Investigación
+
+`PCLocalPublishView.swift` (agregado 2026-08-15, versión simplificada
+declarada a propósito en su propio comentario) reemplaza a `UploadView`
+entera en este modo. `PCLocalPlatformFormsView` solo muestra
+`video.fileName`+duración como texto — nunca pide thumbnail ni ofrece un
+player, a diferencia de `PublishFormView` (modo on-device/Nube), que sí
+tiene `LocalVideoPlayerView` vía `fullScreenCover`.
+
+El local-backend ya expone lo necesario, sin nada nuevo del lado servidor:
+`GET /api/videos/stream/:id` (`local-backend/src/routes/stream.routes.ts:8`)
+y `GET /api/videos/:fileId/thumbnail` (`local-backend/src/routes/video.routes.ts:22`)
+— mismo contrato que ya usa `RemoteLibraryAPI.streamURL`/`LocalVideoPlayerView`
+en el resto de la app.
+
+### Corrección
+
+Sin implementar. Camino sugerido: agregar miniatura (AsyncImage contra el
+endpoint de thumbnail con token) + botón "Ver" que abra un `AVPlayer`/
+`LocalVideoPlayerView`-equivalente apuntando al stream URL con token, mismo
+patrón que ya existe en `LibraryView.swift`/`PublishFormView.swift`.
+
+### Verificación y pendiente
+
+No implementado. No compilable desde este entorno (ver `../CLAUDE.md`).
+
+### Historial
+- 2026-08-16 — agente: causa raíz encontrada durante conversación con el usuario, documentada sin corregir (a la espera de prioridad).
+
+## BUG-2026-08-16-02 — Chip "Catálogo PC" (3ra fuente: local/nube/LAN) nunca aparece en mobile, en ningún tier
+
+- Estado: `verificado` en iOS (build real vía SSH a la Mac, `xcodebuild` exit 0, commiteado y en `main` de `essenalytics-ios` — `d3af26f`). `corregido` en Android, pendiente que el usuario lo compile en Android Studio (ver limitaciones de entorno en `../CLAUDE.md`) y lo commitee — sigue sin commitear ahí a propósito.
+- Reportado: 2026-08-16
+- Plataformas: iOS | Android
+- Severidad: media
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Biblioteca remota / filtro de origen en mobile debía distinguir 3 fuentes:
+local (archivo en el teléfono), Nube (bytes reales en la central) y "Catálogo
+PC" (metadata de solo lectura del backup automático del escritorio, ver
+`backup.controller.ts::getBackupFiles`) — el equivalente mobile a "LAN (PC
+local)". El tercer chip nunca se ve, para ningún usuario, en ningún tier.
+
+### Resultado esperado / resultado observado
+
+Esperado: el chip "Catálogo PC" aparece para cualquier usuario premium (no
+requiere el entitlement de storage aparte que sí pide "Nube"), según el
+comentario ya presente en ambos archivos. Observado: el chip nunca aparece,
+ni para el owner.
+
+### Investigación
+
+Toda la lógica de merge/filtro/fetch alrededor del chip (`visibleFilters`,
+`loadRemoteSourcesIfNeeded`, el merge de `.backupCatalog` en la lista de
+items) está completa y funcionando en los dos repos — coincide con lo que la
+memoria de sesión daba por "implementado, casi al espejo entre plataformas".
+Lo que NO estaba conectado es el gate que decide si el usuario puede verlo:
+
+- iOS — `essenalytics-ios/Esse-Analytics/Features/Library/LibraryView.swift`
+  (antes de la línea ~55): `private var canSeeBackupCatalog: Bool { false }`
+  — hardcodeado, no lee `currentUser` para nada.
+- Android — `essenalytics-android/feature/library/src/main/kotlin/com/esseanalytics/android/feature/library/LibraryViewModel.kt`
+  (antes de la línea ~64): `val canSeeBackupCatalog: StateFlow<Boolean> = MutableStateFlow(false).asStateFlow()`
+  — mismo problema, ni siquiera lee `tokenStore.authState`.
+
+Ambos archivos ya tenían el comentario correcto de la intención ("gratis
+para todo premium, requirePremium en la central, no requiere el entitlement
+de storage aparte") — es decir, el placeholder se dejó puesto y nunca se
+terminó de cablear a un dato real, en los dos repos por separado (no es que
+uno haya copiado el bug del otro).
+
+### Corrección
+
+- iOS: `canSeeBackupCatalog` pasa a `currentUser?.isPremium == true` (mismo
+  patrón que `canUseCloudStorage`, misma propiedad `isPremium` ya existente
+  en `Core/Model/User.swift`).
+- Android: `canSeeBackupCatalog` pasa a un `StateFlow` derivado de
+  `tokenStore.authState.map { ... user?.isPremium == true }`, mismo patrón
+  que `canUseCloudStorage` en el mismo archivo (`User.kt` ya tenía
+  `isPremium` como propiedad derivada).
+
+### Verificación y pendiente
+
+**iOS: verificado 2026-08-16** — build real vía SSH a la Mac
+(`macgessemberg22`, key `id_ed25519_macbuild`, ver memoria de sesión
+`ios_ssh_build`), `xcodebuild build -scheme Esse-Analytics -destination
+'generic/platform=iOS Simulator'`, exit 0, sin warnings nuevos. Commiteado a
+`main` de `essenalytics-ios` (`d3af26f`), no pusheado todavía. Pendiente
+real: confirmar visualmente en el simulador/dispositivo que el chip
+efectivamente aparece para un usuario premium y no para uno free (el build
+solo prueba que compila, no el comportamiento en runtime).
+
+**Android: sin verificar** — Gradle no puede correr desde esta sesión de
+Claude Code (bug conocido, ver `../CLAUDE.md`). Cambio sigue sin commitear
+en `essenalytics-android` a propósito, a la espera de que el usuario lo
+compile en Android Studio.
+
+### Historial
+- 2026-08-16 — agente: causa raíz encontrada y corregida en los dos repos, sin build real.
+- 2026-08-16 — agente: iOS verificado con build real vía SSH a la Mac y commiteado a `main` (`d3af26f`). Android sigue sin commitear, a la espera del usuario.
+
+## BUG-2026-08-16-01 — TikTok publicado dos veces de verdad al reintentar desde iOS tras una interrupción
+
+- Estado: `investigando` — causa raíz confirmada leyendo el código (iOS +
+  central), diseño de corrección completo, sin implementar todavía.
+- Reportado: 2026-08-16
+- Plataformas: iOS (causa raíz confirmada), Android (mismo patrón
+  estructural, con mitigación parcial ya presente en su código — ver
+  diagnóstico), Central (idempotencia de `recordUploadEvent`/
+  `applyPlatformPublish` no alcanza a cubrir este caso)
+- Severidad: alta (publicación real duplicada en TikTok, no solo un
+  duplicado cosmético en Historial)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Al publicar un video a TikTok desde iOS, a veces aparece 2 veces en
+Historial con 2 `platformId` distintos — porque en realidad se publicaron
+**2 posts reales** en TikTok, no solo 2 filas de historial duplicadas.
+Reproducible (no confirmado en vivo todavía, ver "Verificación y
+pendiente") cuando la app pasa a background durante el polling de status
+posterior a la subida de bytes, y el usuario después usa "Reintentar
+pendientes"/"Reintentar fallidas".
+
+### Resultado esperado / resultado observado
+
+Esperado: un reintento tras una interrupción retoma la publicación en
+curso (o confirma que ya se publicó), sin generar una segunda publicación
+real. Observado: cada reintento vuelve a correr el flujo completo de
+`TikTokUploader.upload()` desde cero — nuevo `publish_id`, archivo
+resubido entero — sin verificar si el intento anterior ya llegó a
+comprometerse del lado de TikTok.
+
+### Investigación
+
+Causa raíz confirmada con citas archivo:línea contra el código real (iOS y
+central) en
+[`docs/tiktok-duplicate-publish-design-2026-08-16.md`](tiktok-duplicate-publish-design-2026-08-16.md),
+sección 1. Resumen:
+
+- `TikTokUploader.swift` (`upload()`, líneas 31-54): TikTok compromete la
+  publicación en cuanto `uploadChunks()` retorna OK (línea 41) — todo lo
+  que pasa después (`waitForCompletion`, líneas 168-204, hasta 5 min de
+  polling) es solo observación del resultado, no una segunda confirmación
+  necesaria para que el video salga público.
+- `PublishFormView.swift`: `markCurrentBatchInterrupted()` (líneas
+  700-712) marca como interrumpida cualquier plataforma en `.processing`
+  — estado que incluye ese polling de 5 min. `retryInterrupted`/
+  `retryFailed` (líneas 613-620, 660-667) llaman `publishAll()` de nuevo,
+  que instancia un `TikTokUploader` nuevo desde cero (línea 1153-1155),
+  sin ningún concepto de "ya había un `publish_id` en vuelo".
+  `PlatformPublishState` (líneas 38-47) no tiene ningún campo para
+  persistir ese `publish_id` provisorio.
+- `UploadCoordinator.recordSuccess` (`UploadCoordinator.swift:12-92`) solo
+  registra algo (SwiftData + central) con el resultado FINAL ya resuelto —
+  no hay ningún registro intermedio de "esto está en processing" que
+  sobreviva una interrupción.
+- Central: `applyPlatformPublish`/`recordUploadEvent`
+  (`backup.controller.ts:874-1142`) son idempotentes por
+  `{userId, platform, platformId}` — no ayuda acá porque cada reintento
+  genera un `platformId` real DISTINTO (son dos publicaciones de verdad,
+  no un bug de idempotencia de Mongo).
+- El token de TikTok vive en la central (confirmado:
+  `local-backend/tiktok-upload.controller.ts:17-26` lo pide vía
+  `GET /api/tiktok/token`; `backend/tiktok-upload.controller.ts:51-65`,
+  `getValidToken(userId)` no depende de nada del request HTTP en curso) —
+  la central ya puede, hoy, resolver el estado de un `publish_id` sin
+  ayuda del teléfono que publicó (de hecho ya lo hace parcialmente, ver
+  `resolvePendingTikTokIds` en `sync.controller.ts:452-500`, relacionado
+  con `BUG-2026-08-15-02` más abajo en este archivo).
+- Es un patrón específico de TikTok (no de YouTube/Instagram) por una
+  razón estructural de su API: separa "publicar" (implícito en
+  `init`+chunks) de "informar el resultado" (polling largo posterior). Ver
+  comparación completa en la sección 1.5 del documento de diseño.
+- Android (`TiktokUploader.kt:54-60`) ya tiene un comentario explícito
+  reconociendo este mismo riesgo, con una mitigación parcial
+  (`retryable = false` tras comprometer los bytes, para que WorkManager no
+  reintente solo) — pero un reintento MANUAL del usuario sigue teniendo el
+  mismo bug de fondo (resube desde cero, sin persistir el `publish_id`
+  entre intentos).
+
+### Corrección
+
+No implementada — este incidente documenta el diagnóstico y el diseño de
+corrección, no un fix. Plan completo (evitar la doble publicación real
+persistiendo el `publish_id` apenas terminan los chunks + cambiar
+"reintentar" por "resumir"; reconciliación desacoplada del dispositivo vía
+job periódico en la central; migración de `platformId` provisorio a final
+sin re-keying destructivo) en
+[`docs/tiktok-duplicate-publish-design-2026-08-16.md`](tiktok-duplicate-publish-design-2026-08-16.md),
+secciones 2-4, con plan de implementación por fases en la sección 6.
+
+### Verificación y pendiente
+
+- Causa raíz verificada por lectura de código, no por reproducción en vivo
+  todavía — pendiente confirmar con una publicación real interrumpida a
+  propósito (forzar background durante el polling de TikTok) una vez
+  exista el fix, o antes si se quiere confirmar el bug tal cual está hoy.
+- Todo el trabajo de la Fase 2 del plan (iOS) requiere build real en
+  Xcode para verificarse — no se puede compilar Swift desde este entorno
+  (Windows, ver `UIEssePanel/CLAUDE.md`); usar el acceso SSH a
+  `macgessemberg22` (memoria de sesión `ios_ssh_build`) o pedirle al
+  usuario que compile.
+- La Fase 3 (Android, mencionada solo como paridad, no diseñada en
+  detalle) tiene el mismo problema de build desde este entorno (Gradle/JVM
+  en Windows, ver `UIEssePanel/CLAUDE.md`).
+- La Fase 0/1 (central) sí se pueden implementar y probar end-to-end desde
+  este entorno (`backend/` compila y corre normal en Windows).
+
+### Historial
+- 2026-08-16 — Claude: diagnóstico + diseño completo, sin implementar
+  (tarea explícita de solo investigación/diseño).
+
 ## BUG-2026-08-15-08 — recordUploadEvent (local-backend) escribía en SQLite local pero nunca reenviaba a la central
 
 - Estado: `corregido`.

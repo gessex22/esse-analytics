@@ -241,3 +241,57 @@ futuro si se necesita.
   `backup.routes.ts`, pero vale la pena que lo confirme quien lo implemente).
 - Decidir si la mejora opcional de miniatura-en-upload-ad-hoc entra en el
   alcance inicial o se deja para después.
+
+> **Actualización 2026-08-16**: lo de arriba (picker nativo + subida ad-hoc)
+> era el plan para la Fase G. Sigue siendo válido como fallback, pero abajo
+> hay una alternativa evaluada que lo supera en experiencia — ver "Opción C".
+> Fases A-E (quién es la primaria, gate `requirePrimaryDevice`, banner
+> "Reclamar como principal") **ya están implementadas y pusheadas**
+> (`ab3051d`, `46bce3b`, ver `docs/HANDOFF-mongo-y-primaria-2026-08-14.md`)
+> — nada de esto las toca ni las reemplaza, son ortogonales. Esto es
+> específicamente sobre qué hace una secundaria una vez que el gate ya la
+> identificó como tal (Fase G, sin arrancar todavía).
+
+## Opción C (evaluada 2026-08-16): la secundaria como cliente LAN de la primaria, igual que mobile
+
+Propuesta del usuario en conversación: en vez de que la secundaria suba UN
+archivo suelto sin catálogo (Fase G tal como estaba diseñada), que **ni
+siquiera use su propio local-backend para la biblioteca compartida** — que
+apunte su frontend, vía LAN, directo al local-backend de la PC primaria, y
+listo. Exactamente el patrón que `essenalytics-ios` ya construyó y probó
+para su modo "PC local" (`ServerSettingsView.swift`/`PCLocalPublishView.swift`,
+agregado 2026-08-15) — reusar un contrato ya validado en vez de inventar uno
+nuevo y más pobre.
+
+### Por qué es mejor que la subida ad-hoc para Fase G
+
+| | Subida ad-hoc (plan original de Fase G) | Opción C — cliente LAN |
+|---|---|---|
+| Qué ve la secundaria | Nada — solo un picker de archivo suelto del SO | El catálogo real y completo de la primaria (Videos, Subir, con reproductor y todo — desktop ya tiene UI rica, a diferencia de la versión reducida que hubo que construir para mobile) |
+| Miniatura/transcripción | No hay (archivo no persiste en catálogo trackeado) | Sin problema — los bytes siguen viviendo solo en la primaria, que es quien ya genera todo eso |
+| Trabajo nuevo del lado servidor | Ninguno (reusa los 3 uploaders vía `fileId` efímero) | Ninguno — el local-backend de la primaria ya expone `GET /api/videos`, thumbnail, stream, los 3 endpoints de upload; es el MISMO contrato que ya consume `LocalBackendUploadAPI.swift` en iOS |
+| Trabajo nuevo del lado cliente | Nuevo endpoint + flujo de picker+upload temporal | `API_BASE` (`frontend/src/config.ts:12`) deja de ser fijo a `window.location.origin` — necesita un override persistido, igual que `CentralAPI.customServerURLString`/`ServerPresetStore` en iOS. Más una pantalla de selección de servidor en Electron (puede reusar el descubrimiento Bonjour que `electron/src/main.ts` YA anuncia — es el mismo servicio `_esseanalytics._tcp` que `LocalPCDiscovery.swift` ya consume del lado iOS, cero trabajo nuevo de descubrimiento) |
+| Login antes de sesión | No aplica (la secundaria ya tiene su propia sesión) | Mismo problema que iOS ya resolvió (loguearse contra un servidor elegido, no el de siempre) — reusar el mismo patrón, no inventarlo |
+
+### Qué falta para validar esto de verdad
+
+1. Confirmar que las rutas de `local-backend` que consumiría la secundaria
+   (`GET /api/videos`, stream, thumbnail, los 3 `/upload`) no asumen en
+   ningún lado "quien pega este request es la misma máquina" — deberían
+   estar bien (ya las consume el celular por LAN sin problema), pero vale
+   la pena que quien implemente lo verifique explícitamente.
+2. Decidir qué pasa con el local-backend BUNDLADO de la secundaria en este
+   modo — sigue corriendo igual (Electron siempre lo levanta), simplemente
+   el frontend no le habla a él para la biblioteca compartida. Confirmar
+   que no hay otro código que asuma que `API_BASE == mi propio backend`
+   (ver `frontend/src/services/api.ts`, además de las URLs de
+   thumbnail/stream/tus ya listadas en ese archivo).
+3. Diseñar la pantalla de selección de servidor en Electron/Ajustes (mirror
+   de `ServerSettingsView.swift`) — no existe hoy, el desktop nunca tuvo
+   necesidad de esto porque siempre hablaba consigo mismo.
+
+**Recomendación**: si se retoma Fase G, evaluar Opción C como reemplazo
+directo del plan de "subida ad-hoc", no como alternativa a discutir en
+paralelo — da mejor experiencia con una cantidad de trabajo nuevo
+comparable, reusando infraestructura (Bonjour, contrato HTTP) ya construida
+y probada en producción por mobile.
