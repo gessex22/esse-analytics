@@ -732,14 +732,22 @@ distintas para el mismo problema:
 | Servicio Bonjour/mDNS | `electron/src/main.ts:60-66`, ya anuncia `_esseanalytics._tcp` | `LocalPCDiscovery`, consume el mismo tipo | `LANPCDiscoveryStore` (sección 4.2), mismo tipo |
 | JWT compartido central↔local-backend | Mismo mecanismo (`JWT_SECRET`), confirmado en `auth.middleware.ts` de ambos backends | Confirmado en este doc, sección 1 | Sin cambios — mismo mecanismo |
 
-El único punto que vale la pena resolver **antes** de implementar cualquiera
-de los dos (no solo anotarlo): `ServerConnectionPanel.tsx` valida contra
-`GET /api/local/health` con un campo `data.local === true`, mientras que iOS
-valida contra `GET api/health` comparando `environment`. Si son literalmente
-el mismo endpoint con dos contratos de respuesta distintos, o dos endpoints
-distintos que casualmente hacen lo mismo, no se investigó en esta pasada —
-queda como pregunta abierta para quien implemente cualquiera de los dos
-lados, con una nota explícita para no asumir que ya están unificados.
+**Resuelto 2026-08-16 (Fase 5)**: son dos endpoints REALMENTE distintos, no
+un mismatch accidental. `GET /api/local/health` (`local-admin.routes.ts:327`)
+es el auto-chequeo del frontend contra **su propio** backend —
+`useBackendType.ts` lo usa para el banner de Laboratorio y
+`pendingHistoryEvents` (BUG-2026-08-15-07), datos operativos internos que no
+tiene sentido exponerle a un cliente ajeno probando por LAN. `GET /api/health`
+(`server.ts:53`) es el genérico de identidad+entorno (`service`,
+`environment`), sin datos internos — el contrato correcto para "¿sos vos,
+EsseAnalytics?" desde afuera, que es justo lo que `ServerHealthCheck.swift`
+ya usaba en iOS. `ServerConnectionPanel.tsx` (Opción C) pasó a usar
+`/api/health` también (`data.service === 'esse-local-backend'` en vez de
+`data.local === true`), alineado con iOS — commit `8c3b39d` en
+`feat/electron-lan-client-secondary` (rama todavía sin mergear, ver estado
+general de esa rama). `/api/local/health` queda reservado exclusivamente
+para el auto-chequeo de cada frontend contra sí mismo, nunca para verificar
+una PC ajena.
 
 ---
 
@@ -837,8 +845,13 @@ lados, con una nota explícita para no asumir que ya están unificados.
 
 ### Fase 5 (opcional) — Unificar convenciones con Electron (sección 8)
 
-- Resolver la pregunta abierta de `/api/local/health` vs `api/health` (¿son
-  el mismo contrato, deberían serlo?).
-- Si se retoma la Opción C de Electron, considerar copiar el nombre
-  "Biblioteca LAN" para su UI también, en vez de dejarlo sin nombre
-  definido — coherencia de producto entre desktop-secundaria y mobile.
+- ✅ **Hecho 2026-08-16**: resuelta la pregunta de `/api/local/health` vs
+  `api/health` — son endpoints distintos a propósito, no un mismatch (ver
+  sección 8). `ServerConnectionPanel.tsx` alineado a `/api/health`, mismo
+  contrato que `ServerHealthCheck.swift` en iOS. Verificado con lint+build
+  del frontend, limpios. Commit `8c3b39d` en
+  `feat/electron-lan-client-secondary` (rama sin mergear todavía).
+- ⬜ Pendiente, no hecho en esta pasada: si se retoma la Opción C de
+  Electron, copiar el nombre "Biblioteca LAN" para su UI también, en vez de
+  dejarlo sin nombre definido — coherencia de producto entre
+  desktop-secundaria y mobile.
