@@ -77,6 +77,16 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
     const onlyInCentral = centralFiles
       .filter(f => !backupNames.has(f.file_name))
       .map(f => ({
+        // FIX 2026-08-16: faltaban _id y createdAt acá -- este objeto nunca
+        // pasaba por BackupFileModel (de ahí "onlyInCentral"), así que no
+        // tenía ninguno de los dos. El desktop (pullFromCloud) matchea por
+        // file_name y nunca los necesitó, pero BackupFileDTO.swift en iOS
+        // los exige NO opcionales -- con cualquier archivo así en la lista,
+        // el decode de TODO el array fallaba ("no se pudo leer la respuesta
+        // del servidor"), igual que el bug de 'facebook' (BUG-2026-08-16-02)
+        // pero por un campo faltante en vez de un valor de enum inesperado.
+        _id:                 f._id,
+        createdAt:           f.fecha_creacion ?? (f as any).updatedAt ?? new Date(),
         file_name:           f.file_name,
         platforms:           f.platforms           ?? [],
         platforms_discarded: f.platforms_discarded ?? [],
