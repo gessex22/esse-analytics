@@ -34,11 +34,94 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-18-01 — Estadísticas "Comparadas" ordena por fecha de creación del archivo, no por cuándo se completó el match de las 3 plataformas
+
+- Estado: `corregido`; pendiente deploy de la central + verificación visual en los 3 clientes.
+- Reportado: 2026-08-18
+- Plataformas: Central (afecta a los 3 clientes que consultan `/api/sync/group-stats` sin `platform` — usuario confirma que en mobile no se nota igual, pero el endpoint es el mismo para los 3)
+- Severidad: media (orden equivocado en una lista, no pérdida de datos)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+En Estadísticas, pestaña "Comparadas" (las que exigen YouTube+Instagram+TikTok
+resueltos), el usuario esperaba ver primero el video que más recientemente
+terminó de resolver sus 3 plataformas — pero el orden real no corresponde a eso.
+
+### Investigación
+
+`getGroupStats` (`backend/src/controllers/sync.controller.ts:555`) tiene dos
+caminos según si viene `?platform=`:
+
+- **Con `platform`** (pestañas individuales YouTube/Instagram/TikTok): arranca
+  desde `PlatformVideoModel` y ordena por `publishedAt` real de esa plataforma
+  (línea 585, `.sort({ publishedAt: -1 })`) — correcto.
+- **Sin `platform`** (pestaña "Comparadas", `filter === 'all'` en
+  `StatsView.tsx:311`, manda `getGroupStats(10, undefined)`): arranca desde
+  `FileModel` y ordena por **`fecha_creacion`** (línea 626,
+  `.sort({ fecha_creacion: -1 })`).
+
+`fecha_creacion` **no es una fecha de publicación de nada** — es el `mtime`
+del archivo en disco, capturado una sola vez por el watcher cuando lo detecta
+por primera vez (`local-backend/src/watcher.ts:38/112`,
+`fs.statSync(absPath).mtime`). No tiene ninguna relación con cuándo se
+resolvió el link de YouTube, Instagram o TikTok para ese archivo.
+
+Consecuencia real: un video importado/editado en disco hace mucho pero cuyo
+tercer link (ej. TikTok) se resolvió recién ahora queda "abajo" en la lista
+(su `fecha_creacion` es vieja), mientras un video con `fecha_creacion` reciente
+pero publicado/matcheado hace tiempo aparece "arriba". El campo que la
+respuesta expone como `fecha_creacion` en cada ítem (línea 714-716) también
+hereda el mismo problema en esta rama — no es solo el orden de la lista, el
+dato mostrado por ítem tampoco es una fecha de publicación real cuando no hay
+`platform` en el query.
+
+### Corrección
+
+`backend/src/controllers/sync.controller.ts::getGroupStats`, rama sin
+`platform` ("Comparadas"):
+
+- Helper nuevo `latestPublishedAt(pvs)` — el `publishedAt` más reciente entre
+  los `PlatformVideoModel` linkeados a un archivo (o `null` si ninguno tiene
+  fecha).
+- Justo después de construir `byFile`, `files` se reordena en JS con ese
+  valor (`latestPublishedAt` de cada archivo, descendente) — reemplaza al
+  `.sort({fecha_creacion:-1})` de Mongo, que queda solo como orden de arranque
+  sin efecto real (se comenta explícitamente por qué se deja).
+- El campo `fecha_creacion` de cada item (antes `f.fecha_creacion` siempre en
+  esta rama) pasa a usar `latestPublishedAt(pvs) ?? f.fecha_creacion` —
+  mismo criterio, con fallback a la fecha del archivo solo si ningún link
+  tiene `publishedAt` real (no debería pasar en la práctica, ya que `pvs`
+  solo llega hasta acá si las 3 plataformas están completas).
+- La rama CON `platform` (pestañas individuales) no se tocó — ya ordenaba
+  correcto por `publishedAt`.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline que ya
+  documentan otros incidentes de esta sesión (BUG-2026-08-15-06, etc.),
+  ninguno nuevo y ninguno en el archivo tocado cerca de este cambio.
+- **Pendiente crítico**: como con cualquier fix de `backend/`, el código
+  nuevo no corre en el proceso real detrás de `api.esse-analytics.com` hasta
+  que no se reinicie con este cambio (ver el mismo pendiente en
+  BUG-2026-08-15-06).
+- Pendiente: confirmar visualmente en Estadísticas ("Comparadas") que el
+  primer ítem es de verdad el que más recientemente completó las 3
+  plataformas, en los 3 clientes.
+
+### Historial
+- 2026-08-18 — usuario + agente: causa raíz encontrada leyendo `getGroupStats`
+  y `watcher.ts` (confirmado que `fecha_creacion` = mtime del archivo, no
+  fecha de publicación), documentada.
+- 2026-08-18 — agente: corregido (reorder por `latestPublishedAt` + campo
+  `fecha_creacion` de la respuesta ajustado), `tsc` limpio contra el mismo
+  baseline. Deploy de la central pendiente.
+
 ## BUG-2026-08-16-03 — Modo "PC local" (LAN) en iOS: cola con nombre+flechas pero sin reproductor/miniatura
 
-- Estado: `abierto` — causa raíz confirmada leyendo el código, sin corregir todavía.
+- Estado: `corregido` (2026-08-18) — iOS verificado por build real vía SSH (exit 0); Android sin verificar (sin camino de build, ver `../CLAUDE.md`).
 - Reportado: 2026-08-16
-- Plataformas: iOS
+- Plataformas: iOS, Android
 - Severidad: baja
 - Reportado por: usuario (desde "batiphone", ver memoria de sesión sobre dispositivos)
 
@@ -66,21 +149,57 @@ en el resto de la app.
 
 ### Corrección
 
-Sin implementar. Camino sugerido: agregar miniatura (AsyncImage contra el
-endpoint de thumbnail con token) + botón "Ver" que abra un `AVPlayer`/
-`LocalVideoPlayerView`-equivalente apuntando al stream URL con token, mismo
-patrón que ya existe en `LibraryView.swift`/`PublishFormView.swift`.
+Sin implementar. Plan completo (iOS + Android, incluye además el gap
+hermano de abajo) en `UIEssePanel/PLAN_LAN_PICKER_Y_REPRODUCTOR-2026-08-18.md`
+— reproductor vía `PCLocalVideoPlayerView`/`LocalVideoPlayerView` en
+`fullScreenCover`, mismo patrón que `LibraryView.swift`/`PublishFormView.swift`.
 
 ### Verificación y pendiente
 
 No implementado. No compilable desde este entorno (ver `../CLAUDE.md`).
 
+**Gap hermano confirmado 2026-08-18** (mismo área, mismo plan de arriba): el
+picker "Elegir video" del formulario de Subir (`VideoPickerView` en
+`UploadView.swift`) tampoco tiene sección "Biblioteca LAN" — solo "Local" y
+"Nube". Verificado leyendo el archivo completo, no hay ninguna referencia a
+LAN/`canSeeLANLibrary` ahí. Un usuario en modo LAN no puede cambiar a un
+video de la PC desde "Cambiar video". Cubierto por el punto 1 del plan.
+
 ### Historial
 - 2026-08-16 — agente: causa raíz encontrada durante conversación con el usuario, documentada sin corregir (a la espera de prioridad).
+- 2026-08-18 — usuario + agente: confirmado que sigue sin corregir (no se
+  puede dar por resuelto junto con BUG-2026-08-16-02). Encontrado el gap
+  hermano del picker de "Cambiar video" sin sección LAN. Armado
+  `UIEssePanel/PLAN_LAN_PICKER_Y_REPRODUCTOR-2026-08-18.md` con el plan
+  completo (iOS + Android) para los dos gaps.
+- 2026-08-18 — agente: implementado el plan completo en los dos repos.
+  **iOS**: `LANLibraryAccess.swift` (nuevo, extrae la política LAN de
+  `LibraryView.swift` sin cambiar su comportamiento), `VideoPickerView`
+  (`UploadView.swift`) gana sección "Biblioteca LAN", `VideoDetailView.swift`
+  y `PCLocalVideoDetailView` (`PCLocalPublishView.swift`) ganan botón de
+  reproducir en la miniatura. Build real vía SSH a `macgessemberg22`: exit 0,
+  0 errores (incluyó registrar `LANLibraryAccess.swift` a mano en
+  `project.pbxproj`, mismo patrón que `RefreshErrorBanner.swift` en
+  2026-08-12). **Android**: `LanLibraryRepository.kt` (nuevo, en
+  `core:network`, `@Singleton` como `LanPcDiscoveryStore`) extrae
+  discovery+fetch de `LibraryViewModel.kt` sin cambiar su comportamiento;
+  `UploadViewModel.kt` lo consume para exponer `canSeeLanLibrary`/
+  `lanVideos`/`lanBaseUrl`; `UploadScreen.kt` gana bloque horizontal
+  "Biblioteca LAN" (antes de `FileList`) que emite `onSelectLan` en vez de
+  seleccionar un `VideoFile`; `EsseAnalyticsNavHost.kt` (único lugar que ve
+  `feature:upload` y `feature:library` a la vez) arma el
+  `LibraryListItem.LanVideo` y abre `LocalPcPublishSheet` — mismo sheet que
+  ya usa Biblioteca, sin duplicarlo. `LocalPcPublishSheet.kt` gana miniatura
+  tocable que abre `RemoteVideoPlayerDialog` (reuso directo, ya genérico).
+  **Sin verificar por Gradle real** (bug conocido de Claude Code en Windows,
+  ver `../CLAUDE.md`) — revisado línea por línea contra los tipos/DTOs reales
+  y los patrones ya existentes del repo (mismo criterio que el resto de
+  cambios Android de esta sesión). Pendiente: que el usuario corra
+  `./gradlew assembleDebug` y confirme.
 
 ## BUG-2026-08-16-02 — Chip "Catálogo PC" (3ra fuente: local/nube/LAN) nunca aparece en mobile, en ningún tier
 
-- Estado: `verificado` en iOS (build real vía SSH a la Mac, `xcodebuild` exit 0, commiteado y en `main` de `essenalytics-ios` — `d3af26f`). `corregido` en Android, pendiente que el usuario lo compile en Android Studio (ver limitaciones de entorno en `../CLAUDE.md`) y lo commitee — sigue sin commitear ahí a propósito.
+- Estado: `verificado` — pero **superado por una feature posterior, no solo por el fix puntual descrito abajo**. Ver nota 2026-08-18 al final del Historial antes de asumir que `canSeeBackupCatalog` sigue siendo el mecanismo real.
 - Reportado: 2026-08-16
 - Plataformas: iOS | Android
 - Severidad: media
@@ -151,6 +270,18 @@ compile en Android Studio.
 ### Historial
 - 2026-08-16 — agente: causa raíz encontrada y corregida en los dos repos, sin build real.
 - 2026-08-16 — agente: iOS verificado con build real vía SSH a la Mac y commiteado a `main` (`d3af26f`). Android sigue sin commitear, a la espera del usuario.
+- 2026-08-18 — agente: **este fix quedó superado, no revertido.** El chip que
+  esta entrada arregla ("Catálogo PC" vía `canSeeBackupCatalog = isPremium`)
+  fue reemplazado por la feature "Biblioteca LAN" completa
+  (`docs/lan-library-auto-switch-design-2026-08-16.md`), con ~10 commits
+  posteriores en cada repo. Confirmado en el código actual: `LibraryView.swift`
+  (iOS) ya no tiene `canSeeBackupCatalog` en ningún lado — el gate real hoy es
+  `canSeeLANLibrary`. Android tiene el mismo reemplazo, con comentario propio
+  en el código (`LibraryViewModel.kt`: *"FIX 2026-08-17... reemplaza a
+  canSeeBackupCatalog"*). El síntoma original (chip que nunca aparecía) sigue
+  resuelto — por el mecanismo nuevo, no por el descrito arriba. Se deja esta
+  entrada como registro histórico del hallazgo original; no editar
+  "Corrección" para no perder el rastro de qué se investigó ese día.
 
 ## BUG-2026-08-16-01 — TikTok publicado dos veces de verdad al reintentar desde iOS tras una interrupción
 

@@ -618,6 +618,9 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         .map(id => filesById.get(id))
         .filter((f): f is NonNullable<typeof f> => !!f);
     } else {
+      // El .sort({fecha_creacion: -1}) de acá es solo el orden de arranque --
+      // se reemplaza más abajo (ver BUG-2026-08-18-01) por el orden real una
+      // vez que se sabe el publishedAt de las 3 plataformas linkeadas.
       files = await FileModel.find({
         userId,
         platforms: { $all: ['youtube', 'instagram', 'tiktok'] },
@@ -642,6 +645,29 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
     for (const pv of linked) {
       const key = String(pv.linkedFileId);
       byFile.set(key, [...(byFile.get(key) ?? []), pv]);
+    }
+
+    // BUG-2026-08-18-01: "cuándo terminó de completarse el match" es el
+    // publishedAt más reciente entre las 3 plataformas linkeadas -- no
+    // f.fecha_creacion (mtime del archivo en disco, ver watcher.ts, sin
+    // relación con publicación). Compartido por el reorder de `files` de
+    // abajo y por el campo `fecha_creacion` de cada item más adelante.
+    const latestPublishedAt = (pvs: typeof linked): Date | null =>
+      pvs.reduce<Date | null>((latest, pv) => {
+        if (!pv.publishedAt) return latest;
+        const d = new Date(pv.publishedAt);
+        return !latest || d > latest ? d : latest;
+      }, null);
+
+    // Solo aplica a la pestaña "Comparadas" (sin `platform`) -- la rama CON
+    // `platform` ya ordena por publishedAt real más arriba, no hay nada que
+    // corregir ahí.
+    if (!platform) {
+      files = [...files].sort((a, b) => {
+        const aDate = latestPublishedAt(byFile.get(String(a._id)) ?? []);
+        const bDate = latestPublishedAt(byFile.get(String(b._id)) ?? []);
+        return (bDate?.getTime() ?? 0) - (aDate?.getTime() ?? 0);
+      });
     }
 
     // Biblioteca remota es otra colección (storage en la nube), sin id en común
@@ -713,7 +739,10 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
         thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
         fecha_creacion: platform
           ? pvs.filter(pv => pv.platform === platform).sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())[0]?.publishedAt ?? f.fecha_creacion
-          : f.fecha_creacion,
+          // BUG-2026-08-18-01: antes era f.fecha_creacion (mtime del archivo
+          // en disco) -- el campo que el frontend/mobile muestra para esta
+          // pestaña pasa a ser la fecha real de match, igual que el orden.
+          : latestPublishedAt(pvs) ?? f.fecha_creacion,
         platforms,
       });
     }
