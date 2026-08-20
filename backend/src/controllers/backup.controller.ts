@@ -14,6 +14,7 @@ import { recordAuditEvent } from '../services/audit.service';
 import { getVideoPublishedAt as getYoutubePublishedAt } from '../services/youtube.service';
 import { getMediaPublishedAt as getInstagramPublishedAt } from '../services/instagram.service';
 import { getVideoPublishedAt as getTiktokPublishedAt } from '../services/tiktok.service';
+import { upsertConfirmed, deriveStatesFromToggle } from '../utils/platform-state.util';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -43,21 +44,30 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       // wipe de logout + pull no recupera esos videos (bug real, ver incidente de
       // julio 2026 / fix-local-files-platforms.js): el pull queda tan incompleto
       // como el propio push, aunque en la nube exista el dato correcto en otro lado.
-      FileModel.find({ userId }).select('file_name platforms platforms_discarded content_status scheduled_date duracion_segundos resolucion formato fecha_creacion updatedAt').lean(),
+      FileModel.find({ userId }).select('file_name platforms platforms_discarded platform_states content_status scheduled_date duracion_segundos resolucion formato fecha_creacion updatedAt').lean(),
     ]);
 
     const centralByName = new Map(centralFiles.map(f => [f.file_name, f]));
     const backupNames = new Set(allFiles.map(f => f.file_name));
     const enriched = allFiles.map(f => {
       const current = (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
-      if (current >= 3) return f;
       const central = centralByName.get(f.file_name);
-      if (!central) return f;
+      // BUG-2026-08-15-03: platform_states vive solo en FileModel (central) --
+      // BackupFileModel (de donde sale `f`) nunca tuvo el concepto de
+      // confirmed/badge_only, así que siempre hay que traerlo de acá cuando
+      // exista un match central, sin importar si platforms/platforms_discarded
+      // ya coincidían (esa comparación de abajo es para decidir si hace falta
+      // pisar los arrays planos, no para esto).
+      const platform_states = central?.platform_states ?? (f as any).platform_states;
+      if (current >= 3) return { ...f, platform_states };
+      if (!central) return { ...f, platform_states };
       const centralPlatforms = [...(central.platforms ?? [])].sort().join('|');
       const currentPlatforms = [...(f.platforms ?? [])].sort().join('|');
       const centralDiscarded = [...(central.platforms_discarded ?? [])].sort().join('|');
       const currentDiscarded = [...(f.platforms_discarded ?? [])].sort().join('|');
-      if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) return f;
+      if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) {
+        return { ...f, platform_states };
+      }
       // El pull del cliente compara local_updated_at antes de aplicar el
       // badge. Si devolvemos la marca vieja de BackupFileModel, Electron
       // puede recibir el enlace de PlatformVideo pero descartar el badge.
@@ -65,6 +75,7 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         ...f,
         platforms: central.platforms ?? f.platforms,
         platforms_discarded: central.platforms_discarded ?? f.platforms_discarded,
+        platform_states,
         local_updated_at: (central as any).updatedAt ?? f.local_updated_at,
       };
     });
@@ -90,6 +101,7 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         file_name:           f.file_name,
         platforms:           f.platforms           ?? [],
         platforms_discarded: f.platforms_discarded ?? [],
+        platform_states:     f.platform_states      ?? [],
         content_status:      f.content_status      ?? 'borrador',
         scheduled_date:      f.scheduled_date       ?? null,
         duracion_segundos:   f.duracion_segundos    ?? null,
@@ -859,11 +871,36 @@ export async function updateFilePlatforms(req: AuthRequest, res: Response): Prom
       res.status(404).json({ message: 'No se pudo resolver el archivo.' });
       return;
     }
+    // BUG-2026-08-15-03: este endpoint es un toggle "estado final completo",
+    // sin link real -- todo lo que entra por acá es como mucho 'badge_only'.
+    // deriveStatesFromToggle nunca degrada algo que ya estaba 'confirmed'
+    // (publicado de verdad vía applyPlatformPublish).
+    const newStates = deriveStatesFromToggle(file.platform_states ?? [], platforms, platformsDiscarded);
     await FileModel.updateOne(
       { _id: file._id },
-      { $set: { platforms, platforms_discarded: platformsDiscarded } },
+      { $set: { platforms, platforms_discarded: platformsDiscarded, platform_states: newStates } },
     );
     res.json({ ok: true, fileId: file._id });
+
+    // Simétrico al fix de BUG-2026-08-15-03 que ya propaga descartes hechos en
+    // Nube hacia FileModel (updateRemoteLibraryVideoPlatforms, commit
+    // 31737c9) -- hasta acá, un descarte hecho DESDE este endpoint (mobile,
+    // "Editar links" de escritorio) nunca viajaba en la otra dirección, así
+    // que un video con badges divergentes entre Nube y el catálogo central
+    // podía volver a divergir apenas alguien tocara el lado central. Mismo
+    // criterio conservador: nunca pisa una plataforma que Nube ya tiene como
+    // badge/confirmada real.
+    const beforeDiscarded: string[] = file.platforms_discarded ?? [];
+    const newlyDiscarded: string[] = platformsDiscarded.filter(
+      (p: string) => !beforeDiscarded.includes(p) && ['youtube', 'instagram', 'tiktok'].includes(p),
+    );
+    if (newlyDiscarded.length > 0 && (fileName || contentId)) {
+      const remoteQuery = contentId ? { userId, contentId } : { userId, fileName };
+      RemoteLibraryVideoModel.updateOne(
+        { ...remoteQuery, platforms: { $nin: newlyDiscarded } } as any,
+        { $addToSet: { platformsDiscarded: { $each: newlyDiscarded } } },
+      ).catch((err: any) => console.warn('[updateFilePlatforms] propagar descarte a Nube falló:', err.message));
+    }
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
@@ -964,10 +1001,18 @@ export async function applyPlatformPublish(userId: string, data: {
     const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId: data.remoteLibraryVideoId });
     if (file) {
       linkedFileId = file._id;
-      if (!file.platforms.includes(platform)) {
+      // BUG-2026-08-15-03: acá SIEMPRE hay un platformId real (se corta arriba
+      // si no lo hay), así que esto es 'confirmed' -- incluso si `platform` ya
+      // estaba en `file.platforms` como marca manual ('badge_only', ver
+      // updateFilePlatforms), este publish real la promueve. Antes esa
+      // promoción no pasaba nunca porque el `if` de abajo solo miraba el
+      // array plano, no el estado real detrás.
+      const currentState = (file.platform_states ?? []).find((s) => s.platform === platform)?.state;
+      if (!file.platforms.includes(platform) || currentState !== 'confirmed') {
+        const newStates = upsertConfirmed(file.platform_states ?? [], platform as any);
         await FileModel.updateOne(
           { _id: file._id },
-          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform } },
+          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform }, $set: { platform_states: newStates } },
         );
       }
       publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
@@ -1051,14 +1096,22 @@ export async function applyPlatformPublish(userId: string, data: {
     try {
       const remoteQuery = contentId ? { userId, contentId } : { userId, fileName };
       const remote = await RemoteLibraryVideoModel.findOne(remoteQuery as any);
-      if (remote && !remote.platforms.includes(platform as any)) {
+      // Mismo criterio de promoción que arriba para FileModel: un badge_only
+      // puesto antes en Nube (marca manual) se promueve a 'confirmed' apenas
+      // hay un platformId real, no solo cuando la plataforma era nueva.
+      const remoteState = (remote?.platformStates ?? []).find((s) => s.platform === platform)?.state;
+      if (remote && (!remote.platforms.includes(platform as any) || remoteState !== 'confirmed')) {
         const keptLinks = (remote.platformLinks ?? []).filter((l) => l.platform !== platform);
+        const newRemoteStates = upsertConfirmed(remote.platformStates ?? [], platform as any);
         await RemoteLibraryVideoModel.updateOne(
           { _id: remote._id },
           {
             $addToSet: { platforms: platform },
             $pull: { platformsDiscarded: platform },
-            $set: { platformLinks: [...keptLinks, { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate }] },
+            $set: {
+              platformLinks: [...keptLinks, { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate }],
+              platformStates: newRemoteStates,
+            },
           },
         );
       }
