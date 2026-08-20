@@ -12,6 +12,10 @@ import { API_BASE } from "../config";
 
 const ALL_SECTIONS = [
   { id: "colores",    label: "Colores",        icon: Palette,     roles: ["todopoderoso", "editor"], localOnly: false, description: "Elegí la paleta de color de la app" },
+  // localOnly queda en false a propósito: "Flujo de publicación" (simple/
+  // avanzado) sí aplica en remoto -- afecta a "Subir", que el owner puede usar
+  // remotamente (ver App.tsx). Solo la carpeta/escaneo de este mismo panel se
+  // oculta puertas adentro (ver LibraryPanel.tsx, BUG reportado 2026-08-20).
   { id: "biblioteca", label: "Biblioteca",      icon: FolderOpen,  roles: ["todopoderoso"],           localOnly: false, description: "Flujo de publicación y carpeta de videos" },
   { id: "cuentas",    label: "Cuentas",         icon: Link2,       roles: ["todopoderoso"],           localOnly: true,  description: "Cuentas conectadas de YouTube, Instagram y TikTok" },
   { id: "seguridad",  label: "Seguridad",       icon: ShieldCheck, roles: ["todopoderoso"],           localOnly: false, description: "Seguridad de la cuenta" },

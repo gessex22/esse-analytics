@@ -3,10 +3,46 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
+import { UserModel } from '../models/user.model';
 import { AuthRequest } from '../middleware/auth.middleware';
 
 // Extensiones de video que el escáner reconoce
 const VIDEO_EXTS = new Set(['.mp4', '.mov', '.m4v', '.webm']);
+
+// BUG reportado 2026-08-20: este controller escanea el disco de la PC donde
+// corre la central -- funciona porque hoy corre co-localizada en la misma
+// máquina que local-backend (ver App.tsx, comentario de "Subir"), pero
+// escribe en un catálogo PARALELO en Mongo (FileModel), separado del real que
+// mantiene local-backend en SQLite. El frontend ya oculta este panel en
+// remoto (LibraryPanel.tsx), pero eso es defensa de UI nada más -- estas
+// rutas seguían aceptando cualquier request de un usuario 'todopoderoso' sin
+// verificar que viniera de la PC dueña del catálogo.
+//
+// A diferencia de bulkUpsertBackupFiles (backup.controller.ts), que trata
+// "sin deviceId" como cliente legítimo sin migrar (compat con instalaciones
+// viejas), acá NO hay ningún caller legítimo conocido que dependa de esa
+// lenidad -- local-backend tiene su propia implementación en SQLite y nunca
+// llama a estas rutas. Por eso acá se falla CERRADO: sin deviceId, o con uno
+// que no matchea primaryDeviceId, se rechaza.
+async function assertPrimaryDevice(req: AuthRequest, res: Response): Promise<boolean> {
+  const deviceId = (req.body?.deviceId ?? req.query.deviceId) as string | undefined;
+  if (!deviceId || deviceId.length < 16) {
+    res.status(403).json({
+      error: 'PRIMARY_DEVICE_REQUIRED',
+      message: 'Esta acción solo se puede hacer desde la PC principal de la cuenta.',
+    });
+    return false;
+  }
+  const user = await UserModel.findById(req.user!.id).select('primaryDeviceId').lean();
+  if (user?.primaryDeviceId && user.primaryDeviceId !== deviceId) {
+    res.status(403).json({
+      error: 'PRIMARY_DEVICE_REQUIRED',
+      message: 'Esta PC no es la principal de la cuenta.',
+    });
+    return false;
+  }
+  return true;
+}
 
 // ── Config de carpeta (persistida en app_config) ──────────────────────────────
 async function getConfiguredDir(): Promise<string | null> {
@@ -50,7 +86,8 @@ export const getScanConfig = async (_req: Request, res: Response) => {
 };
 
 // ── POST /api/videos/scan/config ──────────────────────────────────────────────
-export const updateScanConfig = async (req: Request, res: Response) => {
+export const updateScanConfig = async (req: AuthRequest, res: Response) => {
+  if (!(await assertPrimaryDevice(req, res))) return;
   const { folder } = req.body as { folder?: string };
   if (!folder || typeof folder !== 'string') {
     return res.status(400).json({ error: 'Debes indicar la ruta de la carpeta' });
@@ -68,7 +105,8 @@ export const updateScanConfig = async (req: Request, res: Response) => {
 // ── POST /api/videos/scan ─────────────────────────────────────────────────────
 // Escanea la carpeta configurada, registra los videos nuevos en `files` y marca
 // como ELIMINADO_DISCO los que ya no están en disco.
-export const scanFolder = async (req: Request, res: Response) => {
+export const scanFolder = async (req: AuthRequest, res: Response) => {
+  if (!(await assertPrimaryDevice(req, res))) return;
   const folder = (req.body?.folder as string | undefined) || await getConfiguredDir();
   if (!folder) {
     return res.status(400).json({ error: 'No hay carpeta configurada. Configura la ruta primero.' });

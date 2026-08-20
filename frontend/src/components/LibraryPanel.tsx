@@ -46,10 +46,15 @@ export function LibraryPanel() {
   const [savingWorkflow, setSavingWorkflow]   = useState(false);
 
   useEffect(() => {
-    fetch(`${API}/api/videos/scan/config`, { headers: authHeaders() })
-      .then(r => r.json())
-      .then(d => { setSavedDir(d.folder ?? null); setDirExists(!!d.exists); if (d.folder) setFolder(d.folder); })
-      .catch(() => {});
+    // No tiene sentido pedirlo si el bloque de carpeta está oculto (ver
+    // showFolderConfig más abajo) -- evita golpear el catálogo paralelo de la
+    // central sin necesidad.
+    if (!isRemote()) {
+      fetch(`${API}/api/videos/scan/config`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(d => { setSavedDir(d.folder ?? null); setDirExists(!!d.exists); if (d.folder) setFolder(d.folder); })
+        .catch(() => {});
+    }
     setupService.getWorkflowMode().then(d => setWorkflowModeState(d.workflowMode)).catch(() => {});
   }, []);
 
@@ -141,6 +146,14 @@ export function LibraryPanel() {
   };
 
   const showWipeZone = !isRemote() && user?.role === "todopoderoso";
+  // BUG reportado 2026-08-20: la central tiene su propio scan.controller.ts
+  // (mismo motivo que "Subir" en remoto -- corre co-localizada en tu PC, ver
+  // App.tsx), pero escribe un catálogo PARALELO en Mongo (FileModel), separado
+  // del real que mantiene local-backend en SQLite. Mostrar "Carpeta de videos"
+  // en remoto invita a reconfigurar/rescanear contra ESE catálogo paralelo por
+  // accidente, sin ningún beneficio real -- se oculta acá, no toda la sección
+  // (que también incluye "Flujo de publicación", que sí aplica en remoto).
+  const showFolderConfig = !isRemote();
 
   return (
     <div className="space-y-5 max-w-lg">
@@ -175,88 +188,92 @@ export function LibraryPanel() {
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold text-foreground">Carpeta de videos</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Indica la carpeta de tu equipo donde están tus videos. La app los detecta y los agrega a tu biblioteca.
-        </p>
-      </div>
-
-      {/* Input de carpeta */}
-      <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-          <Folder className="w-3.5 h-3.5" /> Ruta de la carpeta
-        </label>
-        <div className="flex gap-2">
-          <input
-            value={folder}
-            onChange={e => setFolder(e.target.value)}
-            placeholder="C:\Users\TuUsuario\Videos\publicados"
-            className="flex-1 px-3 py-2.5 bg-secondary/40 border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors font-mono"
-          />
-          {/* window.electronAPI solo existe empaquetado en Electron (ver
-              electron/src/preload.ts) -- servido por LAN/túnel sin la app de
-              escritorio, este botón no aparece y el input de arriba sigue
-              siendo la única forma de indicar la carpeta. */}
-          {window.electronAPI && (
-            <button
-              onClick={async () => {
-                const picked = await window.electronAPI!.selectFolder();
-                if (picked) setFolder(picked);
-              }}
-              className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm bg-secondary/60 border border-border text-foreground hover:bg-secondary transition-colors flex-shrink-0"
-            >
-              <Folder className="w-4 h-4" />
-              Elegir carpeta
-            </button>
-          )}
-          <button
-            onClick={saveFolder}
-            disabled={saving || !folder.trim()}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-          >
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            Guardar
-          </button>
-        </div>
-        {savedDir && (
-          <p className="text-[11px] flex items-center gap-1.5 mt-1">
-            {dirExists
-              ? <><CheckCircle2 className="w-3 h-3 text-emerald-400" /> <span className="text-muted-foreground">Carpeta configurada</span></>
-              : <><AlertCircle className="w-3 h-3 text-amber-400" /> <span className="text-amber-300">La carpeta guardada no existe en este equipo</span></>}
-          </p>
-        )}
-      </div>
-
-      {/* Botón escanear */}
-      <button
-        onClick={scan}
-        disabled={scanning || !savedDir}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border border-border bg-secondary text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-        {scanning ? "Escaneando…" : "Escanear ahora"}
-      </button>
-
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
-          <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-          <p className="text-xs text-red-300">{error}</p>
-        </div>
-      )}
-
-      {result && (
-        <div className="bg-card border border-border rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Escaneo completado
-          </p>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <Stat label="Videos encontrados" value={result.scanned} />
-            <Stat label="Nuevos agregados" value={result.added} accent="emerald" />
-            <Stat label="Restaurados" value={result.restored} />
-            <Stat label="Ya no en disco" value={result.missing} accent={result.missing ? "amber" : undefined} />
+      {showFolderConfig && (
+        <>
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">Carpeta de videos</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Indica la carpeta de tu equipo donde están tus videos. La app los detecta y los agrega a tu biblioteca.
+            </p>
           </div>
-        </div>
+
+          {/* Input de carpeta */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <Folder className="w-3.5 h-3.5" /> Ruta de la carpeta
+            </label>
+            <div className="flex gap-2">
+              <input
+                value={folder}
+                onChange={e => setFolder(e.target.value)}
+                placeholder="C:\Users\TuUsuario\Videos\publicados"
+                className="flex-1 px-3 py-2.5 bg-secondary/40 border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors font-mono"
+              />
+              {/* window.electronAPI solo existe empaquetado en Electron (ver
+                  electron/src/preload.ts) -- servido por LAN/túnel sin la app de
+                  escritorio, este botón no aparece y el input de arriba sigue
+                  siendo la única forma de indicar la carpeta. */}
+              {window.electronAPI && (
+                <button
+                  onClick={async () => {
+                    const picked = await window.electronAPI!.selectFolder();
+                    if (picked) setFolder(picked);
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm bg-secondary/60 border border-border text-foreground hover:bg-secondary transition-colors flex-shrink-0"
+                >
+                  <Folder className="w-4 h-4" />
+                  Elegir carpeta
+                </button>
+              )}
+              <button
+                onClick={saveFolder}
+                disabled={saving || !folder.trim()}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Guardar
+              </button>
+            </div>
+            {savedDir && (
+              <p className="text-[11px] flex items-center gap-1.5 mt-1">
+                {dirExists
+                  ? <><CheckCircle2 className="w-3 h-3 text-emerald-400" /> <span className="text-muted-foreground">Carpeta configurada</span></>
+                  : <><AlertCircle className="w-3 h-3 text-amber-400" /> <span className="text-amber-300">La carpeta guardada no existe en este equipo</span></>}
+              </p>
+            )}
+          </div>
+
+          {/* Botón escanear */}
+          <button
+            onClick={scan}
+            disabled={scanning || !savedDir}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium border border-border bg-secondary text-foreground hover:bg-secondary/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {scanning ? "Escaneando…" : "Escanear ahora"}
+          </button>
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-300">{error}</p>
+            </div>
+          )}
+
+          {result && (
+            <div className="bg-card border border-border rounded-xl p-4 space-y-2">
+              <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Escaneo completado
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <Stat label="Videos encontrados" value={result.scanned} />
+                <Stat label="Nuevos agregados" value={result.added} accent="emerald" />
+                <Stat label="Restaurados" value={result.restored} />
+                <Stat label="Ya no en disco" value={result.missing} accent={result.missing ? "amber" : undefined} />
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Zona de peligro: wipe (solo local + admin) */}
