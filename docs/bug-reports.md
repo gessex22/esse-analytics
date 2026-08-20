@@ -924,7 +924,7 @@ comporta exactamente igual que antes -- nunca bloquea el link/badge por esto.
 
 ## BUG-2026-08-15-03 — Estado de publicación histórico sin enlace se interpreta distinto entre Nube y móviles
 
-- Estado: `en investigación` (central implementada y migrada 2026-08-19; label "Sin enlace" ya en Android/iOS -- ver Historial; sin build real verificado en ninguno de los 2)
+- Estado: `en investigación` (central implementada y migrada 2026-08-19; label "Sin enlace" en Android/iOS -- iOS con build real verificado, Android sin build real todavía)
 - Reportado: 2026-08-15
 - Plataformas: Central, Nube, iOS, Android
 - Severidad: alta (un mismo video puede aparecer terminado en Android y disponible en iOS)
@@ -1096,10 +1096,25 @@ identidad de plataforma.
     `VideoDetailViewModel.linkedPlatforms(fileId): Flow<Set<Platform>>`
     (reactivo, sobre `PlatformVideoRepository.observeByFile` que ya
     existía), consumido con `collectAsState` en `VideoDetailSheet`.
-  - **Sin build real en ninguno de los 2** (sin Xcode/Gradle disponibles en
-    este entorno) -- verificado solo por lectura de código (tipos, balance
-    de llaves, imports). Pendiente confirmar con Xcode/Android Studio antes
-    de dar por cerrado.
+  - **iOS: build real verificado 2026-08-19** por SSH a la Mac
+    (`macgessemberg22`, ver memoria `ios_ssh_build`) -- `xcodebuild build
+    -scheme Esse-Analytics -destination "generic/platform=iOS Simulator"`,
+    exit 0, 0 errores, sin warnings nuevos en los 2 archivos tocados.
+    Encontrado en el camino: el checkout de la Mac tenía ~2400 líneas sin
+    commitear (`LibraryView.swift`, `VideoDetailView.swift`,
+    `PCLocalPublishView.swift`, `UploadView.swift`,
+    `LANLibraryAccess.swift` nuevo -- trabajo en curso de
+    `PLAN_LAN_PICKER_Y_REPRODUCTOR-2026-08-18.md`) y 2 commits atrás de
+    `origin/main`. Se guardó ese trabajo con `git stash push -u` (mensaje
+    "wip LAN picker+player 2026-08-18, stashed before pull 2026-08-19",
+    queda en `stash@{0}`, NO reaplicado -- requiere que quien seguía esa
+    rama lo retome a mano, probable conflicto con lo que bajó del pull) y
+    se sincronizó `main` contra `origin/main` (que ya incluía este fix,
+    pusheado desde Windows) antes de compilar.
+  - **Android: sin build real todavía** (sin Gradle/Android Studio
+    disponible en este entorno, ver trampa de entorno en `UIEssePanel/CLAUDE.md`)
+    -- verificado solo por lectura de código (tipos, balance de llaves,
+    imports). Pendiente que el usuario confirme con Android Studio.
 
 ## BUG-2026-08-15-02 — TikTok: badge huérfano + platformUrl nunca se corrige tras resolver el id real
 
