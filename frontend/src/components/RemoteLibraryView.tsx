@@ -172,6 +172,16 @@ export function RemoteLibraryView() {
   const [preview, setPreview] = useState<RemoteLibraryVideo | null>(null);
   const [linksTarget, setLinksTarget] = useState<RemoteLibraryVideo | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // BUG reportado 2026-08-20: borrar de Nube era un solo click sin
+  // confirmación -- irreversible (deleteRemoteLibraryVideo en la central borra
+  // el documento Y los bytes del archivo, sin papelera). Mismo patrón de
+  // confirmación inline que ya usa LibraryPanel.tsx para wipe/dar de baja.
+  // Aclaración aparte: esto SOLO borra de la Nube (RemoteLibraryVideoModel +
+  // storage en la nube) -- nunca toca el archivo local en disco ni la SQLite
+  // de local-backend, son sistemas completamente independientes (ver
+  // remoteLibraryService.remove -> DELETE /api/remote-library/videos/:id,
+  // que ni siquiera pasa por local-backend salvo como proxy de bytes crudo).
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   // Total real de videos CON bytes en Nube (lo que ya filtra el backend en
@@ -254,6 +264,7 @@ export function RemoteLibraryView() {
   };
 
   const deleteVideo = async (id: string) => {
+    setConfirmDeleteId(null);
     setDeletingId(id);
     try {
       await remoteLibraryService.remove(id);
@@ -387,30 +398,48 @@ export function RemoteLibraryView() {
                   })}
                 </div>
 
-                <div className="flex items-center justify-between pt-1 border-t border-border/50 mt-2">
-                  <button
-                    onClick={() => { thumbTargetId.current = v._id; thumbInputRef.current?.click(); }}
-                    title="Cambiar miniatura"
-                    className="text-muted-foreground hover:text-foreground transition-colors p-1"
-                  >
-                    <Camera className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => setLinksTarget(v)}
-                    title="Editar links de plataforma"
-                    className="text-muted-foreground hover:text-primary transition-colors p-1"
-                  >
-                    <Link2 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => deleteVideo(v._id)}
-                    disabled={deletingId === v._id}
-                    title="Borrar"
-                    className="text-muted-foreground hover:text-red-400 transition-colors p-1 disabled:opacity-40"
-                  >
-                    {deletingId === v._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
+                {confirmDeleteId === v._id ? (
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/50 mt-2">
+                    <span className="text-[11px] text-red-300 flex-1">¿Borrar de la Nube?</span>
+                    <button
+                      onClick={() => deleteVideo(v._id)}
+                      className="text-[11px] font-medium px-2 py-1 rounded-md bg-red-600 text-white hover:bg-red-700 transition-colors flex-shrink-0"
+                    >
+                      Sí, borrar
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteId(null)}
+                      className="text-[11px] px-2 py-1 rounded-md border border-border text-muted-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between pt-1 border-t border-border/50 mt-2">
+                    <button
+                      onClick={() => { thumbTargetId.current = v._id; thumbInputRef.current?.click(); }}
+                      title="Cambiar miniatura"
+                      className="text-muted-foreground hover:text-foreground transition-colors p-1"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setLinksTarget(v)}
+                      title="Editar links de plataforma"
+                      className="text-muted-foreground hover:text-primary transition-colors p-1"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setConfirmDeleteId(v._id)}
+                      disabled={deletingId === v._id}
+                      title="Borrar de la Nube"
+                      className="text-muted-foreground hover:text-red-400 transition-colors p-1 disabled:opacity-40"
+                    >
+                      {deletingId === v._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ))}

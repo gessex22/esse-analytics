@@ -70,7 +70,17 @@ export async function getPublishedCards(req: AuthRequest, res: Response): Promis
         platformUrl: latest.platformUrl ?? null,
         publishedAt: latest.publishedAt ?? null,
         title: latest.title ?? null,
-        status: latest.status ?? null,
+        // BUG reportado 2026-08-20: acá "status" es el badge de progreso de
+        // subida (publish_complete/processing_upload/failed, ver
+        // getStatusBadgeColor en PublishingQueue.tsx) que solo la app de
+        // escritorio conoce y manda en el mirror -- NADA que ver con
+        // PlatformVideoModel.status (visibilidad public/private/unlisted de
+        // YouTube). Leer latest.status acá metía el string crudo "public" en
+        // el badge, sin traducir y con el color por defecto. Si es el mismo
+        // video que el mirror, se conserva su status real; si es una
+        // publicación más nueva que el mirror nunca vio, no hay status de
+        // trabajo que mostrar.
+        status: sameVideo ? mirrored.status ?? null : null,
         stats: cardStats(platform, latest, sameVideo ? mirrored.stats : undefined),
       };
     });
