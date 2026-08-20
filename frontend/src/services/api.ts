@@ -421,7 +421,15 @@ export const videoService = {
 
   // Miniatura generada con ffmpeg (local-backend, 100% local por ahora). Es una
   // URL directa para <img src> — no pasa por requestJson porque no es JSON.
-  thumbnailUrl: (fileId: string): string => `${API_BASE_URL}/api/videos/${fileId}/thumbnail`,
+  // El token va por query string porque <img src> no puede mandar headers
+  // custom -- la ruta pasó a exigir verifyTokenFromHeaderOrQuery en cda9eee
+  // (hardening de owner para Biblioteca LAN) y este call site quedó sin
+  // actualizar, dejando las miniaturas locales en 401 "Token requerido."
+  // (BUG reportado 2026-08-20: miniaturas perdidas en Electron/web).
+  thumbnailUrl: (fileId: string): string => {
+    const token = localStorage.getItem("esse_auth_token");
+    return `${API_BASE_URL}/api/videos/${fileId}/thumbnail${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  },
 
   // Resuelve file_name → id local (SQLite). Hace falta cuando el fileId viene de
   // la central (Mongo _id, distinto del id local) — ej. candidatos de sync.
