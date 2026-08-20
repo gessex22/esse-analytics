@@ -1,4 +1,5 @@
 import { Schema, model, Document } from 'mongoose';
+import { platformStateSchemaFields, IPlatformState } from '../utils/platform-state.util';
 
 export type RemotePlatform = 'youtube' | 'instagram' | 'tiktok';
 
@@ -36,6 +37,10 @@ export interface IRemoteLibraryVideo extends Document {
   platforms: RemotePlatform[];
   platformsDiscarded: RemotePlatform[];
   platformLinks: IRemoteLibraryPlatformLink[];
+  // Mismo concepto que FileModel.platform_states (BUG-2026-08-15-03) --
+  // 'confirmed' cuando hay un platformLink real, 'badge_only' cuando es un
+  // toggle manual sin link. Sparse hasta la migración.
+  platformStates?: IPlatformState<RemotePlatform>[];
   // true cuando estos bytes son una copia deliberada hecha A PARTIR de un
   // archivo local conocido (import server-a-servidor del cliente, o
   // endurecido desde un hardlink -- ver remote-library-retention.service.ts).
@@ -67,6 +72,7 @@ const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   platforms:                 { type: [String], enum: ['youtube', 'instagram', 'tiktok'], default: [] },
   platformsDiscarded:        { type: [String], enum: ['youtube', 'instagram', 'tiktok'], default: [] },
   platformLinks:             { type: [platformLinkSchema], default: [] },
+  platformStates:            { type: [platformStateSchemaFields], default: undefined },
   safeToEvict:               { type: Boolean, default: false },
 }, { timestamps: true });
 

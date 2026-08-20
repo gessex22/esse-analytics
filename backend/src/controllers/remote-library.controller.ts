@@ -18,6 +18,7 @@ import {
   FinishedRemoteLibraryUpload,
 } from '../services/remote-library-storage.service';
 import { ensureRemoteLibraryCapacity } from '../services/remote-library-quota.service';
+import { upsertConfirmed, upsertBadgeOnly, upsertDiscarded } from '../utils/platform-state.util';
 
 // ── Failover LAN entre los 2 backends redundantes (Mac + PC Windows, cada uno
 // con su propio conector de Cloudflare Tunnel para el mismo hostname) ─────────
@@ -475,7 +476,7 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
     // (para propagarlos a FileModel, ver más abajo).
     const before = await RemoteLibraryVideoModel.findOne(
       { _id: req.params.id, userId },
-      { platforms: 1, platformsDiscarded: 1, platformLinks: 1, fileName: 1, contentId: 1 },
+      { platforms: 1, platformsDiscarded: 1, platformLinks: 1, platformStates: 1, fileName: 1, contentId: 1 },
     ).lean();
     if (!before) { res.status(404).json({ error: 'Video no encontrado' }); return; }
 
@@ -487,10 +488,29 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
     // existía, deja los demás intactos) -- nunca un reemplazo ciego del
     // array entero, o publicar en una plataforma pisaría el link que ya
     // había quedado registrado para otra.
+    let mergedLinks = before.platformLinks ?? [];
     if (Array.isArray(platformLinks) && platformLinks.length > 0) {
       const incomingPlatforms = new Set(platformLinks.map((l: any) => l.platform));
       const kept = (before.platformLinks ?? []).filter((l: any) => !incomingPlatforms.has(l.platform));
-      update.platformLinks = [...kept, ...platformLinks];
+      mergedLinks = [...kept, ...platformLinks];
+      update.platformLinks = mergedLinks;
+    }
+
+    // BUG-2026-08-15-03: si la plataforma final tiene un link real (merged
+    // arriba), el estado es 'confirmed'; si solo está en `platforms` sin
+    // link, es un toggle manual ('badge_only'). upsertConfirmed/Discarded
+    // nunca degradan un 'confirmed' ya asentado por un toggle posterior.
+    if (platforms !== undefined || platformsDiscarded !== undefined) {
+      const linkedPlatforms = new Set(mergedLinks.map((l: any) => l.platform));
+      let newStates = before.platformStates ?? [];
+      for (const p of (platforms ?? before.platforms ?? [])) {
+        newStates = linkedPlatforms.has(p) ? upsertConfirmed(newStates, p) : upsertBadgeOnly(newStates, p);
+      }
+      for (const p of (platformsDiscarded ?? before.platformsDiscarded ?? [])) {
+        newStates = upsertDiscarded(newStates, p);
+      }
+      const stillTracked = new Set([...(platforms ?? before.platforms ?? []), ...(platformsDiscarded ?? before.platformsDiscarded ?? [])]);
+      update.platformStates = newStates.filter((s) => stillTracked.has(s.platform));
     }
 
     const doc = await RemoteLibraryVideoModel.findOneAndUpdate(
@@ -537,14 +557,23 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
       const fileQuery = before.contentId
         ? { userId, content_id: before.contentId }
         : { userId, file_name: before.fileName };
-      // as any: mismo escape ya usado en otros callers de FileModel/PlatformVideoModel
-      // en este backend (ver applyPlatformPublish) -- el filtro combina claims de
-      // dos formas de fileQuery (por content_id o por file_name) + $nin, y el
-      // overload de Mongoose no lo resuelve solo pese a ser válido en runtime.
-      FileModel.updateOne(
-        { ...fileQuery, platforms: { $nin: newlyDiscarded } } as any,
-        { $addToSet: { platforms_discarded: { $each: newlyDiscarded } } },
-      ).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar descarte a FileModel falló:', err.message));
+      (async () => {
+        // Read-modify-write (en vez de $addToSet directo) para poder tocar
+        // también platform_states sin arriesgar 2 entradas para la misma
+        // plataforma con estados distintos -- $addToSet compara el subdocumento
+        // entero, no por `platform`. Sigue siendo best-effort, corre después
+        // de responder.
+        const file = await FileModel.findOne(fileQuery as any).select('platforms platform_states').lean();
+        if (!file) return;
+        const toApply = newlyDiscarded.filter((p) => !(file.platforms ?? []).includes(p as any));
+        if (toApply.length === 0) return;
+        let states = file.platform_states ?? [];
+        for (const p of toApply) states = upsertDiscarded(states, p as any);
+        await FileModel.updateOne(
+          { _id: file._id },
+          { $addToSet: { platforms_discarded: { $each: toApply } }, $set: { platform_states: states } },
+        );
+      })().catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar descarte a FileModel falló:', err.message));
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });

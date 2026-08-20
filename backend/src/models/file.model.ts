@@ -1,4 +1,5 @@
 import { Schema, model, Document } from 'mongoose';
+import { platformStateSchemaFields, IPlatformState } from '../utils/platform-state.util';
 
 export type FileContentStatus = 'publicado' | 'borrador' | 'procesando' | 'descartado';
 
@@ -21,6 +22,14 @@ export interface IFile extends Document {
   content_status: FileContentStatus;
   platforms: Platform[];
   platforms_discarded: Platform[];
+  // Estado explícito por plataforma (BUG-2026-08-15-03) -- `platforms`/
+  // `platforms_discarded` siguen siendo la fuente de compatibilidad (arrays
+  // planos que todo el resto del código ya lee), esto es la procedencia real
+  // detrás de cada entrada de `platforms`: 'confirmed' (con platformId real,
+  // ver applyPlatformPublish) vs 'badge_only' (marca manual/histórica sin
+  // link). Sparse a propósito: registros viejos no lo tienen hasta la
+  // migración (scripts/mongo-platform-states-migration.js).
+  platform_states?: IPlatformState<Platform>[];
   publishCode?: string;  // código único para sync futuro — se incluye en descripción de YT/IG/TK
   duracion_segundos?: number;
   resolucion?: string;
@@ -49,6 +58,10 @@ const FileSchema = new Schema<IFile>({
     type: [String],
     enum: ['youtube', 'instagram', 'tiktok', 'facebook'],
     default: [],
+  },
+  platform_states: {
+    type: [platformStateSchemaFields],
+    default: undefined, // no default [] a propósito -- distingue "nunca migrado" de "migrado, sin estados"
   },
   publishCode: { type: String, sparse: true },
   duracion_segundos: { type: Number },

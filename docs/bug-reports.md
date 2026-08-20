@@ -924,7 +924,7 @@ comporta exactamente igual que antes -- nunca bloquea el link/badge por esto.
 
 ## BUG-2026-08-15-03 — Estado de publicación histórico sin enlace se interpreta distinto entre Nube y móviles
 
-- Estado: `abierto`
+- Estado: `en investigación` (central implementada y migrada 2026-08-19; label "Sin enlace" ya en Android/iOS -- ver Historial; sin build real verificado en ninguno de los 2)
 - Reportado: 2026-08-15
 - Plataformas: Central, Nube, iOS, Android
 - Severidad: alta (un mismo video puede aparecer terminado en Android y disponible en iOS)
@@ -1020,6 +1020,86 @@ identidad de plataforma.
   divergir. La causa de fondo sigue abierta y requiere la propuesta de
   arriba (o como mínimo, propagar también los descartes en
   `applyPlatformPublish`/`updateFilePlatforms`/`RemoteLibraryAPI.updatePlatforms`).
+- 2026-08-15 (commit `31737c9`, otra sesión) — propagó descartes hechos en
+  Nube (`updateRemoteLibraryVideoPlatforms`) hacia `FileModel` -- resolvió
+  **una** de las dos direcciones del "como mínimo" de arriba, no el modelo
+  completo. La dirección inversa (`updateFilePlatforms`, descartes hechos en
+  el catálogo central/mobile) seguía sin propagar a Nube hasta hoy.
+- 2026-08-19 — Claude: implementado el modelo completo de la propuesta
+  (pasos 1-3 de la sección de arriba), central únicamente:
+  - Nuevo `platform_states`/`platformStates` (`backend/src/utils/platform-state.util.ts`,
+    tipo compartido `PlatformPublicationState = 'confirmed'|'badge_only'|'discarded'`)
+    en `FileModel` y `RemoteLibraryVideoModel`. Sparse a propósito.
+  - `applyPlatformPublish` marca `confirmed` en ambos modelos cuando hay un
+    `platformId` real -- incluye la promoción: si una plataforma ya estaba
+    como `badge_only` y ahora se publica de verdad, se actualiza a
+    `confirmed` (antes el código solo miraba si la plataforma YA estaba en
+    el array plano, sin mirar el estado real detrás, así que esa promoción
+    nunca pasaba).
+  - `updateFilePlatforms` (toggle desde mobile/desktop) deriva `badge_only`/
+    `discarded` sin degradar nunca algo ya `confirmed`
+    (`deriveStatesFromToggle`), y ahora **también propaga sus descartes
+    nuevos hacia `RemoteLibraryVideoModel`** -- cierra la dirección que
+    `31737c9` había dejado pendiente, mismo criterio conservador (no pisa
+    una plataforma que Nube ya tiene como badge/confirmada real).
+  - `updateRemoteLibraryVideoPlatforms` deriva estados igual (confirmed si
+    hay `platformLink`, si no `badge_only`/`discarded`) y su propagación de
+    descartes a `FileModel` (ya existente) ahora también escribe
+    `platform_states` ahí (antes solo tocaba `platforms_discarded`).
+  - `getBackupFiles` expone `platform_states` en la respuesta (antes no
+    estaba en el `.select()`, y el merge con `BackupFileModel` no lo
+    contemplaba porque ese modelo nunca tuvo el concepto).
+  - Migración `backend/scripts/mongo-platform-states-migration.js` (dry-run
+    por default, `--apply` para escribir, patrón igual a los scripts
+    previos de este repo): backfillea `platform_states`/`platformStates` en
+    todo lo existente, derivando `confirmed` desde `PlatformVideoModel.linkedFileId`
+    real (`files`) o `platformLinks` (`remote_library_videos`), el resto
+    `badge_only`/`discarded` según corresponda. **Aplicada en producción
+    2026-08-19**: 1125 `files` + 1119 `remote_library_videos` migrados (152
+    confirmed / 3125 badge_only / 15 discarded en `files`; 36/3235/12 en
+    Nube) -- 0 documentos pendientes en el postflight. Rollback documentado
+    en la salida del script (`$unset`).
+  - Verificado con `npx tsc --noEmit`: mismo conteo de errores preexistentes
+    (27) antes y después (comparado con `git stash`), 0 nuevos.
+  - **Pendiente real, no arrancado todavía**: puntos 4-6 de la propuesta —
+    que Android e iOS lean `platform_states`/`platformStates` para su
+    criterio de cola/métricas (hoy ambos ya usan el mismo criterio de
+    "3 plataformas resueltas = terminal" sobre los arrays planos, así que la
+    divergencia de cola reportada originalmente era 100% de datos, no de
+    lógica -- la propagación simétrica de arriba ya la ataca de raíz) y la
+    migración explícita de UI que distinga "Sin enlace" para `badge_only`.
+    No tocado ningún archivo Swift/Kotlin en esta sesión.
+- 2026-08-19 (mismo día, continuación) — Claude: agregado el label "Sin
+  enlace" en Android/iOS, pero **sin usar el `platform_states` nuevo de la
+  central** -- ambas plataformas ya tenían localmente una señal equivalente
+  y más simple de plomear:
+  - **Nube** (`RemoteVideoDetailView.swift` iOS, `RemoteVideoDetailSheet.kt`
+    -> `VideoDetailPlatformRow` compartido Android): `platformLinks`/
+    `hasLink` ya viajaban desde la central (autoridad única, no por
+    dispositivo) -- solo hacía falta usarlos en el texto del chip, no en el
+    ícono (que ya los usaba). Confiable de punta a punta.
+  - **Catálogo local** (`VideoDetailView.swift` iOS,
+    `VideoDetailSheet.kt`/`VideoDetailViewModel.kt` Android): mismo cambio
+    de texto, pero la señal (`PlatformVideoEntity`/`PlatformVideo` con
+    `linkedFileId`) es **local a ESE dispositivo** -- un video publicado
+    desde OTRO dispositivo con link real puede seguir mostrando "Sin
+    enlace" acá hasta que exista un pull explícito de `platform_states`
+    hacia el catálogo local (no implementado, anotado en el código con
+    referencia a este bug).
+  - De paso, en Android (`VideoDetailSheet.kt`/`VideoDetailViewModel.kt`):
+    encontrado y arreglado un bug latente independiente -- `hasLink` se
+    calculaba como `platform in file.platforms`, tautológicamente idéntico
+    a la condición `PUBLISHED` de la misma fila, así que el ícono
+    `LinkOff`/label "Sin enlace" nunca se mostraba pese a que el dato real
+    (`platformVideoRepository.findByLinkedFileAndPlatform`) sí existía y se
+    usaba en otro lado (`existingLink`, al abrir el editor). Fix: nuevo
+    `VideoDetailViewModel.linkedPlatforms(fileId): Flow<Set<Platform>>`
+    (reactivo, sobre `PlatformVideoRepository.observeByFile` que ya
+    existía), consumido con `collectAsState` en `VideoDetailSheet`.
+  - **Sin build real en ninguno de los 2** (sin Xcode/Gradle disponibles en
+    este entorno) -- verificado solo por lectura de código (tipos, balance
+    de llaves, imports). Pendiente confirmar con Xcode/Android Studio antes
+    de dar por cerrado.
 
 ## BUG-2026-08-15-02 — TikTok: badge huérfano + platformUrl nunca se corrige tras resolver el id real
 
