@@ -1,12 +1,29 @@
-import { app, BrowserWindow, shell, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, shell, dialog, ipcMain, clipboard } from 'electron';
 import path from 'path';
+import fs from 'fs';
 import { autoUpdater } from 'electron-updater';
 import { Bonjour } from 'bonjour-service';
+import { checkPort, killCommandFor, PortUser } from './port-check';
 
 let mainWindow: BrowserWindow | null = null;
+// Ventana de "puerto ocupado" -- se abre EN LUGAR de la principal cuando el
+// backend local no puede arrancar (ver bootOrShowPortConflict).
+let conflictWindow: BrowserWindow | null = null;
+let serverStarted = false;
+// Última foto de quién tenía el puerto -- la calcula checkPort() en el arranque
+// y en cada "Reintentar", y la consume la pantalla de conflicto.
+let lastPortUsers: PortUser[] = [];
 let bonjour: InstanceType<typeof Bonjour> | null = null;
 let announcedService: ReturnType<InstanceType<typeof Bonjour>['publish']> | null = null;
 const PORT = 4000;
+
+// Una sola instancia por PC. El caso más común de "puerto 4000 ocupado" era la
+// propia app abierta dos veces: la segunda copia reventaba con EADDRINUSE (o
+// peor, mostraba la UI servida por la PRIMERA dentro de una ventana nueva, con
+// dos procesos peleando por la misma SQLite). Con el lock, la segunda copia se
+// cierra sola y le devuelve el foco a la que ya estaba.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
 
 // Ver electron/package.json (script "dev:lab") y local-backend/src/config.ts.
 // SOLO se activa si quien lanzó `electron .` ya tenía ESSENALYTICS_LAB_MODE=1
@@ -48,6 +65,10 @@ function setupEnv() {
 }
 
 function startServer() {
+  // Idempotente: el botón "Reintentar" de la pantalla de conflicto vuelve a
+  // pasar por acá una vez que el puerto se liberó.
+  if (serverStarted) return;
+  serverStarted = true;
   // El server bundle arranca Express al ser requerido
   require('./server.cjs');
   // Anuncia la PC por Bonjour/mDNS para que Android/iOS puedan encontrarla
@@ -100,6 +121,141 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
+// El tema elegido (rojo/ámbar) vive en el localStorage del frontend, que es
+// inalcanzable justo cuando más falta hace: si el backend no arrancó, la página
+// que lo guarda nunca se carga. Por eso el frontend lo espeja acá (ver
+// electronAPI.setUiTheme -> useTheme.ts) en un JSON mínimo del userData, y la
+// pantalla de conflicto puede pintarse con la paleta correcta.
+function uiStatePath() {
+  return path.join(app.getPath('userData'), 'ui-state.json');
+}
+
+function saveUiTheme(theme: string) {
+  if (theme !== 'rojo' && theme !== 'ambar') return;
+  try {
+    fs.writeFileSync(uiStatePath(), JSON.stringify({ theme }), 'utf8');
+  } catch {
+    // Preferencia cosmética: si no se puede escribir, la pantalla usa el
+    // tema por defecto y listo.
+  }
+}
+
+function readUiTheme(): string {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(uiStatePath(), 'utf8'));
+    return parsed?.theme === 'ambar' ? 'ambar' : 'rojo';
+  } catch {
+    return 'rojo';
+  }
+}
+
+// Datos que consume port-conflict.html (vía preload -> electronAPI.portConflict).
+// Recibe la lista ya consultada por checkPort() para no pagar dos veces el
+// netstat/tasklist en el mismo arranque.
+function buildPortConflictInfo(users: PortUser[]) {
+  return {
+    port: PORT,
+    platform: process.platform,
+    theme: readUiTheme(),
+    users: users.map((user) => ({
+      pid: user.pid,
+      name: user.name,
+      raw: user.raw,
+      killCommand: killCommandFor(user.pid),
+      // Caso frecuente y con una salida distinta al resto ("ya la tenés
+      // abierta"), así que se marca acá y no en la página.
+      isEsseAnalytics: /esse/i.test(user.name || ''),
+    })),
+  };
+}
+
+async function showPortConflictWindow() {
+  if (conflictWindow) {
+    conflictWindow.focus();
+    return;
+  }
+  conflictWindow = new BrowserWindow({
+    width: 880,
+    height: 700,
+    minWidth: 640,
+    minHeight: 520,
+    title: 'EsseAnalytics — puerto ocupado',
+    backgroundColor: '#09090d',
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  conflictWindow.once('ready-to-show', () => conflictWindow?.show());
+  conflictWindow.on('closed', () => { conflictWindow = null; });
+  // Archivo local, no http://localhost:4000 -- justamente ese origen es el que
+  // está en manos de otro programa.
+  await conflictWindow.loadFile(path.join(__dirname, 'port-conflict.html'));
+}
+
+// Punto de entrada real del arranque: si el puerto está libre, todo sigue como
+// siempre; si no, no se levanta nada y se explica el problema en pantalla.
+async function bootOrShowPortConflict() {
+  const status = await checkPort(PORT);
+  if (status.free) {
+    startServer();
+    // Espera a que Express esté listo antes de abrir la ventana
+    setTimeout(createWindow, 800);
+    return;
+  }
+  lastPortUsers = status.users;
+  const quien = status.users.map((user) => `${user.name || '?'} (PID ${user.pid})`).join(', ') || 'proceso desconocido';
+  console.error(`[electron] El puerto ${PORT} está ocupado por ${quien} -- no se arranca el backend local.`);
+  await showPortConflictWindow();
+}
+
+function setupPortConflictIPC() {
+  ipcMain.handle('port-conflict:info', () => buildPortConflictInfo(lastPortUsers));
+
+  ipcMain.handle('port-conflict:retry', async () => {
+    const status = await checkPort(PORT);
+    if (!status.free) {
+      lastPortUsers = status.users;
+      return { ok: false, info: buildPortConflictInfo(status.users) };
+    }
+    startServer();
+    // La ventana de conflicto se cierra DESPUÉS de crear la principal: si
+    // quedara cero ventanas abiertas por un instante, 'window-all-closed'
+    // cerraría la app entera en Windows/Linux.
+    const previous = conflictWindow;
+    conflictWindow = null;
+    setTimeout(() => {
+      createWindow();
+      previous?.close();
+    }, 800);
+    return { ok: true };
+  });
+
+  ipcMain.handle('port-conflict:copy', async () => {
+    const info = buildPortConflictInfo(lastPortUsers);
+    const lines = [
+      `EsseAnalytics ${app.getVersion()} -- puerto ${info.port} ocupado (${info.platform})`,
+      ...(info.users.length
+        ? info.users.map((user) => `PID ${user.pid} · ${user.name || 'desconocido'} · ${user.raw}`)
+        : ['No se pudo identificar el proceso dueño del puerto.']),
+    ];
+    clipboard.writeText(lines.join(String.fromCharCode(10)));
+    return true;
+  });
+
+  ipcMain.handle('port-conflict:quit', () => app.quit());
+}
+
+function setupUiStateIPC() {
+  ipcMain.handle('ui:set-theme', (_event, theme: string) => {
+    saveUiTheme(theme);
+    return true;
+  });
+}
+
 function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -135,17 +291,44 @@ function setupAutoUpdater() {
   setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 4000);
 }
 
-app.whenReady().then(() => {
-  setupEnv();
-  startServer();
+app.on('second-instance', () => {
+  // Alguien volvió a abrir la app: en vez de una segunda copia peleando por el
+  // puerto, se trae al frente la ventana que ya estaba.
+  const existing = mainWindow || conflictWindow;
+  if (!existing) return;
+  if (existing.isMinimized()) existing.restore();
+  existing.focus();
+});
 
-  // Espera a que Express esté listo antes de abrir la ventana
-  setTimeout(createWindow, 800);
+// Red de contención de la carrera: entre isPortFree() y el listen real del
+// backend hay milisegundos en los que otro programa puede tomar el puerto.
+// local-backend emite este evento desde su handler de EADDRINUSE (ver
+// local-backend/src/server.ts) en vez de tirar una excepción sin capturar.
+(process as NodeJS.EventEmitter).on('esse:port-conflict', () => {
+  serverStarted = false;
+  mainWindow?.destroy();
+  mainWindow = null;
+  void (async () => {
+    lastPortUsers = (await checkPort(PORT)).users;
+    await showPortConflictWindow();
+  })();
+});
+
+app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return;
+  setupEnv();
+  setupUiStateIPC();
+  setupPortConflictIPC();
+  void bootOrShowPortConflict();
 
   if (app.isPackaged) setupAutoUpdater();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length > 0) return;
+    // Si el backend nunca llegó a arrancar (puerto ocupado), reabrir la
+    // ventana principal solo mostraría la app del otro programa.
+    if (serverStarted) createWindow();
+    else void bootOrShowPortConflict();
   });
 
   // Permite que el frontend pregunte la versión actual

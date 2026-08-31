@@ -31,6 +31,12 @@ export function applyTheme(id: ThemeId) {
   const root = document.documentElement;
   THEMES.forEach((t) => root.classList.remove(`theme-${t.id}`));
   root.classList.add(`theme-${id}`);
+  // Corriendo dentro de Electron, se le avisa al proceso principal para que las
+  // ventanas NATIVAS usen la misma paleta -- hoy la pantalla de "puerto 4000
+  // ocupado", que aparece cuando este mismo frontend no puede ni cargarse (ver
+  // electron/src/port-conflict.html). Opcional y silencioso: en la web o en la
+  // versión servida por LAN no existe electronAPI y no pasa nada.
+  (window as any).electronAPI?.setUiTheme?.(id);
 }
 
 // ── Context ────────────────────────────────────────────────────────────────────

@@ -127,6 +127,27 @@ No hay tests configurados (`backend test` es un no-op).
   autoupdate vía `electron-updater`. Secretos (YouTube API key, CLIENT_REGISTER_KEY)
   se inyectan en build-time desde `electron/.env.build`, no en el código.
 
+### Arranque de Electron y puerto 4000
+
+El local-backend escucha SIEMPRE en 4000 (`electron/src/main.ts`, `PORT`). Si
+ese puerto ya está ocupado, Electron **no** levanta el backend ni abre la
+ventana principal: muestra `electron/src/port-conflict.html` (ventana propia,
+archivo local, con la paleta de `frontend/src/styles/theme.css`) explicando el
+conflicto, listando el/los proceso(s) dueños del puerto (`netstat -ano` +
+`tasklist` en Windows, `lsof` en macOS/Linux — ver `electron/src/port-check.ts`)
+y ofreciendo Reintentar / Copiar detalles / Salir. Además:
+
+- `app.requestSingleInstanceLock()`: abrir la app dos veces ya no genera el
+  conflicto — la segunda copia se cierra y le da foco a la primera.
+- `local-backend/src/server.ts` maneja su propio `EADDRINUSE`: emite
+  `process.emit('esse:port-conflict')` (que Electron escucha) en vez de tirar
+  una excepción sin capturar; corriendo suelto (`npm run dev`) loguea y sale
+  con código 1.
+- El tema activo (rojo/ámbar) se espeja a `userData/ui-state.json` desde
+  `applyTheme()` (`frontend/src/hooks/useTheme.ts` → `electronAPI.setUiTheme`)
+  para que esa pantalla nativa use la paleta correcta aunque el frontend no
+  haya podido cargar nunca.
+
 ## Convenciones
 - Código y comentarios en **español**; TypeScript en todo (frontend/backends/electron).
 - Variables de entorno: cada paquete tiene su `.env.example`. La central no arranca sin `MONGO_URI`.

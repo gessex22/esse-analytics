@@ -483,6 +483,15 @@ export function DashboardView({
   const displayTotals = focusPlatform
     ? { views: focusStats?.views ?? 0, likes: focusStats?.likes ?? 0, comments: focusStats?.comments ?? 0 }
     : totals;
+  // fileName es el nombre de archivo (cámara/edición) -- el caption/título
+  // real con el que se publicó (caption de Instagram, título de YouTube,
+  // etc.) vive por plataforma en item.platforms[x].title, ya lo manda
+  // getGroupStats (sync.controller.ts) pero no se mostraba. Se prioriza el de
+  // focusPlatform (modo avanzado: la subida puntual que gatilló la tarjeta)
+  // y si no hay foco, el primero disponible en orden youtube/instagram/tiktok.
+  const displayCaption =
+    (focusPlatform ? item?.platforms[focusPlatform]?.title : undefined) ??
+    PLATFORMS.map((p) => item?.platforms[p]?.title).find((t) => !!t);
   const ranking = useMemo(() => {
     return PLATFORMS.map((platform) => {
       const source = demoMode ? [DEMO_ITEM] : rankingMode === 'individual' ? individualItems[platform] ?? [] : items;
@@ -600,9 +609,20 @@ export function DashboardView({
                   </div>
                 </button>
                 <div className="min-w-0 max-w-[17rem]">
-                  <h3 className="text-base font-semibold text-foreground leading-snug line-clamp-3">
-                    {item.fileName}
-                  </h3>
+                  {displayCaption ? (
+                    <>
+                      <h3 className="text-base font-semibold text-foreground leading-snug line-clamp-3">
+                        {displayCaption}
+                      </h3>
+                      <p className="text-xs text-muted-foreground truncate mt-0.5">
+                        {item.fileName}
+                      </p>
+                    </>
+                  ) : (
+                    <h3 className="text-base font-semibold text-foreground leading-snug line-clamp-3">
+                      {item.fileName}
+                    </h3>
+                  )}
                   <p className="text-xs text-muted-foreground mt-1">
                     Publicado {displayedPublishedAt ? formatDate(displayedPublishedAt) : "—"}
                   </p>

@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { motion } from "motion/react";
 import {
-  Play, Camera, Music2, AlertTriangle, Clock, Pencil,
-  ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw, ArrowRight,
+  Play, Camera, Music2, Clock, Pencil,
+  ChevronLeft, ChevronRight, Pin, Loader2, Check, Clapperboard, RefreshCw,
   Eye, Heart, MessageCircle, Send, SkipForward,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -33,7 +33,7 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-type Urgency = "past" | "today" | "soon" | "ok";
+type Urgency = "today" | "soon" | "ok";
 
 function relDays(next: string): number {
   const t = todayStr();
@@ -42,27 +42,31 @@ function relDays(next: string): number {
   );
 }
 
+// Decisión del usuario 2026-08-30: un pendiente vencido (d < 0, todavía sin
+// publicar) ya NO es un bucket "past" propio -- se trata idéntico a "today"
+// (mismo color, mismo label "Hoy", sin contador de días vencidos) hasta que
+// se publique de verdad, lo que recalcula nextDate hacia adelante. Antes
+// tenía su propia urgencia "past" (rojo, ícono de alerta, sección "Vencido"
+// separada); mismo criterio reemplazado en paralelo en CalendarView.swift
+// (iOS) y CalendarScreen.kt (Android).
 function getUrgency(next: string): Urgency {
   const d = relDays(next);
-  if (d < 0) return "past";
-  if (d === 0) return "today";
+  if (d <= 0) return "today";
   return d <= 1 ? "soon" : "ok";
 }
 
-// Texto relativo corto: "Hoy", "Mañana", "en 3 días", "hace 1 día".
+// Texto relativo corto: "Hoy", "Mañana", "en 3 días".
 function urgencyLabel(next: string): string {
   const d = relDays(next);
-  if (d < 0)  return d === -1 ? "hace 1 día" : `hace ${-d} días`;
-  if (d === 0) return "Hoy";
+  if (d <= 0) return "Hoy";
   if (d === 1) return "Mañana";
   return `en ${d} días`;
 }
 
-// Texto del diseño clásico (PC): "Hoy", "En N días", "Venció hace N días".
+// Texto del diseño clásico (PC): "Hoy", "En N días".
 function daysLabel(next: string): string {
   const d = relDays(next);
-  if (d < 0)  return `Venció hace ${-d} día${-d !== 1 ? "s" : ""}`;
-  if (d === 0) return "Hoy";
+  if (d <= 0) return "Hoy";
   return `En ${d} día${d !== 1 ? "s" : ""}`;
 }
 
@@ -93,7 +97,6 @@ function formatPublishedAt(iso: string | null): string {
 }
 
 const URG_TEXT: Record<Urgency, string> = {
-  past:  "text-red-500",
   today: "text-orange-500",
   soon:  "text-amber-500",
   ok:    "text-emerald-500",
@@ -197,10 +200,10 @@ function getViewsCount(stats: Record<string, any> | undefined, platform: Platfor
 // ══════════════════════════════════════════════════════════════════════════════
 
 function UpcomingCard({
-  slot, video, index, total, overdue, neutral,
+  slot, video, index, total, neutral,
   onOlder, onNewer, onPin, onPinNext, onOpen, onIntervalChange, pinning, pinned, pinningNext, loading,
 }: {
-  slot: PlatformSlot; video: SlimVideo | undefined; index: number; total: number; overdue: boolean; neutral?: boolean;
+  slot: PlatformSlot; video: SlimVideo | undefined; index: number; total: number; neutral?: boolean;
   onOlder: () => void; onNewer: () => void; onPin: () => void; onPinNext: () => void; onOpen: () => void;
   onIntervalChange: (d: number) => void; pinning: boolean; pinned: boolean; pinningNext: boolean; loading: boolean;
 }) {
@@ -211,9 +214,7 @@ function UpcomingCard({
   return (
     <motion.div
       layout initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
-      className={`flex items-center gap-3 px-3.5 py-3 rounded-xl bg-card border ${
-        overdue ? "border-red-500/50 border-l-4 border-l-red-500" : "border-border"
-      }`}
+      className="flex items-center gap-3 px-3.5 py-3 rounded-xl bg-card border border-border"
     >
       <div className={`w-9 h-9 min-w-9 rounded-lg flex items-center justify-center flex-shrink-0 ${cfg.bg}`}>
         <Icon className="w-4 h-4 text-white" />
@@ -222,7 +223,7 @@ function UpcomingCard({
       <div className="w-[84px] flex-shrink-0">
         <p className="text-xs font-semibold text-foreground leading-tight">{cfg.label}</p>
         <p className={`text-[10px] font-medium mt-0.5 ${URG_TEXT[urgency]}`}>
-          {overdue ? "Vencido" : (slot.nextDate ? urgencyLabel(slot.nextDate) : "sin fecha")}
+          {slot.nextDate ? urgencyLabel(slot.nextDate) : "sin fecha"}
         </p>
       </div>
 
@@ -273,27 +274,16 @@ function UpcomingCard({
         >
           {pinningNext ? <Loader2 className="w-4 h-4 animate-spin" /> : <SkipForward className="w-4 h-4" />}
         </button>
-        {overdue ? (
-          <button
-            onClick={onPin}
-            disabled={loading || pinning || pinned || !video}
-            title="Marcar como publicado"
-            className="flex items-center gap-1 rounded-lg bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold px-2.5 py-1.5 disabled:opacity-40 transition-colors whitespace-nowrap"
-          >
-            {pinning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : pinned ? <Check className="w-3.5 h-3.5" /> : <>Publicar <ArrowRight className="w-3.5 h-3.5" /></>}
-          </button>
-        ) : (
-          <button
-            onClick={onPin}
-            disabled={loading || pinning || pinned || !video}
-            title={pinned ? "Fijado" : "Fijar como publicado y avanzar"}
-            className={`p-1.5 rounded-lg transition-colors ${
-              pinned ? "text-emerald-500 bg-emerald-500/10 cursor-default" : "text-primary hover:bg-primary/10 disabled:opacity-30"
-            }`}
-          >
-            {pinning ? <Loader2 className="w-4 h-4 animate-spin" /> : pinned ? <Check className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
-          </button>
-        )}
+        <button
+          onClick={onPin}
+          disabled={loading || pinning || pinned || !video}
+          title={pinned ? "Fijado" : "Fijar como publicado y avanzar"}
+          className={`p-1.5 rounded-lg transition-colors ${
+            pinned ? "text-emerald-500 bg-emerald-500/10 cursor-default" : "text-primary hover:bg-primary/10 disabled:opacity-30"
+          }`}
+        >
+          {pinning ? <Loader2 className="w-4 h-4 animate-spin" /> : pinned ? <Check className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
+        </button>
       </div>
     </motion.div>
   );
@@ -376,15 +366,13 @@ function Divider({ label }: { label: string }) {
 function UrgencyPill({ urgency, nextDate, onEdit }: { urgency: Urgency; nextDate: string; onEdit?: () => void }) {
   const label = daysLabel(nextDate);
   const styles: Record<Urgency, string> = {
-    past:  "bg-red-500/15 text-red-500",
     today: "bg-orange-500/15 text-orange-500",
     soon:  "bg-amber-400/15 text-amber-600",
     ok:    "bg-secondary text-muted-foreground",
   };
-  const Icon = urgency === "past" ? AlertTriangle : Clock;
   return (
     <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${styles[urgency]}`}>
-      <Icon className="w-3 h-3" />
+      <Clock className="w-3 h-3" />
       {label}
       {onEdit && (
         <button onClick={onEdit} title="Editar intervalo" className="ml-0.5 -mr-0.5 p-0.5 rounded-full hover:bg-black/10 transition-colors">
@@ -482,9 +470,7 @@ function PlatformCard({
     <motion.div
       layout initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
       className={`flex flex-col gap-4 p-5 rounded-2xl border bg-card ${
-        urgency === "past"  ? "border-red-500/30 shadow-[0_0_0_1px_rgba(239,68,68,0.12)]"     :
-        urgency === "today" ? "border-orange-500/30 shadow-[0_0_0_1px_rgba(249,115,22,0.12)]" :
-        "border-border"
+        urgency === "today" ? "border-orange-500/30 shadow-[0_0_0_1px_rgba(249,115,22,0.12)]" : "border-border"
       }`}
     >
       <div className="flex items-center gap-3">
@@ -1020,7 +1006,6 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
     const urg: Urgency = slot.nextDate ? getUrgency(slot.nextDate) : "ok";
     return { p, slot, urg };
   });
-  const overdueB = withUrg.filter(x => x.urg === "past").sort(byDate);
   const todayB   = withUrg.filter(x => x.urg === "today").sort(byDate);
   const soonB    = withUrg.filter(x => x.urg === "soon").sort(byDate);
   const laterB   = withUrg.filter(x => x.urg === "ok").sort(byDate);
@@ -1041,12 +1026,12 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
           !!x.data && !!x.data.platformId && (x.data.fileName === canonicalTitle || x.data.title === canonicalTitle))
     : [];
 
-  const renderMobileCard = ({ p, slot }: { p: Platform; slot: PlatformSlot }, isOverdue: boolean) => {
+  const renderMobileCard = ({ p, slot }: { p: Platform; slot: PlatformSlot }) => {
     const platformVideos = videosForPlatform(p);
     const currentVideo = platformVideos[indices[p]];
     return (
       <UpcomingCard
-        key={p} slot={slot} video={currentVideo} index={indices[p]} total={platformVideos.length} overdue={isOverdue} neutral={isSimple}
+        key={p} slot={slot} video={currentVideo} index={indices[p]} total={platformVideos.length} neutral={isSimple}
         onOlder={() => navigate(p, "older")} onNewer={() => navigate(p, "newer")} onPin={() => pinVideo(p)} onPinNext={() => pinNextVideo(p)}
         onOpen={() => currentVideo && onOpenVideo?.(currentVideo.fileId, currentVideo.title)}
         onIntervalChange={d => updateInterval(p, d)} pinning={pinning[p]} pinned={pinned[p]} pinningNext={pinningNext[p]} loading={loading}
@@ -1060,11 +1045,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {overdueB.length > 0
-              ? <span className="text-red-500 font-medium">⚠ {overdueB.length === 1 ? "1 plataforma vencida" : `${overdueB.length} plataformas vencidas`} · publicá ahora</span>
-              : <>Hoy, {formatLongDate(todayStr())}</>}
-          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">Hoy, {formatLongDate(todayStr())}</p>
         </div>
         <button
           onClick={() => loadAll(true)}
@@ -1133,28 +1114,22 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
 
           {/* ── Mobile (< lg): feed por urgencia ── */}
           <div className="lg:hidden flex flex-col gap-5">
-            {overdueB.length > 0 && (
-              <section className="flex flex-col gap-2">
-                <p className="text-[11px] uppercase tracking-wide font-semibold text-red-500 px-1">Vencido — publicar ahora</p>
-                {overdueB.map(x => renderMobileCard(x, true))}
-              </section>
-            )}
             {todayB.length > 0 && (
               <section className="flex flex-col gap-2">
                 <p className="text-[11px] uppercase tracking-wide font-semibold text-orange-500 px-1">Hoy</p>
-                {todayB.map(x => renderMobileCard(x, false))}
+                {todayB.map(x => renderMobileCard(x))}
               </section>
             )}
             {soonB.length > 0 && (
               <section className="flex flex-col gap-2">
                 <p className="text-[11px] uppercase tracking-wide font-semibold text-amber-500 px-1">Mañana</p>
-                {soonB.map(x => renderMobileCard(x, false))}
+                {soonB.map(x => renderMobileCard(x))}
               </section>
             )}
             {laterB.length > 0 && (
               <section className="flex flex-col gap-2">
                 <p className="text-[11px] uppercase tracking-wide font-semibold text-muted-foreground px-1">Próximo</p>
-                {laterB.map(x => renderMobileCard(x, false))}
+                {laterB.map(x => renderMobileCard(x))}
               </section>
             )}
             <section className="flex flex-col gap-2 mt-1">

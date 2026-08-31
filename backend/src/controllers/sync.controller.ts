@@ -415,6 +415,15 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
           matchStatus:  'manual',
           views, likes, comments,
           lastSyncedAt: new Date(),
+          // null explícito, no un `new Date()` -- `stats` viene del cliente
+          // (puede ser lo que ya tenía cacheado desde que se listaron los
+          // candidatos, no un fetch en vivo de ESTE instante), y encima este
+          // mismo update puede estar re-matcheando a un platformId distinto
+          // del anterior -- ni uno ni otro caso justifica heredar o inventar
+          // un statsSyncedAt "fresco". Queda `stale` de entrada, se refresca
+          // solo en el próximo getGroupStats/getFileStats real (Fase 5, ver
+          // platform-video.model.ts).
+          statsSyncedAt: null,
         },
       },
       { upsert: true }
@@ -508,6 +517,7 @@ async function resolvePendingTikTokIds(userId: string, pvs: { platform: string; 
 function buildFilePlatforms(pvs: {
   platform: string; platformId: string; platformUrl: string; title: string; thumbnail: string;
   views: number; likes: number; comments: number; publishedAt: Date; lastSyncedAt: Date;
+  statsSyncedAt?: Date | null;
 }[]) {
   // Un mismo video de Instagram o TikTok puede tener más de un documento
   // (shortcode/publish_id sin resolver de un intento viejo vs. el id numérico
@@ -540,8 +550,12 @@ function buildFilePlatforms(pvs: {
       platformId: pv.platformId, platformUrl: pv.platformUrl, title: pv.title, thumbnail: pv.thumbnail,
       views: pv.views ?? 0, likes: pv.likes ?? 0, comments: pv.comments ?? 0,
     };
-    const lastSynced = pv.lastSyncedAt ? new Date(pv.lastSyncedAt).getTime() : 0;
-    if (Date.now() - lastSynced > statsCacheWindowMs(pv.publishedAt)) {
+    // statsSyncedAt, no lastSyncedAt -- ver comentario en platform-video.model.ts
+    // (Fase 5, plan de invalidación instantánea 2026-08-31). null (match recién
+    // creado, nunca se pidieron métricas reales) siempre cuenta como vencido,
+    // sin esperar la ventana de caché.
+    const statsSynced = pv.statsSyncedAt ? new Date(pv.statsSyncedAt).getTime() : 0;
+    if (Date.now() - statsSynced > statsCacheWindowMs(pv.publishedAt)) {
       stale[pv.platform as 'youtube' | 'instagram' | 'tiktok'] = pv.platformId;
     }
   }
@@ -581,7 +595,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       const rawLinked = await PlatformVideoModel.find({
         userId, platform: platform as 'youtube' | 'instagram' | 'tiktok', platformId: { $ne: '' }, linkedFileId: { $ne: null },
       })
-        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt statsSyncedAt')
         .sort({ publishedAt: -1 })
         .limit(limit * 4)
         .lean();
@@ -636,7 +650,7 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
       linked = await PlatformVideoModel.find({
         userId, linkedFileId: { $in: fileIds }, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
       })
-        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+        .select('linkedFileId platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt statsSyncedAt')
         .lean();
       await resolvePendingTikTokIds(userId, linked);
     }
@@ -773,6 +787,11 @@ export const getGroupStats = async (req: AuthRequest, res: Response): Promise<vo
             update: { $set: {
               views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0,
               lastSyncedAt: new Date(),
+              // Esto SÍ es un fetch real a la API de la plataforma (arriba,
+              // Promise.all de getYoutubeVideoStats/getMediaStats/
+              // getTiktokVideoStats) -- acá corresponde marcar fresco de
+              // verdad (Fase 5, ver platform-video.model.ts).
+              statsSyncedAt: new Date(),
               // Ninguno de los uploaders (applyPlatformPublish) tiene de dónde
               // sacar una miniatura al momento de publicar -- se completa acá,
               // aprovechando el mismo refresco en vivo que ya pide stats.
@@ -816,7 +835,7 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
     const pvs = await PlatformVideoModel.find({
       userId, linkedFileId: file._id, platform: { $in: ['youtube', 'instagram', 'tiktok'] },
     })
-      .select('platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt')
+      .select('platform platformId platformUrl title thumbnail views likes comments publishedAt lastSyncedAt statsSyncedAt')
       .lean();
     await resolvePendingTikTokIds(userId, pvs);
 
@@ -851,6 +870,9 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
           update: { $set: {
             views: update.views ?? 0, likes: update.likes ?? 0, comments: update.comments ?? 0,
             lastSyncedAt: new Date(),
+            // Fetch real a la API de la plataforma -- ver mismo comentario en
+            // getGroupStats (Fase 5, platform-video.model.ts).
+            statsSyncedAt: new Date(),
             // Ninguno de los uploaders (applyPlatformPublish) tiene de dónde
             // sacar una miniatura al momento de publicar -- se completa acá,
             // aprovechando el mismo refresco en vivo que ya pide stats.

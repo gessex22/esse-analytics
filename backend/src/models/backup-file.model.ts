@@ -33,6 +33,23 @@ const BackupFileSchema = new Schema<IBackupFile>({
 }, { timestamps: true });
 
 BackupFileSchema.index({ userId: 1, file_name: 1 }, { unique: true });
-BackupFileSchema.index({ userId: 1, content_id: 1 });
+// Único por usuario + content_id (Fase 6, SYNC-02#1, 2026-08-31) -- antes
+// no era único. Ver el mismo comentario extendido en file.model.ts para el
+// contexto completo de la reconciliación que hizo falta antes de esto.
+//
+// C4 (precedencia entre los dos únicos de esta colección, sin resolver del
+// todo): un rename que hiciera que el file_name de un documento matcheado
+// por content_id colisionara con el file_name de OTRO documento distinto
+// dispararía un E11000 en userId_1_file_name_1 al actualizar. Caso raro
+// (mismo usuario renombrando a un nombre que ya usa otro archivo suyo) y
+// ya amortiguado por diseño: bulkUpsertBackupFiles corre con
+// {ordered:false} + try/catch (hallazgo H7), así que ese único documento
+// falla en silencio (logueado, no user-facing) sin tumbar el resto del
+// push. Aceptado como limitación conocida en vez de construir lógica de
+// merge -- retomar si se observa en la práctica.
+BackupFileSchema.index(
+  { userId: 1, content_id: 1 },
+  { unique: true, partialFilterExpression: { content_id: { $type: 'string' } } },
+);
 
 export const BackupFileModel = model<IBackupFile>('BackupFile', BackupFileSchema, 'backup_files');

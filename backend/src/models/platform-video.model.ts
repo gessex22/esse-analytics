@@ -28,7 +28,23 @@ export interface IPlatformVideo extends Document {
   // no lo pisa ni depende de él. Una vez agrupadas, vincular una sola al archivo
   // local (linkedFileId) alcanzaría para resolver las demás por transitividad.
   crossMatchGroupId?: string;
+  // "Sincronización del vínculo" -- se toca en cada write de este doc (creación
+  // incluida, default Date.now) y se usa para desempatar entre 2 documentos de
+  // la MISMA plataforma en buildFilePlatforms (sync.controller.ts). NO indica
+  // que las métricas (views/likes/comments) reflejen un fetch real a la API de
+  // la plataforma -- ver statsSyncedAt para eso.
   lastSyncedAt: Date;
+  // Cuándo se pidieron de verdad métricas reales a la API de la plataforma por
+  // última vez -- distinto de lastSyncedAt (Fase 5, SYNC-02, plan de
+  // invalidación instantánea 2026-08-31: docs/instant-matches-stats-plan-2026-08-31.md).
+  // null en un match recién creado (por diseño, ver default abajo): antes
+  // lastSyncedAt se pisaba con `new Date()` en el momento de vincular
+  // (applyPlatformPublish), sin haber pedido ninguna métrica real -- eso hacía
+  // que buildFilePlatforms considerara "fresco" un video con 0 vistas durante
+  // toda la ventana de caché (5 min), aunque la plataforma ya tuviera datos
+  // reales disponibles. Con null acá, ese video queda `stale` de entrada y se
+  // refresca en el primer getGroupStats/getFileStats real que le toque.
+  statsSyncedAt?: Date | null;
 }
 
 const platformVideoSchema = new Schema<IPlatformVideo>({
@@ -51,6 +67,8 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   matchCandidates:  { type: [String], default: undefined },
   crossMatchGroupId:{ type: String, default: null, index: true },
   lastSyncedAt:     { type: Date, default: Date.now },
+  // default: null a propósito -- ver comentario en la interfaz de arriba.
+  statsSyncedAt:    { type: Date, default: null },
 });
 
 // Índice único por usuario + plataforma + ID nativo (evita duplicados en re-sync)

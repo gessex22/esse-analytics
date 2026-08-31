@@ -10,6 +10,7 @@ import { Skeleton } from "./ui/skeleton";
 import {
   Platform, SlimVideo, PLATFORMS, YT_CATEGORIES,
   TagInput, VideoPickerModal, AccountCardSkeleton, resolveNextForPlatform, VideoThumbnail,
+  FacebookIcon,
 } from "./YoutubeUploadView";
 import { API_BASE as API } from "../config";
 
@@ -411,7 +412,10 @@ export function SimpleUploadView({ onManualMode }: { onManualMode: () => void })
                           <label className="flex items-center gap-3 cursor-pointer select-none">
                             <input type="checkbox" checked={igCrossPostFb} onChange={e => setIgCrossPostFb(e.target.checked)} className="accent-primary" />
                             <span className="text-sm text-muted-foreground">
-                              También publicar en Facebook
+                              <span className="flex items-center gap-1.5">
+                                <FacebookIcon className="w-4 h-4 text-blue-400" />
+                                También publicar en Facebook
+                              </span>
                               <span className="block text-[11px] text-muted-foreground/70">
                                 Se publica aparte en tu Página de Facebook vinculada — no depende de ninguna config de Instagram
                               </span>

@@ -57,3 +57,18 @@ await build({
 });
 
 console.log(`✓ server.cjs generado en ${outFile}`);
+
+// La pantalla de "puerto ocupado" es HTML plano, no pasa por tsc (que solo
+// compila .ts). Se copia acá para que exista tanto en `npm run dev` como en el
+// instalador (electron-builder empaqueta dist/** completo). Sin esto, el
+// main process llamaría a loadFile() sobre un archivo inexistente justo en el
+// unico momento en que no hay ninguna otra ventana que mostrar.
+const portConflictSrc = path.join(__dirname, 'src/port-conflict.html');
+const portConflictOut = path.join(__dirname, 'dist/port-conflict.html');
+fs.copyFileSync(portConflictSrc, portConflictOut);
+console.log(`✓ port-conflict.html copiado a ${portConflictOut}`);
+
+// Mismo motivo: la pantalla muestra el logo de la app y los assets de
+// electron-builder (buildResources) no se copian al paquete final.
+fs.copyFileSync(path.join(__dirname, 'assets/icon.png'), path.join(__dirname, 'dist/icon.png'));
+console.log('✓ icon.png copiado a dist/');

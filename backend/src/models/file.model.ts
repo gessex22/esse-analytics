@@ -15,7 +15,7 @@ export type Platform = 'youtube' | 'instagram' | 'tiktok' | 'facebook';
 export interface IFile extends Document {
   userId?: string;       // dueño del archivo (scoping por cuenta). Legacy = sin dueño → backfill al owner.
   content_id?: string;   // identidad estable ante renombres/reimportaciones -- ver BackupFileModel y
-                          // files.content_id en SQLite local. Registros viejos no lo tienen (sparse).
+                          // files.content_id en SQLite local. Registros viejos no lo tienen (partial).
   file_name: string;
   file_path: string;
   status: 'PENDIENTE' | 'PROCESANDO' | 'TRANSCRITO' | 'ELIMINADO_DISCO' | 'ERROR';
@@ -40,7 +40,13 @@ export interface IFile extends Document {
 
 const FileSchema = new Schema<IFile>({
   userId: { type: String, index: true },
-  content_id: { type: String, sparse: true },
+  // Sin sparse acá -- el índice compuesto de abajo ya declara su propio
+  // partialFilterExpression explícito (Fase 6, SYNC-02#1). Un `sparse: true`
+  // a nivel de campo auto-creaba además un índice suelto {content_id:1} sin
+  // declarar en ningún lado del código (encontrado en la auditoría de
+  // 2026-08-31), redundante con el compuesto y sin beneficio real dado que
+  // toda consulta real ya filtra por userId primero.
+  content_id: { type: String },
   file_name: { type: String, required: true },
   file_path: { type: String, required: true },
   status: { type: String, required: true, enum: ['PENDIENTE', 'PROCESANDO', 'TRANSCRITO', 'ELIMINADO_DISCO', 'ERROR'] },
@@ -71,9 +77,23 @@ const FileSchema = new Schema<IFile>({
   scheduled_date: { type: Date },
 }, { timestamps: true });
 
-// Índice compuesto para el lookup por identidad estable (bulkUpsertBackupFiles,
-// applyPlatformPublish) -- sparse porque los registros viejos no tienen content_id.
-FileSchema.index({ userId: 1, content_id: 1 }, { sparse: true });
+// Único por usuario + content_id (Fase 6, SYNC-02#1, 2026-08-31) -- antes
+// era sparse y NO único (permitía duplicados). Se subió a único recién
+// después de reconciliar una divergencia histórica real entre files/
+// backup_files (1033 registros con content_id distinto para el mismo
+// archivo, causa: un wipe/reinstalación del 2026-06-26 -- ver
+// docs/SYNC-01-audit-2026-08-30.md), migrada con
+// backend/scripts/mongo-content-id-reconcile-backup-files.js antes de
+// poder subir este índice sin que fallara. partialFilterExpression
+// explícito en vez de `sparse` (mismo patrón ya probado en producción por
+// remote-library-video.model.ts) -- sparse en un índice compuesto excluye
+// el documento si CUALQUIERA de los dos campos falta, lo cual acá coincide
+// con lo que queríamos, pero es un comportamiento implícito/frágil frente
+// a declarar explícitamente qué documentos entran al índice.
+FileSchema.index(
+  { userId: 1, content_id: 1 },
+  { unique: true, partialFilterExpression: { content_id: { $type: 'string' } } },
+);
 
 // Único por usuario, no global (2026-08-13, ver docs/mongo-audit-2026-08-13.md):
 // antes file_path era único GLOBAL (índice creado fuera del schema, nunca

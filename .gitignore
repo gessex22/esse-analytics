@@ -67,3 +67,7 @@ backend/resp.json
 
 # ─── Store del Laboratorio (mock, se regenera con /api/lab/reset) ──
 lab-backend/lab-data/
+
+# ─── Scratch / salidas generadas de scripts (nunca versionar) ──────
+tmp/
+backend/scripts/output/
