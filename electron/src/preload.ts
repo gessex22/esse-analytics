@@ -16,4 +16,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // solo el campo de texto manual (mismo frontend servido por LAN/túnel sin
   // Electron, o web remota) -- ver LibraryPanel.tsx.
   isElectron: true,
+
+  // Espeja el tema elegido (rojo/ámbar) en el userData para que las ventanas
+  // NATIVAS de la app puedan usar la misma paleta -- hoy la pantalla de
+  // "puerto ocupado", que se dibuja justamente cuando el frontend no puede
+  // cargarse. Ver useTheme.ts.
+  setUiTheme: (theme: string): Promise<boolean> => ipcRenderer.invoke('ui:set-theme', theme),
+
+  // Solo lo usa dist/port-conflict.html (la pantalla de "puerto 4000
+  // ocupado"). Comparte este preload porque es una ventana más de la misma
+  // app; el frontend normal nunca llama a estos métodos.
+  portConflict: {
+    info: (): Promise<unknown> => ipcRenderer.invoke('port-conflict:info'),
+    retry: (): Promise<{ ok: boolean; info?: unknown }> => ipcRenderer.invoke('port-conflict:retry'),
+    copyDetails: (): Promise<boolean> => ipcRenderer.invoke('port-conflict:copy'),
+    quit: (): Promise<void> => ipcRenderer.invoke('port-conflict:quit'),
+  },
 });

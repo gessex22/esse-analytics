@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
-import { Play, Camera, Music2, Share2, Loader2, History as HistoryIcon, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import type { ComponentType } from "react";
+import { Play, Camera, Music2, Loader2, History as HistoryIcon, ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
 import { syncService, videoService } from "../services/api";
+import { FacebookIcon } from "./YoutubeUploadView";
+
+type PlatformIcon = ComponentType<{ className?: string }>;
 
 type HistoryPlatform = "youtube" | "tiktok" | "instagram" | "facebook";
 
@@ -19,11 +22,11 @@ type HistoryItem = {
   source: string | null;
 };
 
-const PLATFORM_CFG: Record<HistoryPlatform, { label: string; icon: LucideIcon; text: string; light: string; bg: string }> = {
-  youtube:   { label: "YouTube",   icon: Play,     text: "text-red-500",    light: "bg-red-500/10",    bg: "bg-red-500"    },
-  tiktok:    { label: "TikTok",    icon: Music2,   text: "text-pink-500",   light: "bg-pink-500/10",   bg: "bg-pink-500"   },
-  instagram: { label: "Instagram", icon: Camera,   text: "text-purple-500", light: "bg-purple-500/10", bg: "bg-purple-500" },
-  facebook:  { label: "Facebook",  icon: Share2,   text: "text-blue-500",   light: "bg-blue-500/10",   bg: "bg-blue-500"   },
+const PLATFORM_CFG: Record<HistoryPlatform, { label: string; icon: PlatformIcon; text: string; light: string; bg: string }> = {
+  youtube:   { label: "YouTube",   icon: Play,         text: "text-red-500",    light: "bg-red-500/10",    bg: "bg-red-500"    },
+  tiktok:    { label: "TikTok",    icon: Music2,       text: "text-pink-500",   light: "bg-pink-500/10",   bg: "bg-pink-500"   },
+  instagram: { label: "Instagram", icon: Camera,       text: "text-purple-500", light: "bg-purple-500/10", bg: "bg-purple-500" },
+  facebook:  { label: "Facebook",  icon: FacebookIcon, text: "text-blue-500",   light: "bg-blue-500/10",   bg: "bg-blue-500"   },
 };
 
 const FILTERS: { value: HistoryPlatform | "all"; label: string }[] = [
@@ -54,7 +57,7 @@ const PAGE_SIZE = 10;
 function HistoryThumb({ fileId, cfg, Icon }: {
   fileId: number | null;
   cfg?: { bg: string };
-  Icon: LucideIcon;
+  Icon: PlatformIcon;
 }) {
   const [failed, setFailed] = useState(false);
   const showImage = !!fileId && !failed;

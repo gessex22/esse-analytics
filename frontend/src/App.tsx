@@ -146,16 +146,16 @@ export default function App() {
   const [notifOpen, setNotifOpen]           = useState(false);
   const [userMenuOpen, setUserMenuOpen]     = useState(false);
 
-  // ── Alto real de header+banners, publicado como variable CSS ───────────────
+  // ── Alto real de banners, publicado como variable CSS ──────────────────────
   // --app-chrome-top nunca se calcula a mano (ni por cantidad de banners ni por
   // breakpoint): un ResizeObserver mide el contenedor de verdad, así que cuando
   // el banner de Laboratorio (u otro) no está montado, el valor baja solo sin
   // dejar hueco -- y si algún día se agrega otro banner, o el texto pasa a 2
   // líneas en una ventana angosta, el valor sigue siendo exacto sin tocar esta
-  // lógica. header+banners siguen en flujo normal (nunca position:fixed), así
-  // que "Contenido" ya no se solapa con esto por sí solo; esta variable existe
-  // para que ninguna vista tenga que adivinar el offset si alguna vez lo necesita
-  // (ver también --app-bottom-safe en styles/index.css).
+  // lógica. El header flotante queda fuera del flujo y usa este valor como su
+  // posición superior para aparecer debajo de cualquier banner activo. El
+  // scroll vive en <main>, así que las píldoras permanecen visibles mientras
+  // el contenido pasa por debajo.
   //
   // Callback ref, no useRef+useEffect: este componente tiene returns
   // condicionales tempranos (loading/login) ANTES de llegar al JSX que monta
@@ -490,18 +490,19 @@ export default function App() {
       />
 
       {/* ── Área principal ─────────────────────────────────────────────────── */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="relative flex-1 flex flex-col overflow-hidden min-w-0">
 
-        {/* Header + banners apilables (Laboratorio, remoto, carpeta pendiente, móvil).
+        {/* Banners apilables (Laboratorio, remoto, carpeta pendiente, móvil).
             Se mide con ResizeObserver (ver setChromeRef más arriba) y se publica
             en --app-chrome-top -- así cualquier vista puede saber el alto REAL de
-            lo que tiene fijo arriba sin adivinar un número por cantidad de banners
-            activos. No hace falta para que "Contenido" no se solape (ya es flujo
-            normal de flexbox, nunca position:fixed) — existe para que ninguna
-            vista tenga que hardcodear ese offset si alguna vez lo necesita. */}
+            los banners sin adivinar un número. El header usa ese mismo valor para
+            flotar inmediatamente debajo de ellos. */}
         <div ref={setChromeRef}>
         {/* Header */}
-        <header className="flex items-center justify-between sm:justify-end px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0 bg-background">
+        <header
+          className="absolute inset-x-0 z-30 flex items-center justify-between sm:justify-end px-4 sm:px-6 py-3 sm:py-4"
+          style={{ top: "var(--app-chrome-top)" }}
+        >
 
           {/* Mobile: solo logo */}
           <div className="flex items-center gap-2 sm:hidden">
@@ -740,22 +741,13 @@ export default function App() {
         )}
         </div>
 
-        {/* Contenido */}
-        {/* sm:min-h-screen (forzaba min-height:100vh sin importar cuánto header+
-            banners hubiera arriba -- bug real preexistente, ver commit) se saca a
-            propósito: este div ya es flex-1 dentro de un padre flex-col de altura
-            fija (100dvh), así que ya crece para llenar el espacio disponible sin
-            necesitar un mínimo hardcodeado que compita con eso. Con 2-3 banners
-            apilados (Laboratorio + aviso de carpeta + modo móvil), ese mínimo de
-            100vh terminaba empujando el contenido ~heightDeChrome píxeles por
-            debajo del viewport real -- el botón final de Publicar (YouTube/
-            Instagram/TikTok) quedaba fuera de alcance aunque <main> reportara
-            que sí había scroll disponible. Verificado con el banner de
-            Laboratorio prendido y apagado, en 400×700 y 900×600. */}
+        {/* Contenido. Solo <main> hace scroll: el header queda fuera del flujo,
+            sin superficie propia, mientras la campana y el chip permanecen
+            flotando por encima de la página. */}
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           <main
                 ref={contentScrollRef}
-                className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 py-5 sm:py-7 sm:pb-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 pt-16 pb-5 sm:pt-7 sm:pb-0"
                 style={{ paddingBottom: "var(--app-bottom-safe)" }}
               >
                 <AnimatePresence mode="wait" initial={false} custom={navigationDirection} onExitComplete={() => restoreScrollForNav(effectiveNav)}>

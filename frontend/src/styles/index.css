@@ -8,10 +8,10 @@
    cualquier otra pantalla) quede clickeable por encima del MobileNav fijo
    (Sidebar.tsx, position: fixed bottom-0, solo <sm) y del home indicator de
    iOS -- valor estático porque el alto de esa barra no cambia en runtime.
-   --app-chrome-top: alto REAL medido de header+banners (Laboratorio, remoto,
+   --app-chrome-top: alto REAL medido de los banners (Laboratorio, remoto,
    carpeta pendiente, móvil) -- lo publica App.tsx vía ResizeObserver, nunca
-   un número fijo. En producción sin ningún banner activo queda en el alto
-   del header solo, sin hueco de más. */
+   un número fijo. El header flotante usa este valor para colocarse justo
+   debajo; sin banners queda en 0px. */
 :root {
   --app-bottom-safe: max(5rem, calc(env(safe-area-inset-bottom) + 5rem));
   --app-chrome-top: 0px;

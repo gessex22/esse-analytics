@@ -11,6 +11,21 @@
         ],
         "createdAt": "2026-08-14T02:10:52.065Z",
         "reason": "purple-to-pink gradient is the Instagram brand identity on Instagram-only connect/publish buttons (pre-existing, not touched by this change), not an arbitrary AI palette choice"
+      },
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-08-27T07:07:53.006Z",
+        "reason": "user confirmed: pidio explicitamente 'manten el estilo de la app con la paleta de colores'. Inter no es una eleccion nueva -- es la tipografia que ya usa el frontend (frontend/src/styles/fonts.css importa Inter). Esta pantalla nativa tiene que verse como el resto de la app."
+      },
+      {
+        "rule": "ai-color-palette",
+        "value": "bg-purple-500",
+        "files": [
+          "frontend/src/components/PublishingQueue.tsx"
+        ],
+        "createdAt": "2026-08-30T06:20:08.337Z",
+        "reason": "Instagram brand color (real platform identity, not an AI-slop gradient) — pre-existing PLATFORM_CFG entry, not touched in this session's edits"
       }
     ]
   }
