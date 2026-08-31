@@ -34,6 +34,188 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-30-02 — Calendario: "Vencido" deja de ser un bucket/urgencia propia, se fusiona con "Hoy" (CALENDAR-01)
+
+- Estado: `corregido`; verificado con build real en iOS (ver abajo). Pendiente de build real en Android (Electron sí compiló y lintió limpio).
+- Reportado: 2026-08-30
+- Plataformas: iOS, Android, Web/Electron
+- Severidad: baja (decisión de UX, no bug de datos)
+- Reportado por: usuario
+
+### Contexto
+
+No es un bug de datos: investigado a fondo (ver memoria `mobile_audit_2026_08_30_refresh_sync_thumbs.md`), no existe ningún sistema de "video asignado a un día fijo que necesite reprogramarse". El calendario real es 100% cadencia por plataforma (`lastPublishedDate + intervalDays`, calculado client-side en los 3 clientes), y "vencido" ya era un estado calculado correctamente en los 3 — solo el TRATAMIENTO visual era inconsistente (Electron y iOS-recién-ayer lo agrupaban en una sección roja separada "Vencido"; Android lo marcaba con badge por tarjeta sin agrupar).
+
+### Decisión del usuario
+
+Simplificar en vez de unificar hacia el diseño más elaborado: un pendiente vencido (nextDate en el pasado, sin publicar) se trata **idéntico** a uno de "Hoy" — mismo color, mismo label, sin contador de días vencidos ni sección separada. Reemplaza por completo el fix `2026-08-29` de iOS (`case .overdue`) que había agregado justo la sección separada para tener paridad con desktop — paridad que ahora se logra en la dirección contraria.
+
+### Corrección
+
+- **iOS** (`CalendarView.swift`): se eliminó `case overdue` de `CalendarScheduleGroup.Kind`; `contains` de `.today` pasa de `days == 0` a `days <= 0`. Solo quedan `.today`/`.tomorrow`.
+- **Android** (`CalendarScreen.kt`): `UrgencyPill` ya no distingue `days < 0` — color `UrgencyToday`, ícono `Schedule` (antes `WarningAmber`), label `"Hoy"` (antes `"Venció Nd"`) para cualquier `days <= 0`. Imports `WarningAmber`/`UrgencyPast` removidos por quedar sin uso en este archivo.
+- **Electron** (`PublishingQueue.tsx`): tipo `Urgency` pierde el miembro `"past"`; `getUrgency` funde `d < 0` en `"today"`; se eliminó la sección "Vencido — publicar ahora" (bucket `overdueB`, siempre vacío ahora), el banner "⚠ N plataformas vencidas" del header, el borde rojo + botón "Publicar" rojo de `UpcomingCard`, y la sombra roja de `PlatformCard`. Imports `AlertTriangle`/`ArrowRight` removidos por quedar sin uso.
+
+### Verificación y pendiente
+
+- Electron: `npm run lint` (0 errores) y `npm run build` (build limpio) — verificado en este entorno.
+- **iOS: build real verificado** vía SSH a la Mac del usuario (`macgessemberg22`, ver [[ios_ssh_build]]) — `xcodebuild build -destination "generic/platform=iOS Simulator"`, `EXIT=0`, cero `error:` en el log completo (931 líneas), sin ningún warning nuevo en `CalendarView.swift` (los únicos warnings del log son preexistentes, de concurrencia Swift 6 en otros archivos). Antes de sincronizar se comparó el diff del archivo entre Windows y la Mac: la única diferencia eran justo los cambios de esta sesión — la Mac no tenía trabajo propio distinto en ese archivo puntual (sí tiene otros 3 archivos con cambios sin commitear ajenos a esta sesión — `Colors.swift`, `PublishOptionsFields.swift`, `HistoryView.swift` — que NO se tocaron ni se sincronizaron).
+- Android: no compilable desde este entorno Windows (ver trampa de entorno en `UIEssePanel/CLAUDE.md`). Verificado a mano (switches exhaustivos, imports sin uso removidos). Pendiente build real en Android Studio/gradlew.
+
+### Regresión encontrada por el usuario tras el build (mismo día)
+
+Tras instalar el build, el usuario reportó ~62 videos viejos apareciendo
+como "publicados hoy" en la lista de Historial/publicados del Calendario
+iOS. Causa: `CalendarScheduleGroup.Kind.contains(_:)` se reutilizaba para
+DOS cosas distintas — filtrar la fecha de cadencia calculada (`nextDate`,
+donde "vencido cae en Hoy" es el comportamiento querido) Y filtrar fechas
+REALES de `publishedAt` en `publishedToday()` (historial, hasta 60
+registros) — ahí `días <= 0` matchea casi cualquier publicación pasada, no
+solo la de hoy.
+
+Fix: el fold "vencido → Hoy" se movió de `Kind.contains` (genérico) a
+`configs(for kind:)` (específico de la fecha de cadencia). `Kind.contains`
+vuelve a su semántica original de día exacto (`days == 0` para hoy), que es
+lo correcto para `publishedToday()` y para cualquier otro uso futuro sobre
+fechas reales.
+
+### Historial
+- 2026-08-30 — agente: investigación (CALENDAR-01A) descartó la hipótesis de rollover de fecha fija; implementado el fix de simplificación acordado con el usuario en los 3 clientes.
+- 2026-08-30 — agente: verificado con build real en iOS (SSH a la Mac), exit 0, sin errores.
+- 2026-08-30 — agente: usuario reportó regresión (62 videos como "publicados hoy"); causa raíz encontrada (`Kind.contains` reusado para fecha de cadencia Y fecha real de historial); corregido separando ambos usos; reverificado con build real, exit 0, sin errores.
+
+## BUG-2026-08-30-01 — Android: pull-to-refresh de Dashboard/Calendario devolvía datos cacheados (REFRESH-01)
+
+- Estado: `corregido`; pendiente de verificación con build real (Android Studio/gradlew).
+- Reportado: 2026-08-30
+- Plataformas: Android
+- Severidad: media
+- Reportado por: usuario (brief de auditoría de refresh móvil)
+
+### Síntoma y pasos para reproducir
+
+En Android, publicar/editar un dato (desde otro dispositivo o el mismo) y tirar
+para refrescar Dashboard o Calendario dentro de los ~30s siguientes no trae el
+dato nuevo — hace falta cerrar y reabrir la app para verlo.
+
+### Resultado esperado / resultado observado
+
+Esperado: un pull-to-refresh explícito siempre ignora cualquier caché y trae
+el estado actual del backend. Observado: dentro de la ventana de TTL de la
+caché compartida, el refresh manual devolvía silenciosamente la misma
+respuesta cacheada, sin red de por medio.
+
+### Investigación
+
+`SyncRepository` (`core/network/src/.../SyncRepository.kt`) cachea
+`getGroupStats`/`getCalendarConfig`/`getHistory` con un TTL de 30s
+(`Timed.expired()`), pensado para evitar refetch al cambiar de tab. Cada
+método acepta `force: Boolean = false` para bypasear la caché a propósito.
+`DashboardViewModel.refresh()` y `CalendarViewModel.refresh()` — ambos
+conectados directo a `PullToRefreshBox(onRefresh = viewModel::refresh)` —
+llamaban a `getGroupStats`/`getCalendarConfig` SIN `force = true`, mientras
+que la misma función sí lo hacía para `getHistory` (Dashboard) y mientras que
+`StatsViewModel.refresh()` sí lo hacía correctamente para su propio
+`getGroupStats`. Es decir: el mecanismo correcto ya existe y ya está probado
+en el mismo código, solo faltaba propagarlo de forma consistente.
+
+Además, en ambos ViewModels `init { refresh() }` compartía la misma función
+que el pull-to-refresh — de haber agregado `force = true` directo ahí, la
+carga inicial (o un ViewModel recreado con caché aún tibia de otra pantalla)
+hubiera perdido el beneficio de la caché compartida sin necesidad.
+
+### Corrección
+
+En `DashboardViewModel.kt` y `CalendarViewModel.kt`: se separó el cuerpo de
+`refresh()` en un `private fun load(force: Boolean)`. `init` ahora llama
+`load(force = false)` (conserva el aprovechamiento de caché en carga
+inicial/navegación), `refresh()` llama `load(force = true)` (bypass real de
+caché, semántica correcta de un pull-to-refresh explícito). `getHistory`
+sigue forzando siempre en Dashboard (comportamiento preexistente, sin tocar).
+
+### Verificación y pendiente
+
+No compilable desde este entorno (Windows sin Gradle real — ver trampa de
+entorno en `UIEssePanel/CLAUDE.md`). Pendiente que el usuario corra
+`./gradlew` desde Android Studio y confirme en dispositivo real:
+- Dashboard: publicar/editar desde otro dispositivo, volver y refrescar antes
+  de que pasen 30s → debe traer el dato nuevo.
+- Calendario: mismo caso.
+- Estadísticas/Historial (ya correctos antes de este fix) sin regresión.
+- Cambiar de tab rápido sigue sin generar refetch de más (init sigue
+  aprovechando la caché).
+
+### Historial
+- 2026-08-30 — agente: causa raíz identificada y fix aplicado; sin build real todavía.
+
+## BUG-2026-08-24-01 — iOS fallaba al eliminar un video desde la lista Videos
+
+- Estado: `corregido`; pendiente de verificación en dispositivo.
+- Reportado: 2026-08-24
+- Plataformas: iOS
+- Severidad: alta (podía cerrar la app o aparentar un borrado que luego se revertía)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+En iOS, abrir **Videos**, deslizar una fila y tocar **Eliminar**. El primer
+arreglo evitó parte de los abortos al confirmar, pero el usuario verificó que
+la app todavía podía cerrarse casi inmediatamente después de abrir el cuadro
+con las opciones local/Nube, antes de elegir una. Si el video incluía una copia
+en Nube, un fallo HTTP también podía ocultarse y la fila reaparecía al refrescar.
+
+### Investigación
+
+El cierre del swipe/diálogo podía coincidir con la paginación de Nube y con dos
+mutaciones separadas de la lista fusionada: borrar el `FileEntity` local hacía
+aparecer temporalmente su copia remota y después el paginador la quitaba. Para
+UIKit eran varios cambios estructurales superpuestos sobre el mismo `List`.
+Además, el `try?` del borrado remoto descartaba cualquier error del servidor.
+
+La recurrencia del 2026-08-25 mostró dos riesgos que seguían activos:
+
+- `confirmationDialog` se montaba desde el botón del swipe mientras el `List`
+  todavía animaba el cierre de esa misma fila. El crash ya no dependía de que
+  el usuario confirmara una eliminación.
+- La identidad compartida Local/Nube podía asignar el mismo `remote_<id>` a
+  más de una copia local vinculada o con el mismo nombre. Eso dejaba IDs
+  duplicados en `ForEach`; una actualización inocua, como presentar el cuadro,
+  podía hacer fallar el diff interno de `UICollectionView`.
+
+### Corrección
+
+- El `List` permanece montado al quedar vacío y el spinner de paginación es un
+  overlay, no una fila condicional.
+- La precarga se pausa mientras el diálogo o el borrado están activos.
+- Local y Nube comparten identidad visual únicamente cuando el vínculo es
+  inequívoco y uno-a-uno; las copias ambiguas conservan IDs locales únicos.
+- En un borrado conjunto se confirma Nube primero y luego se aplican juntas las
+  mutaciones del paginador y SwiftData en `MainActor`.
+- Los errores remotos se muestran y ya no se retira la fila fingiendo éxito.
+- El fallback por nombre solo vincula videos cuando la coincidencia es única,
+  evitando borrar otra copia con el mismo nombre.
+- El `confirmationDialog` del sistema se reemplazó por un panel propio fuera
+  del `List`. El snapshot se captura al tocar el swipe, pero el panel se monta
+  en el siguiente tick; al confirmar, el panel se desmonta antes de mutar
+  SwiftData o el paginador.
+
+### Verificación y pendiente
+
+- Build real con Xcode 26.5 para iOS Simulator: `BUILD SUCCEEDED` tras la
+  corrección de la recurrencia.
+- `git diff --check`: correcto.
+- Pendiente: repetir en el dispositivo el borrado local, remoto y conjunto,
+  incluido el último video visible.
+
+### Historial
+
+- 2026-08-25 — usuario: confirmó que el crash seguía ocurriendo casi al abrir
+  el cuadro local/Nube, sin llegar a elegir una acción.
+- 2026-08-25 — Codex: retiró la presentación del sistema del ciclo del swipe y
+  limitó la identidad Local/Nube a vínculos 1:1; build real exitoso por Xcode.
+- 2026-08-24 — Codex: corrección de carreras de estado y manejo de error
+  remoto aplicada sobre el arreglo previo del diálogo.
+
 ## BUG-2026-08-18-01 — Estadísticas "Comparadas" ordena por fecha de creación del archivo, no por cuándo se completó el match de las 3 plataformas
 
 - Estado: `corregido`; pendiente deploy de la central + verificación visual en los 3 clientes.
