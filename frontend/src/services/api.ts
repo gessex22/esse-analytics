@@ -683,8 +683,13 @@ export interface CrossMatchCandidate {
   };
   // Rediseño 2026-09-01: una plataforma descartada a propósito no es lo
   // mismo que una pendiente -- sin esto, el chip invitaba a "buscar match"
-  // para algo que el usuario ya decidió no publicar.
-  discarded: {
+  // para algo que el usuario ya decidió no publicar. Opcional a propósito
+  // (aunque el backend actualizado siempre lo manda): un bug real el mismo
+  // día mostró que si la central que responde es un proceso viejo sin
+  // reiniciar (corre aparte de Electron, no se actualiza solo con el
+  // instalador), este campo viene undefined -- el tipo optional obliga a
+  // los callers a no asumirlo presente.
+  discarded?: {
     youtube: boolean;
     instagram: boolean;
     tiktok: boolean;

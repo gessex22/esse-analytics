@@ -190,7 +190,11 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
   // Una plataforma descartada a propósito no es "pendiente" -- si no se
   // excluye acá, un video con 2 confirmadas + 1 descartada (caso real
   // reportado 2026-09-01) se mostraba para siempre como incompleto.
-  const missing = CROSS_PLATFORMS.filter(p => !candidate.resolved[p] && !candidate.discarded[p]);
+  // `?.` + `?? false`: bug real encontrado el mismo día -- si la central
+  // que responde todavía no tiene este campo (proceso viejo sin reiniciar,
+  // corre aparte de Electron), `discarded` venía undefined y esto crasheaba
+  // toda la vista (sin error boundary en la app, pantalla en blanco).
+  const missing = CROSS_PLATFORMS.filter(p => !candidate.resolved[p] && !candidate.discarded?.[p]);
   const canPreview = !!localFileId;
 
   return (
@@ -224,7 +228,7 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
               key={p}
               platform={p}
               resolved={candidate.resolved[p]}
-              discarded={candidate.discarded[p]}
+              discarded={candidate.discarded?.[p] ?? false}
               open={openPlatform === p}
               onToggle={() => setOpenPlatform(prev => prev === p ? null : p)}
             />

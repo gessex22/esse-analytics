@@ -747,7 +747,7 @@ export default function App() {
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           <main
                 ref={contentScrollRef}
-                className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 pt-16 pb-5 sm:pt-7 sm:pb-0"
+                className="flex-1 overflow-y-auto overflow-x-hidden px-5 sm:px-10 lg:px-14 pt-16 pb-5 sm:pt-10 sm:pb-0"
                 style={{ paddingBottom: "var(--app-bottom-safe)" }}
               >
                 <AnimatePresence mode="wait" initial={false} custom={navigationDirection} onExitComplete={() => restoreScrollForNav(effectiveNav)}>
