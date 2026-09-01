@@ -306,9 +306,36 @@ export const confirmCrossMatch = async (req: AuthRequest, res: Response): Promis
   }
 };
 
-// GET /api/sync/cross-match/candidates?limit=20&page=1 — en vez de adivinar a
-// ciegas con las 3 ruedas por separado, arranca de lo que YA se sabe local: los
-// archivos que tienen las 3 badges de plataforma marcadas (files.platforms).
+const CROSS_MATCH_TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const;
+
+// Construye el filtro de `files.platforms` según cuántas de las 3 badges se
+// exigen como mínimo (1/2/3) — Mongo no tiene un operador nativo "al menos N
+// de esta lista", así que para min=2 se arma como la unión de los 3 pares
+// posibles ($or de $all de a 2). Se prefiere esto sobre $expr+$setIntersection
+// por legibilidad: con solo 3 plataformas fijas, enumerar los pares a mano es
+// más fácil de verificar a ojo que una expresión de agregación.
+function buildPlatformsFilter(minPlatforms: 1 | 2 | 3) {
+  if (minPlatforms === 3) return { platforms: { $all: CROSS_MATCH_TARGET_PLATFORMS } };
+  if (minPlatforms === 1) return { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } };
+  const pairs: (readonly [string, string])[] = [
+    ['youtube', 'instagram'], ['youtube', 'tiktok'], ['instagram', 'tiktok'],
+  ];
+  return { $or: pairs.map(pair => ({ platforms: { $all: pair } })) };
+}
+
+// GET /api/sync/cross-match/candidates?limit=20&page=1&minPlatforms=1 — en vez
+// de adivinar a ciegas con las 3 ruedas por separado, arranca de lo que YA se
+// sabe local: los archivos que tienen AL MENOS `minPlatforms` badges de
+// plataforma marcadas (files.platforms). Antes exigía siempre las 3 (`$all`)
+// — un archivo recién publicado en 1 sola red no aparecía como candidato hasta
+// tener las otras 2, aunque ya hubiera trabajo real para mostrar. Fase 7 /
+// Paso 2 (docs/instant-matches-stats-plan-2026-08-31.md): el candidato debe
+// poder aparecer desde la primera publicación real, con las plataformas
+// restantes mostradas como pendientes — la UI (CandidateCard/PlatformSlotChip
+// en SyncPanel.tsx) ya soporta estados parciales, no asumía que las 3
+// estuvieran presentes de entrada. `minPlatforms` es el filtro que deja elegir
+// al usuario cuánto ruido tolerar (default 1 = todos; 2 o 3 para acotar a los
+// que están más cerca de completarse).
 // Por cada uno, resuelve qué plataformas ya tienen un platform_video vinculado
 // (linkedFileId) y cuáles todavía faltan — así el usuario solo busca lo que
 // realmente falta, no todo desde cero.
@@ -317,8 +344,10 @@ export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): 
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 20, 50);
     const page   = Math.max(1, parseInt(req.query.page as string) || 1);
+    const minPlatformsRaw = parseInt(req.query.minPlatforms as string) || 1;
+    const minPlatforms = (Math.min(3, Math.max(1, minPlatformsRaw)) as 1 | 2 | 3);
 
-    const query = { userId, platforms: { $all: ['youtube', 'instagram', 'tiktok'] } };
+    const query = { userId, ...buildPlatformsFilter(minPlatforms) };
     const [total, files] = await Promise.all([
       FileModel.countDocuments(query),
       FileModel.find(query)

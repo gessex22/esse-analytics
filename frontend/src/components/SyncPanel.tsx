@@ -227,6 +227,12 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
   );
 }
 
+const MIN_PLATFORMS_OPTIONS: { value: 1 | 2 | 3; label: string }[] = [
+  { value: 1, label: "Todos" },
+  { value: 2, label: "2+ plataformas" },
+  { value: 3, label: "3 plataformas" },
+];
+
 function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title: string) => void }) {
   const [candidates, setCandidates] = useState<CrossMatchCandidate[]>([]);
   // fileId de CrossMatchCandidate es el _id de Mongo (central) — el reproductor
@@ -237,6 +243,11 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading]       = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Cuántas de las 3 badges como mínimo — pedido explícito del usuario tras el
+  // cambio de elegibilidad (Fase 7/Paso 2): mostrar "todos" de entrada podía
+  // volverse ruidoso, así que puede acotar a los que están más cerca de
+  // completarse sin perder la vista completa.
+  const [minPlatforms, setMinPlatforms] = useState<1 | 2 | 3>(1);
 
   const resolveLocalIds = async (items: CrossMatchCandidate[]) => {
     const names = items.map(c => c.fileName);
@@ -249,7 +260,7 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await syncService.getCrossMatchCandidates(1, 20);
+      const res = await syncService.getCrossMatchCandidates(1, 20, minPlatforms);
       setCandidates(res.items);
       setPage(1);
       setTotalPages(res.totalPages);
@@ -257,14 +268,14 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [minPlatforms]);
 
   useEffect(() => { load(); }, [load]);
 
   const loadMore = async () => {
     setLoadingMore(true);
     try {
-      const res = await syncService.getCrossMatchCandidates(page + 1, 20);
+      const res = await syncService.getCrossMatchCandidates(page + 1, 20, minPlatforms);
       setCandidates(prev => [...prev, ...res.items]);
       setPage(prev => prev + 1);
       setTotalPages(res.totalPages);
@@ -290,7 +301,10 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
         <div>
           <h3 className="text-sm font-semibold text-foreground">Emparejar entre plataformas</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Archivos ya publicados en las 3 redes (badges) — completá el link de las que falten. No toca linked_file_id de las que ya están.
+            {minPlatforms === 1
+              ? "Archivos publicados en al menos una red (badge)"
+              : `Archivos con al menos ${minPlatforms} plataformas marcadas (badge)`}
+            {" "}— completá el link de las que falten. No toca linked_file_id de las que ya están.
           </p>
         </div>
         <button
@@ -303,6 +317,22 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
         </button>
       </div>
 
+      <div className="flex items-center gap-1.5">
+        {MIN_PLATFORMS_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            onClick={() => setMinPlatforms(opt.value)}
+            className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${
+              minPlatforms === opt.value
+                ? "border-primary text-primary bg-primary/10"
+                : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
@@ -310,7 +340,11 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
       ) : candidates.length === 0 ? (
         <div className="text-center py-12 space-y-2">
           <p className="text-sm text-foreground font-medium">Sin candidatos todavía</p>
-          <p className="text-xs text-muted-foreground">No hay archivos locales con las 3 badges de plataforma marcadas.</p>
+          <p className="text-xs text-muted-foreground">
+            {minPlatforms === 1
+              ? "No hay archivos locales publicados en ninguna red todavía."
+              : `No hay archivos locales con al menos ${minPlatforms} plataformas marcadas.`}
+          </p>
         </div>
       ) : (
         <>

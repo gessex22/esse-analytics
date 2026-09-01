@@ -34,6 +34,51 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-08-31-01 — iOS: videos de Biblioteca LAN no desaparecen cuando dejan de estar disponibles
+
+- Estado: `abierto` (solo anotado, sin investigar todavía)
+- Reportado: 2026-08-31
+- Plataformas: iOS
+- Severidad: media
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+En el modo "Biblioteca LAN" (iOS apuntando por LAN al local-backend de una
+PC, ver `PLAN_LAN_PICKER_Y_REPRODUCTOR-2026-08-18.md` y
+`lan-library-auto-switch-design-2026-08-16.md` en `UIEssePanel/`), un
+video que deja de estar disponible en la PC (borrado, carpeta cambiada,
+PC apagada/desconectada de la red) sigue apareciendo en la lista del
+celular en vez de desaparecer.
+
+### Resultado esperado / resultado observado
+
+Esperado: el video deja de listarse (o se marca claramente como no
+disponible) cuando el local-backend de la PC ya no lo reporta / no es
+alcanzable. Observado: queda visible como si siguiera disponible.
+
+### Investigación
+
+No arrancada. Sin verificar todavía: si el catálogo LAN en iOS cachea la
+lista sin revalidar contra la PC en cada apertura/refresh, si hay algún
+TTL, o si el gap está del lado del local-backend (no reporta bien que un
+archivo ya no existe hacia ese endpoint puntual) vs. del cliente (nunca
+re-consulta / no reacciona a una respuesta que ya no incluye ese video).
+Revisar primero `ImportUseCase`/`LocalBackendUploadAPI.swift` (iOS) y el
+mismo patrón de "Catálogo PC" ya documentado para Android en memoria
+(`chip Catálogo PC`, `BackupCatalogAPI`).
+
+### Corrección
+
+Pendiente.
+
+### Verificación y pendiente
+
+Pendiente de investigar.
+
+### Historial
+- 2026-08-31 — usuario: reportado, anotado sin investigar todavía.
+
 ## BUG-2026-08-30-02 — Calendario: "Vencido" deja de ser un bucket/urgencia propia, se fusiona con "Hoy" (CALENDAR-01)
 
 - Estado: `corregido`; verificado con build real en iOS (ver abajo). Pendiente de build real en Android (Electron sí compiló y lintió limpio).

@@ -771,10 +771,11 @@ export const syncService = {
       body: JSON.stringify({ items }),
     }),
 
-  // Archivos locales que ya tienen las 3 badges de plataforma — punto de partida
-  // para completar los links que falten en vez de adivinar a ciegas.
-  getCrossMatchCandidates: (page = 1, limit = 20): Promise<CrossMatchCandidatesResponse> =>
-    requestJson(`/api/sync/cross-match/candidates?page=${page}&limit=${limit}`),
+  // Archivos locales con al menos `minPlatforms` badges de plataforma marcadas
+  // (1 = todos, 2 = al menos 2, 3 = las 3) — punto de partida para completar
+  // los links que falten en vez de adivinar a ciegas.
+  getCrossMatchCandidates: (page = 1, limit = 20, minPlatforms: 1 | 2 | 3 = 1): Promise<CrossMatchCandidatesResponse> =>
+    requestJson(`/api/sync/cross-match/candidates?page=${page}&limit=${limit}&minPlatforms=${minPlatforms}`),
 
   // Confirma que un video puntual de una plataforma es ESTE archivo local.
   resolveCrossMatchSlot: (data: { fileId: string; platform: string } & CrossMatchItem): Promise<void> =>
