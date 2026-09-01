@@ -109,6 +109,12 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         formato:             f.formato              ?? null,
         fecha_creacion:      f.fecha_creacion        ?? null,
         local_updated_at:    (f as any).updatedAt,
+        // FileModel (de donde sale esta rama) no tiene platforms_updated_at
+        // propio -- null es correcto acá, no una omisión: pullFromCloud ya
+        // trata null como "sin LWW dedicado posible" y cae al criterio
+        // histórico (converger a la nube), que es justo lo que corresponde
+        // para un archivo que el dispositivo ni siquiera conocía todavía.
+        platforms_updated_at: null,
       }));
     const merged = [...enriched, ...onlyInCentral];
 
@@ -189,7 +195,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
           ...(contentIds.length ? [{ content_id: { $in: contentIds } }] : []),
         ],
       },
-      { file_name: 1, content_id: 1, local_updated_at: 1, platforms: 1, platforms_discarded: 1 },
+      { file_name: 1, content_id: 1, local_updated_at: 1, platforms: 1, platforms_discarded: 1, platforms_updated_at: 1 },
     ).lean();
     const existingByFileName  = new Map(existing.map(e => [e.file_name, e]));
     const existingByContentId = new Map(existing.filter(e => e.content_id).map(e => [e.content_id as string, e]));
@@ -197,14 +203,25 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       (f.content_id && existingByContentId.get(f.content_id)) || existingByFileName.get(f.file_name);
 
     // Para cada archivo entrante, decide si el valor de platforms que se aplica es
-    // el que llegó (incoming) o el que ya había en la nube (protegido).
+    // el que llegó (incoming) o el que ya había en la nube (protegido). Si se
+    // protege, platforms_updated_at también se conserva (SYNC-01 #3) -- el
+    // badge real no cambió con este push, así que pisar su timestamp con el
+    // de un push que ni siquiera trae datos rompería el LWW dedicado.
     function resolvePlatforms(f: any, ex: typeof existing[number] | undefined) {
       const incomingEmpty = !hasData(f.platforms) && !hasData(f.platforms_discarded);
       const existingHasData = !!ex && (hasData(ex.platforms) || hasData(ex.platforms_discarded));
       if (incomingEmpty && existingHasData) {
-        return { platforms: ex!.platforms, platforms_discarded: ex!.platforms_discarded, protected: true };
+        return {
+          platforms: ex!.platforms, platforms_discarded: ex!.platforms_discarded,
+          platforms_updated_at: (ex as any)!.platforms_updated_at ?? null,
+          protected: true,
+        };
       }
-      return { platforms: f.platforms ?? [], platforms_discarded: f.platforms_discarded ?? [], protected: false };
+      return {
+        platforms: f.platforms ?? [], platforms_discarded: f.platforms_discarded ?? [],
+        platforms_updated_at: f.platforms_updated_at ? new Date(f.platforms_updated_at) : null,
+        protected: false,
+      };
     }
 
     const toUpdate = incoming.filter(f => {
@@ -223,7 +240,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
         await BackupFileModel.bulkWrite(
           toUpdate.map(f => {
             const ex = resolveExisting(f);
-            const { platforms, platforms_discarded } = resolvePlatforms(f, ex);
+            const { platforms, platforms_discarded, platforms_updated_at } = resolvePlatforms(f, ex);
             // Si matcheó por content_id, el filtro va por _id (permite que file_name
             // haya cambiado); si no había match previo, upsert por file_name como antes.
             const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
@@ -244,6 +261,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
                     file_name:           f.file_name,
                     platforms,
                     platforms_discarded,
+                    platforms_updated_at,
                     content_status:      f.content_status      ?? 'borrador',
                     scheduled_date:      f.scheduled_date      ?? null,
                     duracion_segundos:   f.duracion_segundos   ?? null,

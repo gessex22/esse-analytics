@@ -14,6 +14,13 @@ export interface IBackupFile extends Document {
   formato?: string;
   fecha_creacion?: Date;
   local_updated_at: Date;
+  // SYNC-01 #3 (2026-09-01): timestamp dedicado de cuándo cambiaron
+  // platforms/platforms_discarded por última vez -- separado de
+  // local_updated_at (que se mueve con CUALQUIER campo del registro). Ver
+  // el uso real en local-backend/src/controllers/backup-sync.controller.ts
+  // (pullFromCloud). Opcional: registros viejos o que nunca cambiaron su
+  // badge desde que existe este campo no lo tienen.
+  platforms_updated_at?: Date;
 }
 
 const BackupFileSchema = new Schema<IBackupFile>({
@@ -30,6 +37,7 @@ const BackupFileSchema = new Schema<IBackupFile>({
   formato:             { type: String },
   fecha_creacion:      { type: Date },
   local_updated_at:    { type: Date, required: true },
+  platforms_updated_at: { type: Date },
 }, { timestamps: true });
 
 BackupFileSchema.index({ userId: 1, file_name: 1 }, { unique: true });

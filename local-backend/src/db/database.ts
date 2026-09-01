@@ -162,6 +162,12 @@ db.exec(`
 try { db.exec(`ALTER TABLE files ADD COLUMN platforms_discarded TEXT NOT NULL DEFAULT '[]'`); } catch {}
 try { db.exec(`ALTER TABLE files ADD COLUMN tipo_contenido TEXT`); } catch {}
 try { db.exec(`ALTER TABLE files ADD COLUMN content_id TEXT`); } catch {}
+// SYNC-01 #3 (2026-09-01): timestamp DEDICADO para platforms/platforms_discarded,
+// separado de updated_at (que se mueve con CUALQUIER cambio del registro -- un
+// rescan, un link de plataforma actualizado -- y por eso no servía como base de
+// un LWW confiable solo para el badge). Ver el bump en file.repo.ts::update() y
+// el uso en backup-sync.controller.ts::pullFromCloud.
+try { db.exec(`ALTER TABLE files ADD COLUMN platforms_updated_at TEXT`); } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_files_content_id ON files(content_id) WHERE content_id IS NOT NULL`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN title TEXT`); } catch {}
 try { db.exec(`ALTER TABLE platform_videos ADD COLUMN description TEXT`); } catch {}
@@ -201,6 +207,16 @@ try {
       );
   `);
 } catch (e) { console.warn('Backfill platform_videos→files.platforms falló:', e); }
+
+// Backfill platforms_updated_at: filas creadas antes de este campo no tienen
+// forma de saber cuándo cambió platforms/platforms_discarded por última vez de
+// verdad -- usar updated_at como mejor estimación disponible (en el peor caso,
+// es tan preciso como el criterio viejo que este campo reemplaza). Cambios
+// FUTUROS a platforms sí quedan con el timestamp dedicado real (ver
+// file.repo.ts::update()).
+try {
+  db.exec(`UPDATE files SET platforms_updated_at = updated_at WHERE platforms_updated_at IS NULL`);
+} catch (e) { console.warn('Backfill platforms_updated_at falló:', e); }
 
 // Backfill desde publishing_status (campo legado: youtube_published, instagram_published, tiktok_published).
 try {

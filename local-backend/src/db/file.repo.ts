@@ -22,6 +22,9 @@ export interface DbFile {
   scheduled_date?: string;
   created_at: string;
   updated_at: string;
+  // SYNC-01 #3: separado de updated_at a propósito -- solo se mueve cuando
+  // platforms/platforms_discarded cambian de verdad, ver update() abajo.
+  platforms_updated_at?: string;
 }
 
 interface RawRow {
@@ -41,6 +44,7 @@ interface RawRow {
   scheduled_date: string | null;
   created_at: string;
   updated_at: string;
+  platforms_updated_at: string | null;
 }
 
 function parse(row: RawRow): DbFile {
@@ -273,6 +277,16 @@ export const fileRepo = {
     if (data.content_status !== undefined)      setStr('content_status', data.content_status);
     if (data.platforms !== undefined)           setStr('platforms', JSON.stringify(data.platforms));
     if (data.platforms_discarded !== undefined) setStr('platforms_discarded', JSON.stringify(data.platforms_discarded));
+    // SYNC-01 #3 (2026-09-01): timestamp dedicado, solo se mueve cuando
+    // platforms/platforms_discarded cambian de verdad -- a diferencia de
+    // updated_at (arriba), que se mueve con CUALQUIER campo de este mismo
+    // update. Sin esto, pullFromCloud no tenía forma confiable de saber
+    // "¿el badge local es más reciente que el de la nube?" y tenía que
+    // asumir que la nube siempre gana cuando difieren (podía pisar un
+    // cambio local recién hecho que todavía no llegó a la nube).
+    if (data.platforms !== undefined || data.platforms_discarded !== undefined) {
+      sets.push("platforms_updated_at = datetime('now')");
+    }
     if ('tipo_contenido' in data)              setStr('tipo_contenido', data.tipo_contenido ?? null);
     if (data.duracion_segundos !== undefined) setStr('duracion_segundos', data.duracion_segundos);
     if (data.resolucion !== undefined)        setStr('resolucion', data.resolucion);

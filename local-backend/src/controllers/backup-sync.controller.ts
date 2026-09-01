@@ -38,6 +38,11 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
     formato:             f.formato             ?? null,
     fecha_creacion:      f.fecha_creacion      ?? null,
     local_updated_at:    f.updated_at,
+    // SYNC-01 #3: timestamp dedicado de platforms/platforms_discarded, ver
+    // file.repo.ts::update(). Puede venir null en un archivo que nunca
+    // tuvo un cambio de badge desde que existe este campo (pullFromCloud
+    // lo trata como "sin LWW real posible", no como cero/epoch).
+    platforms_updated_at: f.platforms_updated_at ?? null,
   }));
 
   // fullSync: este push contiene TODOS los archivos activos → el central puede
@@ -268,6 +273,28 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       const platformsChanged = !sameState(localFile.platforms, cf.platforms)
         || !sameState(localFile.platforms_discarded, cf.platforms_discarded);
 
+      // SYNC-01 #3 (2026-09-01): antes, si platformsChanged, la nube ganaba
+      // SIEMPRE sin mirar cuál cambió más recientemente ("el badge es
+      // estado, no solo orden temporal: si difiere, siempre debe
+      // converger") -- evitaba confiar en `updated_at` (se mueve con
+      // CUALQUIER campo del registro, no solo platforms) pero a cambio
+      // podía pisar un cambio LOCAL recién hecho que todavía no llegó a la
+      // nube (la ventana entre el cambio y que el push termine). Ahora se
+      // usa platforms_updated_at -- un timestamp que SOLO se mueve cuando
+      // platforms/platforms_discarded cambian de verdad (ver
+      // file.repo.ts::update()) -- para un LWW real, específico de este
+      // campo. Si cualquiera de los 2 lados no lo tiene todavía (archivo
+      // migrado hace poco, o nunca cambió su badge desde que existe el
+      // campo), no hay base confiable para comparar y se cae al criterio
+      // histórico (la nube converge) -- no perder la garantía de
+      // convergencia que esto reemplaza.
+      const cloudPlatformsTs = cf.platforms_updated_at ? new Date(cf.platforms_updated_at).getTime() : null;
+      const localPlatformsTs = localFile.platforms_updated_at ? new Date(localFile.platforms_updated_at).getTime() : null;
+      const localPlatformsWins = platformsChanged
+        && cloudPlatformsTs != null && localPlatformsTs != null
+        && localPlatformsTs > cloudPlatformsTs;
+      const applyPlatformsFromCloud = platformsChanged && !localPlatformsWins;
+
       // tipo_contenido: si al local le falta y la nube lo tiene, lo recuperamos
       // siempre, sin importar el estado de platforms. Antes esta recuperación
       // estaba atada a las ramas de abajo (que solo disparan si hay platforms de
@@ -279,16 +306,24 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
         localFile.tipo_contenido = cf.tipo_contenido;
       }
 
-      // El timestamp puede quedar por delante por un reescaneo local o por
-      // una actualización del vínculo platform_video. El badge es estado,
-      // no solo orden temporal: si difiere, siempre debe converger.
-      if (cloudTs > localTs || platformsChanged) {
+      // El resto de los campos (content_status/tipo_contenido/scheduled_date)
+      // sigue su propio LWW por separado -- desacoplado de platforms a
+      // propósito, así "la nube ganó el badge" o "local ganó el badge" no
+      // arrastra de rebote estos otros campos hacia un lado que no les
+      // corresponde por su propio timestamp.
+      const otherFieldsFromCloud = cloudTs > localTs;
+
+      if (otherFieldsFromCloud || applyPlatformsFromCloud) {
         fileRepo.update(localFile.id, {
-          platforms:           cf.platforms           ?? [],
-          platforms_discarded: cf.platforms_discarded ?? [],
-          content_status:      cf.content_status      ?? localFile.content_status,
-          ...('tipo_contenido' in cf ? { tipo_contenido: cf.tipo_contenido ?? null } : {}),
-          ...(cf.scheduled_date != null ? { scheduled_date: cf.scheduled_date } : {}),
+          ...(applyPlatformsFromCloud ? {
+            platforms:           cf.platforms           ?? [],
+            platforms_discarded: cf.platforms_discarded ?? [],
+          } : {}),
+          ...(otherFieldsFromCloud ? {
+            content_status: cf.content_status ?? localFile.content_status,
+            ...('tipo_contenido' in cf ? { tipo_contenido: cf.tipo_contenido ?? null } : {}),
+            ...(cf.scheduled_date != null ? { scheduled_date: cf.scheduled_date } : {}),
+          } : {}),
         });
         updated++;
       } else if (localEmpty && cloudHas) {
