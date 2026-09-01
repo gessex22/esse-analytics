@@ -171,3 +171,35 @@ de publicar quedaría como optimización aparte si hiciera falta.
 `FileModel.platforms`) es un cambio distinto y acotado, no tocado en esta
 pasada. Pasos 3-4 (invalidación local + eventos cross-device) siguen
 pendientes de decisión de arranque.
+
+## Paso 2 — implementado y rediseñado (2026-09-01)
+
+Sesión 2026-09-01: elegibilidad de "Matches" (`getCrossMatchCandidates`,
+`sync.controller.ts`) pasó de exigir las 3 badges (`$all`) a aceptar
+`minPlatforms` (1 = cualquier actividad, "todos"). Aplicado en Electron
+(`SyncPanel.tsx`) e iOS (`SyncView.swift`, mismo endpoint) el mismo día.
+
+**Rediseño posterior, mismo día** (usuario reportó que el filtro "abruma"
+y que un video con 2 confirmadas + 1 descartada nunca se veía como
+completo): "resuelto" ahora cuenta `platforms_discarded` como decidido,
+no solo `platforms` publicado. Filtro bajó de 3 opciones (Todos/2+/3) a 2
+(Todos/Resuelto). Nuevo estado visual "Descartado" en el chip por
+plataforma (no clickeable) en vez de invitar a "buscar match" para algo
+ya decidido. Backend usa `$expr`+`$setIsSubset` sobre la unión de
+`platforms`+`platforms_discarded` para "Resuelto". Mismo cambio en
+Electron y iOS. Ver `docs/bug-reports.md` para el detalle completo y
+[[mobile_audit_2026_08_30_refresh_sync_thumbs]] para el hilo completo de
+esta sesión (incluye 2 bugs más encontrados de paso: Calendario iOS sin
+refresh-trigger, Dashboard "Pendiente de datos" en plataforma
+descartada).
+
+**Bug encontrado en el camino (2026-09-01, ya corregido)**: `resolved`/
+`discarded` sin optional chaining en el frontend crasheaba toda la vista
+de Sync (sin error boundary en la app) si la central que responde es un
+proceso viejo sin reiniciar y no manda el campo nuevo — la central corre
+aparte de Electron, instalar el `.exe` nuevo no la actualiza. Lección:
+cualquier campo nuevo en una respuesta de API debe leerse con `?.`/default
+en el cliente, nunca asumir que el backend que responde ya tiene el
+código nuevo.
+
+Pasos 1, 3, 4, 6, 7 siguen sin empezar.
