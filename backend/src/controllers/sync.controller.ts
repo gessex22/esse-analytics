@@ -308,53 +308,67 @@ export const confirmCrossMatch = async (req: AuthRequest, res: Response): Promis
 
 const CROSS_MATCH_TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const;
 
-// Construye el filtro de `files.platforms` según cuántas de las 3 badges se
-// exigen como mínimo (1/2/3) — Mongo no tiene un operador nativo "al menos N
-// de esta lista", así que para min=2 se arma como la unión de los 3 pares
-// posibles ($or de $all de a 2). Se prefiere esto sobre $expr+$setIntersection
-// por legibilidad: con solo 3 plataformas fijas, enumerar los pares a mano es
-// más fácil de verificar a ojo que una expresión de agregación.
-function buildPlatformsFilter(minPlatforms: 1 | 2 | 3) {
-  if (minPlatforms === 3) return { platforms: { $all: CROSS_MATCH_TARGET_PLATFORMS } };
-  if (minPlatforms === 1) return { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } };
-  const pairs: (readonly [string, string])[] = [
-    ['youtube', 'instagram'], ['youtube', 'tiktok'], ['instagram', 'tiktok'],
-  ];
-  return { $or: pairs.map(pair => ({ platforms: { $all: pair } })) };
+// Rediseño 2026-09-01 (bug real reportado): la elegibilidad original solo
+// miraba `platforms` (badge de publicado), nunca `platforms_discarded` — un
+// archivo con 2 confirmadas + 1 descartada a propósito quedaba PARA SIEMPRE
+// "incompleto" a ojos de este endpoint, aunque no le faltara nada por hacer.
+// Ahora "resuelto" = las 3 plataformas están DECIDIDAS (publicada O
+// descartada), no solo publicadas. Con eso, el filtro de 3 niveles (1/2/3)
+// se simplifica a 2: `resolvedOnly=false` ("Todos", cualquier actividad en
+// al menos 1 red) y `resolvedOnly=true` ("Resuelto", las 3 decididas). Se
+// cae la opción intermedia "2+" -- no aportaba mucho y complicaba la UI.
+// $expr+$setIsSubset en vez de enumerar combinaciones a mano (como antes)
+// porque acá el chequeo es sobre la UNIÓN de dos arrays, no solo uno --
+// enumerar pares ya no alcanza.
+function buildEligibilityFilter(resolvedOnly: boolean) {
+  if (resolvedOnly) {
+    return {
+      $expr: {
+        $setIsSubset: [CROSS_MATCH_TARGET_PLATFORMS, { $setUnion: ['$platforms', '$platforms_discarded'] }],
+      },
+    };
+  }
+  return {
+    $or: [
+      { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } },
+      { platforms_discarded: { $in: CROSS_MATCH_TARGET_PLATFORMS } },
+    ],
+  };
 }
 
-// GET /api/sync/cross-match/candidates?limit=20&page=1&minPlatforms=1 — en vez
-// de adivinar a ciegas con las 3 ruedas por separado, arranca de lo que YA se
-// sabe local: los archivos que tienen AL MENOS `minPlatforms` badges de
-// plataforma marcadas (files.platforms). Antes exigía siempre las 3 (`$all`)
-// — un archivo recién publicado en 1 sola red no aparecía como candidato hasta
-// tener las otras 2, aunque ya hubiera trabajo real para mostrar. Fase 7 /
-// Paso 2 (docs/instant-matches-stats-plan-2026-08-31.md): el candidato debe
-// poder aparecer desde la primera publicación real, con las plataformas
-// restantes mostradas como pendientes — la UI (CandidateCard/PlatformSlotChip
-// en SyncPanel.tsx) ya soporta estados parciales, no asumía que las 3
-// estuvieran presentes de entrada. `minPlatforms` es el filtro que deja elegir
-// al usuario cuánto ruido tolerar (default 1 = todos; 2 o 3 para acotar a los
-// que están más cerca de completarse).
+// GET /api/sync/cross-match/candidates?limit=20&page=1&minPlatforms=1|3 — en
+// vez de adivinar a ciegas con las 3 ruedas por separado, arranca de lo que
+// YA se sabe local: los archivos con actividad en al menos una plataforma
+// (files.platforms/platforms_discarded). Antes exigía siempre las 3
+// publicadas (`$all` sobre platforms) — un archivo recién publicado en 1
+// sola red no aparecía como candidato hasta tener las otras 2, aunque ya
+// hubiera trabajo real para mostrar. Fase 7 / Paso 2
+// (docs/instant-matches-stats-plan-2026-08-31.md): el candidato debe poder
+// aparecer desde la primera publicación real, con las plataformas restantes
+// mostradas como pendientes — la UI (CandidateCard/PlatformSlotChip en
+// SyncPanel.tsx) ya soporta estados parciales, no asumía que las 3
+// estuvieran presentes de entrada. `minPlatforms=3` (alias de "Resuelto")
+// mantiene el nombre del query param por compatibilidad con clientes que ya
+// lo mandan (iOS/Android), pero su significado cambió: ver
+// buildEligibilityFilter arriba. Cualquier valor > 1 mapea a "resuelto".
 // Por cada uno, resuelve qué plataformas ya tienen un platform_video vinculado
-// (linkedFileId) y cuáles todavía faltan — así el usuario solo busca lo que
-// realmente falta, no todo desde cero.
+// (linkedFileId) y cuáles todavía faltan/están descartadas — así el usuario
+// solo busca lo que realmente falta, no todo desde cero.
 export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
     const limit  = Math.min(parseInt(req.query.limit as string) || 20, 50);
     const page   = Math.max(1, parseInt(req.query.page as string) || 1);
-    const minPlatformsRaw = parseInt(req.query.minPlatforms as string) || 1;
-    const minPlatforms = (Math.min(3, Math.max(1, minPlatformsRaw)) as 1 | 2 | 3);
+    const resolvedOnly = (parseInt(req.query.minPlatforms as string) || 1) > 1;
 
-    const query = { userId, ...buildPlatformsFilter(minPlatforms) };
+    const query = { userId, ...buildEligibilityFilter(resolvedOnly) };
     const [total, files] = await Promise.all([
       FileModel.countDocuments(query),
       FileModel.find(query)
         .sort({ fecha_creacion: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .select('file_name fecha_creacion duracion_segundos')
+        .select('file_name fecha_creacion duracion_segundos platforms_discarded')
         .lean(),
     ]);
 
@@ -377,11 +391,18 @@ export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): 
           title: pv.title, thumbnail: pv.thumbnail,
         };
       }
+      const discardedSet = new Set(f.platforms_discarded ?? []);
+      const discarded: Record<string, boolean> = {
+        youtube: discardedSet.has('youtube'),
+        instagram: discardedSet.has('instagram'),
+        tiktok: discardedSet.has('tiktok'),
+      };
       return {
         fileId:   String(f._id),
         fileName: f.file_name,
         fecha_creacion: f.fecha_creacion,
         resolved,
+        discarded,
       };
     });
 
@@ -855,9 +876,9 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
     if (!fileId && !fileName) { res.status(400).json({ message: 'fileId o fileName requerido.' }); return; }
 
     const file = fileId && Types.ObjectId.isValid(fileId)
-      ? await FileModel.findOne({ _id: fileId, userId }).select('file_name fecha_creacion').lean()
+      ? await FileModel.findOne({ _id: fileId, userId }).select('file_name fecha_creacion platforms_discarded').lean()
       : fileName
-        ? await FileModel.findOne({ userId, file_name: fileName }).select('file_name fecha_creacion').lean()
+        ? await FileModel.findOne({ userId, file_name: fileName }).select('file_name fecha_creacion platforms_discarded').lean()
         : null;
     if (!file) { res.status(404).json({ message: 'No encontrado.' }); return; }
 
@@ -919,6 +940,14 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
       remoteLibraryVideoId: remoteMatch ? String(remoteMatch._id) : null,
       thumbnailStoredFileName: remoteMatch?.thumbnailStoredFileName ?? null,
       platforms,
+      // Bug real reportado 2026-09-01: el Dashboard (Electron/iOS) mostraba
+      // "Pendiente de datos" para una plataforma que el usuario había
+      // DESCARTADO a propósito -- el widget solo distinguía "tengo slot" vs
+      // "no tengo slot", sin poder saber si "no tengo slot" era pendiente
+      // real o una decisión ya tomada. Se agrega acá (no en getGroupStats,
+      // que no lo necesitaba para este reporte puntual) para que el cliente
+      // pueda mostrar "Descartado" en vez de "Pendiente de datos".
+      platforms_discarded: file.platforms_discarded ?? [],
     });
   } catch (err: any) {
     res.status(500).json({ message: err.message });

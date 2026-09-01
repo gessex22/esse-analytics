@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Tv2, Link2, Unlink, ChevronLeft, ChevronRight, RefreshCw, Check, Loader2 } from "lucide-react";
+import { Tv2, Link2, Unlink, ChevronLeft, ChevronRight, RefreshCw, Check, Loader2, X } from "lucide-react";
 import { videoService, syncService, SyncReviewItem, SyncStats, PlatformRecentItem, CrossMatchCandidate, CrossMatchResolvedSlot } from "../services/api";
 import { YoutubeLogo, InstagramLogo, TiktokLogo } from "./icons/PlatformLogos";
 
@@ -124,15 +124,33 @@ function SlotPicker({
 }
 
 function PlatformSlotChip({
-  platform, resolved, open, onToggle,
+  platform, resolved, discarded, open, onToggle,
 }: {
   platform: CrossPlatform;
   resolved: CrossMatchResolvedSlot | null;
+  // Bug real reportado 2026-09-01: una plataforma DESCARTADA a propósito no
+  // tiene ningún platform_video real (nunca se crea uno al descartar), así
+  // que sin este chequeo caía siempre en el estado "Buscar" de abajo —
+  // invitando a buscar un match para algo que el usuario ya decidió no
+  // publicar. No clickeable a propósito: no hay nada que resolver acá.
+  discarded: boolean;
   open: boolean;
   onToggle: () => void;
 }) {
   const cfg  = CROSS_CFG[platform];
   const Logo = cfg.Logo;
+
+  if (discarded) {
+    return (
+      <div
+        className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg bg-secondary/50 text-muted-foreground"
+        title={`Descartado para ${cfg.label}`}
+      >
+        <Logo className="w-3 h-3 opacity-60" />
+        <X className="w-3 h-3" />
+      </div>
+    );
+  }
 
   if (resolved) {
     return (
@@ -169,7 +187,10 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
   onOpenVideo?: (fileId: string, title: string) => void;
 }) {
   const [openPlatform, setOpenPlatform] = useState<CrossPlatform | null>(null);
-  const missing = CROSS_PLATFORMS.filter(p => !candidate.resolved[p]);
+  // Una plataforma descartada a propósito no es "pendiente" -- si no se
+  // excluye acá, un video con 2 confirmadas + 1 descartada (caso real
+  // reportado 2026-09-01) se mostraba para siempre como incompleto.
+  const missing = CROSS_PLATFORMS.filter(p => !candidate.resolved[p] && !candidate.discarded[p]);
   const canPreview = !!localFileId;
 
   return (
@@ -203,6 +224,7 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
               key={p}
               platform={p}
               resolved={candidate.resolved[p]}
+              discarded={candidate.discarded[p]}
               open={openPlatform === p}
               onToggle={() => setOpenPlatform(prev => prev === p ? null : p)}
             />
@@ -211,7 +233,7 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
       </div>
 
       {missing.length === 0 && (
-        <p className="text-[11px] text-green-500 flex items-center gap-1"><Check className="w-3 h-3" /> Las 3 plataformas vinculadas</p>
+        <p className="text-[11px] text-green-500 flex items-center gap-1"><Check className="w-3 h-3" /> Resuelto — las 3 plataformas están decididas</p>
       )}
 
       {openPlatform && (
@@ -227,10 +249,13 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
   );
 }
 
-const MIN_PLATFORMS_OPTIONS: { value: 1 | 2 | 3; label: string }[] = [
-  { value: 1, label: "Todos" },
-  { value: 2, label: "2+ plataformas" },
-  { value: 3, label: "3 plataformas" },
+// Rediseño 2026-09-01: bajó de 3 chips (Todos/2+/3) a 2. "Resuelto" ahora
+// cuenta descartado como decidido, no solo publicado -- ver
+// buildEligibilityFilter en sync.controller.ts. La opción intermedia "2+"
+// se sacó por pedido explícito del usuario (complicaba sin aportar mucho).
+const RESOLVED_ONLY_OPTIONS: { value: boolean; label: string }[] = [
+  { value: false, label: "Todos" },
+  { value: true, label: "Resuelto" },
 ];
 
 function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title: string) => void }) {
@@ -243,11 +268,11 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading]       = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  // Cuántas de las 3 badges como mínimo — pedido explícito del usuario tras el
-  // cambio de elegibilidad (Fase 7/Paso 2): mostrar "todos" de entrada podía
-  // volverse ruidoso, así que puede acotar a los que están más cerca de
-  // completarse sin perder la vista completa.
-  const [minPlatforms, setMinPlatforms] = useState<1 | 2 | 3>(1);
+  // "Resuelto" = las 3 plataformas ya están decididas (publicada O
+  // descartada) — pedido explícito del usuario tras el cambio de
+  // elegibilidad (Fase 7/Paso 2): mostrar "todos" de entrada podía volverse
+  // ruidoso, así que puede acotar a los que ya no necesitan atención.
+  const [resolvedOnly, setResolvedOnly] = useState(false);
 
   const resolveLocalIds = async (items: CrossMatchCandidate[]) => {
     const names = items.map(c => c.fileName);
@@ -260,7 +285,7 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await syncService.getCrossMatchCandidates(1, 20, minPlatforms);
+      const res = await syncService.getCrossMatchCandidates(1, 20, resolvedOnly);
       setCandidates(res.items);
       setPage(1);
       setTotalPages(res.totalPages);
@@ -268,14 +293,14 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
     } finally {
       setLoading(false);
     }
-  }, [minPlatforms]);
+  }, [resolvedOnly]);
 
   useEffect(() => { load(); }, [load]);
 
   const loadMore = async () => {
     setLoadingMore(true);
     try {
-      const res = await syncService.getCrossMatchCandidates(page + 1, 20, minPlatforms);
+      const res = await syncService.getCrossMatchCandidates(page + 1, 20, resolvedOnly);
       setCandidates(prev => [...prev, ...res.items]);
       setPage(prev => prev + 1);
       setTotalPages(res.totalPages);
@@ -292,6 +317,11 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
         ...c.resolved,
         [platform]: { platformId: slot.platformId, platformUrl: slot.platformUrl ?? "", title: slot.title, thumbnail: slot.thumbnail },
       },
+      // Resolver un slot a mano solo puede pasar sobre uno pendiente (el
+      // botón "Descartado" no es clickeable) -- pero se limpia igual acá
+      // por si el estado local quedó desactualizado, para no mostrar los
+      // dos badges (descartado + resuelto) a la vez.
+      discarded: { ...c.discarded, [platform]: false },
     }));
   };
 
@@ -301,9 +331,9 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
         <div>
           <h3 className="text-sm font-semibold text-foreground">Emparejar entre plataformas</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {minPlatforms === 1
-              ? "Archivos publicados en al menos una red (badge)"
-              : `Archivos con al menos ${minPlatforms} plataformas marcadas (badge)`}
+            {resolvedOnly
+              ? "Archivos con las 3 plataformas ya decididas (publicada o descartada)"
+              : "Archivos publicados en al menos una red (badge)"}
             {" "}— completá el link de las que falten. No toca linked_file_id de las que ya están.
           </p>
         </div>
@@ -318,12 +348,12 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
       </div>
 
       <div className="flex items-center gap-1.5">
-        {MIN_PLATFORMS_OPTIONS.map(opt => (
+        {RESOLVED_ONLY_OPTIONS.map(opt => (
           <button
-            key={opt.value}
-            onClick={() => setMinPlatforms(opt.value)}
+            key={String(opt.value)}
+            onClick={() => setResolvedOnly(opt.value)}
             className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${
-              minPlatforms === opt.value
+              resolvedOnly === opt.value
                 ? "border-primary text-primary bg-primary/10"
                 : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
             }`}
@@ -341,9 +371,9 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
         <div className="text-center py-12 space-y-2">
           <p className="text-sm text-foreground font-medium">Sin candidatos todavía</p>
           <p className="text-xs text-muted-foreground">
-            {minPlatforms === 1
-              ? "No hay archivos locales publicados en ninguna red todavía."
-              : `No hay archivos locales con al menos ${minPlatforms} plataformas marcadas.`}
+            {resolvedOnly
+              ? "Ningún archivo tiene las 3 plataformas decididas todavía."
+              : "No hay archivos locales publicados en ninguna red todavía."}
           </p>
         </div>
       ) : (

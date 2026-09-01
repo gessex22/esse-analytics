@@ -681,6 +681,14 @@ export interface CrossMatchCandidate {
     instagram: CrossMatchResolvedSlot | null;
     tiktok: CrossMatchResolvedSlot | null;
   };
+  // Rediseño 2026-09-01: una plataforma descartada a propósito no es lo
+  // mismo que una pendiente -- sin esto, el chip invitaba a "buscar match"
+  // para algo que el usuario ya decidió no publicar.
+  discarded: {
+    youtube: boolean;
+    instagram: boolean;
+    tiktok: boolean;
+  };
 }
 
 export interface CrossMatchCandidatesResponse {
@@ -709,6 +717,10 @@ export interface GroupStatsItem {
     instagram?: GroupStatsSlot;
     tiktok?: GroupStatsSlot;
   };
+  // Solo lo manda getFileStats (Dashboard) por ahora, no getGroupStats --
+  // ver comentario en sync.controller.ts. Opcional para no romper el tipo
+  // en los callers que usan getGroupStats.
+  platforms_discarded?: ("youtube" | "instagram" | "tiktok")[];
 }
 
 export const syncService = {
@@ -771,11 +783,15 @@ export const syncService = {
       body: JSON.stringify({ items }),
     }),
 
-  // Archivos locales con al menos `minPlatforms` badges de plataforma marcadas
-  // (1 = todos, 2 = al menos 2, 3 = las 3) — punto de partida para completar
-  // los links que falten en vez de adivinar a ciegas.
-  getCrossMatchCandidates: (page = 1, limit = 20, minPlatforms: 1 | 2 | 3 = 1): Promise<CrossMatchCandidatesResponse> =>
-    requestJson(`/api/sync/cross-match/candidates?page=${page}&limit=${limit}&minPlatforms=${minPlatforms}`),
+  // Archivos locales con actividad en al menos una plataforma (resolvedOnly
+  // false, "Todos") o con las 3 ya decididas -- publicada O descartada
+  // (resolvedOnly true, "Resuelto") — punto de partida para completar los
+  // links que falten en vez de adivinar a ciegas. `minPlatforms` en la URL
+  // es el nombre histórico del query param (mismo backend que consumen
+  // iOS/Android) — acá se simplifica a un booleano, backend mapea >1 a
+  // "resuelto".
+  getCrossMatchCandidates: (page = 1, limit = 20, resolvedOnly = false): Promise<CrossMatchCandidatesResponse> =>
+    requestJson(`/api/sync/cross-match/candidates?page=${page}&limit=${limit}&minPlatforms=${resolvedOnly ? 3 : 1}`),
 
   // Confirma que un video puntual de una plataforma es ESTE archivo local.
   resolveCrossMatchSlot: (data: { fileId: string; platform: string } & CrossMatchItem): Promise<void> =>

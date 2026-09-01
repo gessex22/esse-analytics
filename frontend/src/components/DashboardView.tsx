@@ -130,6 +130,7 @@ function PlatformRow({
   platform,
   stats,
   isDimmed = false,
+  isDiscarded = false,
 }: {
   platform: Platform;
   stats?: { views: number; likes: number; comments: number };
@@ -138,6 +139,11 @@ function PlatformRow({
   // sacaban directamente), solo se bajan de jerarquía visual, así se ve de
   // un vistazo que no forman parte de este evento de publicación puntual.
   isDimmed?: boolean;
+  // Bug real reportado 2026-09-01: sin stats, esta fila SIEMPRE decía
+  // "Pendiente de datos" -- incluso para una plataforma que el usuario
+  // había descartado a propósito, que no está "pendiente" de nada. Ver
+  // platforms_discarded en getFileStats (sync.controller.ts).
+  isDiscarded?: boolean;
 }) {
   const cfg = PLATFORM_CFG[platform];
   const Logo = cfg.Logo;
@@ -166,6 +172,8 @@ function PlatformRow({
               {formatNum(stats?.comments ?? 0)}
             </span>
           </>
+        ) : isDiscarded ? (
+          <span className="text-[11px]">Descartado</span>
         ) : (
           <span className="text-[11px]">Pendiente de datos</span>
         )}
@@ -649,6 +657,7 @@ export function DashboardView({
                     platform={p}
                     stats={item.platforms[p]}
                     isDimmed={focusPlatform !== null && p !== focusPlatform}
+                    isDiscarded={(item.platforms_discarded ?? []).includes(p)}
                   />
                 ))}
               </div>
