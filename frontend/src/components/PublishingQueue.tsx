@@ -791,7 +791,17 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
   function loadAll(showRefresh = false) {
     if (showRefresh) setRefreshing(true);
     let loadedVideos: SlimVideo[] = [];
-    let loadedNextIds: Partial<Record<Platform, string>> = {};
+    // BUG real encontrado 2026-09-03: /api/sync/calendar-config está proxeado
+    // 100% a la central (auth-proxy.routes.ts) -- su nextVideoId es un
+    // ObjectId de Mongo, nunca el id local (SQLite, entero) de SlimVideo.fileId.
+    // Comparar por id acá SIEMPRE fallaba en silencio (no es específico del
+    // wipe/recuperación), y el fallback por título comparaba contra el mismo
+    // ObjectId en vez del título real -- por eso el "próximo" mostrado nunca
+    // coincidía con lo fijado/calculado en la central, cayendo siempre al
+    // default (el pendiente más viejo). Se guardan ambos valores y se matchea
+    // por título como vía real (fileId se conserva por si algún día se expone
+    // un id local-compatible desde el endpoint).
+    let loadedNextIds: Partial<Record<Platform, { id: string; title: string | null }>> = {};
     let builtSlots: PlatformSlot[] = FALLBACK_SLOTS;
     let loadedPublished: PublishedVideo[] = [];
     let videosOk = false;
@@ -810,10 +820,10 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         // viene de más nuevo a más viejo, así que es el último índice — no el
         // más nuevo (índice 0), que es lo que se mostraba antes por defecto.
         idx[p] = Math.max(0, list.length - 1);
-        const id = loadedNextIds[p];
-        if (!id) continue;
-        let found = list.findIndex(v => v.fileId === id);
-        if (found === -1) found = list.findIndex(v => v.title === id);
+        const next = loadedNextIds[p];
+        if (!next) continue;
+        let found = list.findIndex(v => v.fileId === next.id);
+        if (found === -1 && next.title) found = list.findIndex(v => v.title === next.title);
         if (found !== -1) idx[p] = found;
       }
       setIndices(idx);
@@ -830,7 +840,7 @@ export function PublishingQueue({ role: _role, onOpenVideo }: { role: string; on
         const built: PlatformSlot[] = (["tiktok", "instagram", "youtube"] as Platform[]).map(p => {
           const cfg = data.find(c => c.platform === p);
           if (!cfg) return FALLBACK_SLOTS.find(s => s.platform === p)!;
-          if (cfg.nextVideoId) loadedNextIds[p] = cfg.nextVideoId;
+          if (cfg.nextVideoId) loadedNextIds[p] = { id: cfg.nextVideoId, title: cfg.nextVideo?.title ?? null };
           const intervalDays = cfg.intervalDays ?? 3;
           return {
             platform: p,
