@@ -327,6 +327,12 @@ export default function App() {
       setInstallationRole("primary");
       setClaimModalOpen(false);
       setClaimPassword("");
+      // Reclamar la primaria no restaura nada por sí solo -- el pull de badges/
+      // links necesita archivos locales para matchear (todavía no los hay acá,
+      // recién se configuran/escanean después), pero last_published_title/date/
+      // interval_days de platform_config NO dependen de eso (ver pullConfigFromCloud
+      // en local-backend) y sí pueden volver ya mismo, best-effort.
+      backupService.pull().catch(() => {});
     } catch (err: any) {
       setClaimError(err.message || "No se pudo reclamar esta PC como principal.");
     } finally {

@@ -265,6 +265,7 @@ export const fileRepo = {
     formato: string;
     fecha_creacion: string | Date | null;
     scheduled_date: string | Date | null;
+    content_id: string;
   }>): boolean {
     const sets: string[] = ["updated_at = datetime('now')"];
     const params: unknown[] = [];
@@ -293,6 +294,7 @@ export const fileRepo = {
     if (data.formato !== undefined)           setStr('formato', data.formato);
     if ('fecha_creacion' in data)           setStr('fecha_creacion', data.fecha_creacion ? new Date(data.fecha_creacion!).toISOString() : null);
     if ('scheduled_date' in data)           setStr('scheduled_date', data.scheduled_date ? new Date(data.scheduled_date!).toISOString() : null);
+    if (data.content_id !== undefined)      setStr('content_id', data.content_id);
 
     params.push(Number(id));
     const info = db.prepare(`UPDATE files SET ${sets.join(', ')} WHERE id = ?`).run(...params);

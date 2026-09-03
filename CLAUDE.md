@@ -120,9 +120,14 @@ No hay tests configurados (`backend test` es un no-op).
 ## Deploy / infra
 - Frontend público: **Cloudflare Pages/Workers** (`wrangler.toml`, assets = `frontend/dist`)
   en `esse-analytics.com`.
-- Central: corre en la PC en `:5001` (el código conserva `4000` como puerto
-  configurable por defecto), expuesta vía **Cloudflare Tunnel** como
-  `api.esse-analytics.com`. El login depende de central+túnel vivos.
+- Central: corre en `macgessemberg22` (un Mac, no una PC Windows -- corregido
+  2026-09-02, la doc vieja asumía Windows) en `:5001` (el código conserva
+  `4000` como puerto configurable por defecto), expuesta vía **Cloudflare
+  Tunnel** como `api.esse-analytics.com`. El login depende de central+túnel
+  vivos. Un `git push` desde una sesión de Claude Code NUNCA actualiza esa
+  máquina solo -- hace falta `git pull` + restart manual ahí, y conviene
+  confirmarlo (`git log --oneline -1`) antes de asumir que un deploy nuevo
+  ya está corriendo.
 - Desktop: electron-builder publica releases en GitHub (`gessex22/esse-analytics`),
   autoupdate vía `electron-updater`. Secretos (YouTube API key, CLIENT_REGISTER_KEY)
   se inyectan en build-time desde `electron/.env.build`, no en el código.
