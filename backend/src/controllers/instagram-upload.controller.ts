@@ -11,6 +11,8 @@ import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { recordAuditEvent } from '../services/audit.service';
+import { env } from '../config/env';
+import { errorName, logger } from '../utils/logger';
 
 // Facebook Login for Business: el Page Access Token (de una Página de Facebook
 // con una Cuenta de Instagram Business vinculada) sí soporta upload_type:
@@ -62,7 +64,7 @@ export const handleDataDeletion = async (req: Request, res: Response): Promise<v
   }
 
   res.json({
-    url: `${process.env.FRONTEND_URL || 'https://esse-analytics.com'}/data-deletion/`,
+    url: `${env.FRONTEND_URL}/data-deletion/`,
     confirmation_code: crypto.randomBytes(16).toString('hex'),
   });
 };
@@ -177,14 +179,14 @@ export async function publishReelToFacebookPage(
 
 // Facebook Login for Business es un permiso de la Meta App principal, no una
 // app separada — usa las mismas credenciales que el resto de la integración.
-const fbAppId     = () => process.env.META_APP_ID!;
-const fbAppSecret = () => process.env.META_APP_SECRET!;
+const fbAppId     = () => env.META_APP_ID;
+const fbAppSecret = () => env.META_APP_SECRET;
 
 // Devuelve una página que avisa a la ventana padre y se cierra (o redirige si no es popup).
 // Si `client` es "android"/"ios", en vez de la página HTML (pensada para popup de
 // navegador — no hay window.opener en una Custom Tab / ASWebAuthenticationSession)
 // redirige directo a un deep link que la app registra, sin necesidad de polling.
-function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173', client?: string) {
+function popupResult(res: Response, status: string, origin = env.FRONTEND_URL, client?: string) {
   if (client === 'android' || client === 'ios') {
     res.redirect(302, `essenalytics://oauth-callback?platform=instagram&status=${encodeURIComponent(status)}`);
     return;
@@ -226,17 +228,17 @@ export const getToken = async (req: AuthRequest, res: Response) => {
 };
 
 // ── GET /api/instagram/auth/url ───────────────────────────────────────────────
-export const getAuthUrl = (req: AuthRequest, res: Response) => {
+export const getAuthUrl = async (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
   const client = req.query.client as string | undefined;
   const installationId = req.query.installationId as string | undefined;
   const deviceName     = req.query.deviceName as string | undefined;
   const appVersion     = req.query.appVersion as string | undefined;
-  const state = encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
-  const configId = process.env.META_LOGIN_CONFIG_ID;
+  const state = await encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
+  const configId = env.META_LOGIN_CONFIG_ID;
   const params = new URLSearchParams({
     client_id:     fbAppId(),
-    redirect_uri:  process.env.META_REDIRECT_URI!,
+    redirect_uri:  env.META_REDIRECT_URI,
     response_type: 'code',
     state,
   });
@@ -260,15 +262,22 @@ export const handleCallback = async (req: Request, res: Response) => {
   const code  = req.query.code  as string;
   const state = req.query.state as string;
   console.log('[Instagram] Callback recibido, code:', !!code, 'state:', !!state);
-  if (!code || !state) return popupResult(res, 'error');
+  if (!state) return popupResult(res, 'error');
 
-  const { userId, origin, client, installationId, deviceName, appVersion } = decodeState(state);
+  let decoded;
+  try {
+    decoded = await decodeState(state);
+  } catch {
+    return popupResult(res, 'error');
+  }
+  const { userId, origin, client, installationId, deviceName, appVersion } = decoded;
   if (!userId) return popupResult(res, 'error', origin, client);
+  if (!code) return popupResult(res, 'error', origin, client);
 
   try {
     // 1. Exchange code → short-lived User Access Token
     const shortRes = await fetch(
-      `${FB_TOKEN}?client_id=${fbAppId()}&client_secret=${fbAppSecret()}&redirect_uri=${encodeURIComponent(process.env.META_REDIRECT_URI!)}&code=${code}`
+      `${FB_TOKEN}?client_id=${fbAppId()}&client_secret=${fbAppSecret()}&redirect_uri=${encodeURIComponent(env.META_REDIRECT_URI)}&code=${code}`
     );
     const shortJson = await shortRes.json() as any;
     if (shortJson.error) throw new Error(shortJson.error.message ?? JSON.stringify(shortJson.error));
@@ -310,7 +319,9 @@ export const handleCallback = async (req: Request, res: Response) => {
     for (const page of pages) {
       const linkRes  = await fetch(`${FB_GRAPH}/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`);
       const linkJson = await linkRes.json() as any;
-      if (linkJson.error) console.error(`[Instagram] Error consultando instagram_business_account de "${page.name}":`, JSON.stringify(linkJson.error));
+      if (linkJson.error) logger.warn('instagram_business_account_lookup_failed', {
+        providerCode: linkJson.error?.code ?? null,
+      });
       if (linkJson.instagram_business_account?.id) {
         pageId = page.id;
         pageAccessToken = page.access_token;
@@ -336,7 +347,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     });
     popupResult(res, 'success', origin, client);
   } catch (err: any) {
-    console.error('Instagram OAuth error:', err.message);
+    logger.error('instagram_oauth_callback_failed', { errorName: errorName(err) });
     popupResult(res, 'error', origin, client);
   }
 };
@@ -385,7 +396,7 @@ export const getAccountInfo = async (req: AuthRequest, res: Response) => {
       avatarUrl: data.profile_picture_url ?? '',
     });
   } catch (err: any) {
-    console.error('Error Instagram account-info:', err.message);
+    logger.warn('instagram_account_info_failed', { errorName: errorName(err) });
     res.status(500).json({ error: 'Error al obtener info de la cuenta', detail: err.message });
   }
 };
@@ -440,7 +451,9 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
 
     const containerData = await igPost(`/${instagram_user_id}/media`, containerPayload);
     if (!containerData.id) {
-      console.error('[Instagram] Error al crear contenedor:', JSON.stringify(containerData.error ?? containerData));
+      logger.error('instagram_container_create_failed', {
+        providerCode: containerData.error?.code ?? null,
+      });
       const metaError = containerData.error ?? containerData;
       throw new Error(
         (metaError.error_user_msg || metaError.message || 'Error al crear contenedor de media') +
@@ -497,7 +510,7 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
           });
         } catch (err: any) {
           facebookError = err.message;
-          console.error('[Facebook] Cross-post falló:', err.message);
+          logger.warn('facebook_crosspost_failed', { errorName: errorName(err) });
         }
       }
     }
@@ -510,7 +523,7 @@ export const uploadToInstagram = async (req: AuthRequest, res: Response) => {
 
     res.json({ ok: true, mediaId: publishData.id, postUrl, crossPostedFacebook: !!facebookUrl, facebookUrl, facebookError });
   } catch (err: any) {
-    console.error('Error al subir a Instagram:', err.message);
+    logger.error('instagram_upload_failed', { errorName: errorName(err) });
     res.status(500).json({ error: 'Error al subir a Instagram', detail: err.message });
   }
 };

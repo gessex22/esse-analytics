@@ -8,6 +8,8 @@
     // scripts sueltos) que no reflejan cómo el código realmente corre.
     "module": "commonjs",
     "moduleResolution": "node10",
+    "rootDir": "src",
+    "outDir": "dist",
     "ignoreDeprecations": "6.0",
     "esModuleInterop": true,
     "resolveJsonModule": true,

@@ -1,40 +1,65 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import { UserRole, UserTier } from '../models/user.model';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
+import { UserModel } from '../models/user.model';
+import { env } from '../config/env';
+import { decodeSignedAuthToken } from '../services/auth-token.service';
 
 // Dueño del SERVICIO (no de una instancia local). Solo este usuario administra
 // clientes y ve los logs en la central. Cualquier cliente registrado es
 // "todopoderoso" en SU instancia, pero no es el owner del servicio.
-export const OWNER_USERNAME = (process.env.OWNER_USERNAME || 'esse').toLowerCase();
+export const OWNER_USERNAME = env.OWNER_USERNAME;
 
 export function isOwner(username?: string): boolean {
   return !!username && username.toLowerCase() === OWNER_USERNAME;
 }
 
 export interface AuthRequest extends Request {
-  user?: { id: string; username: string; role: UserRole; tier: UserTier; hasCloudStorage?: boolean };
+  user?: {
+    id: string;
+    username: string;
+    role: UserRole;
+    tier: UserTier;
+    hasCloudStorage: boolean;
+    authVersion: number;
+  };
 }
 
 // Extraído para poder reverificar el mismo JWT fuera del ciclo request/response
 // de Express -- ver remote-library-storage.service.ts, donde @tus/server
 // envuelve el request original y no garantiza que `req.user` sobreviva.
-export function decodeAuthToken(token: string): AuthRequest['user'] | null {
-  try {
-    return jwt.verify(token, JWT_SECRET) as AuthRequest['user'];
-  } catch {
-    return null;
-  }
+export async function decodeAuthToken(token: string): Promise<AuthRequest['user'] | null> {
+  const claims = decodeSignedAuthToken(token);
+  if (!claims) return null;
+
+  const user = await UserModel.findById(claims.id)
+    .select('username role tier status hasCloudStorage authVersion')
+    .lean();
+  // Registros legacy pueden no tener `status`; históricamente eso significa
+  // activo. Solo `deleted` es terminal y debe cortar acceso.
+  if (!user || user.status === 'deleted') return null;
+
+  const currentAuthVersion = user.authVersion ?? 0;
+  // Tokens legacy equivalen a la versión inicial 0. En cuanto se cambia una
+  // contraseña, plan, rol o estado, el incremento los invalida.
+  if ((claims.authVersion ?? 0) !== currentAuthVersion) return null;
+
+  return {
+    id: String(user._id),
+    username: user.username,
+    role: user.role,
+    tier: user.tier,
+    hasCloudStorage: user.hasCloudStorage ?? false,
+    authVersion: currentAuthVersion,
+  };
 }
 
-export function verifyToken(req: AuthRequest, res: Response, next: NextFunction): void {
+export async function verifyToken(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ message: 'Token requerido.' });
     return;
   }
-  const user = decodeAuthToken(header.slice(7));
+  const user = await decodeAuthToken(header.slice(7));
   if (!user) {
     res.status(401).json({ message: 'Token inválido o expirado.' });
     return;
@@ -46,14 +71,14 @@ export function verifyToken(req: AuthRequest, res: Response, next: NextFunction)
 // Igual que verifyToken, pero también acepta el token por ?token= en la query string.
 // Necesario para <video src="...">/<a download> — el navegador no manda headers
 // custom en esos requests, solo la URL.
-export function verifyTokenFromHeaderOrQuery(req: AuthRequest, res: Response, next: NextFunction): void {
+export async function verifyTokenFromHeaderOrQuery(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   const token = header?.startsWith('Bearer ') ? header.slice(7) : (req.query.token as string | undefined);
   if (!token) {
     res.status(401).json({ message: 'Token requerido.' });
     return;
   }
-  const user = decodeAuthToken(token);
+  const user = await decodeAuthToken(token);
   if (!user) {
     res.status(401).json({ message: 'Token inválido o expirado.' });
     return;

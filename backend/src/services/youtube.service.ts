@@ -1,9 +1,10 @@
 import { PlatformVideoModel } from '../models/platform-video.model';
 import type { PlatformRecentItem, PlatformRecentPage } from './instagram.service';
+import { env } from '../config/env';
 
 const BASE = 'https://www.googleapis.com/youtube/v3';
-const apiKey    = () => process.env.YOUTUBE_API_KEY    || '';
-const channelId = () => process.env.YOUTUBE_CHANNEL_ID || '';
+const apiKey    = () => env.YOUTUBE_API_KEY;
+const channelId = () => env.YOUTUBE_CHANNEL_ID;
 
 // ISO 8601 duration → segundos (ej: PT1M3S → 63)
 function parseDuration(iso: string): number {

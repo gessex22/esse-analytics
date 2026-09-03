@@ -8,9 +8,10 @@ import { FileModel, FileContentStatus } from '../models/file.model';
 // El central corre en la PC del owner; sin esto, otra cuenta vería/publicaría sus archivos.
 const ownerId = (req: Request): string => (req as AuthRequest).user!.id;
 import { PublishingStatusModel } from '../models/publishing-status.model';
-import { IdeaCentral } from '../models/ideacentral';
+import { IdeaCentral } from '../models/ideaCentral';
 import fs from 'fs';
 import path from 'path';
+import { errorName, logger } from '../utils/logger';
 
 // ── GET /api/videos ───────────────────────────────────────────────────────────
 export const getVideos = async (req: Request, res: Response) => {
@@ -126,7 +127,7 @@ export const getVideos = async (req: Request, res: Response) => {
       results: transcripts,
     });
   } catch (error) {
-    console.error('Error al obtener videos:', error);
+    logger.error('videos_list_failed', { errorName: errorName(error) });
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -136,7 +137,7 @@ export const getVideos = async (req: Request, res: Response) => {
 // la colección 'files', y propaga file_name y file_path a
 // ideas_centrales.videos_vinculados[].
 export const renameVideo = async (req: Request, res: Response): Promise<void> => {
-  const { fileId } = req.params;
+  const fileId = String(req.params.fileId);
   const { name }   = req.body as { name?: string };
 
   if (!name || name.trim().length === 0) {
@@ -164,9 +165,9 @@ export const renameVideo = async (req: Request, res: Response): Promise<void> =>
     if (fs.existsSync(oldPath)) {
       fs.renameSync(oldPath, newPath);
       diskRenamed = true;
-      console.log(`-> Archivo renombrado en disco: ${oldPath} → ${newPath}`);
+      logger.info('video_file_renamed', { fileId });
     } else {
-      console.log(`-> Alerta: no se encontró el archivo en disco: ${oldPath}`);
+      logger.warn('video_file_missing_during_rename', { fileId });
     }
 
     const newFilePath = diskRenamed ? newPath : fileDoc.file_path;
@@ -215,14 +216,14 @@ export const renameVideo = async (req: Request, res: Response): Promise<void> =>
       disk_renamed: diskRenamed,
     });
   } catch (error: any) {
-    console.error('Error al renombrar video:', error);
+    logger.error('video_rename_failed', { fileId, errorName: errorName(error) });
     res.status(500).json({ message: 'Error interno.', error: error.message });
   }
 };
 
 // ── PATCH /api/videos/:fileId/status ─────────────────────────────────────────
 export const updateVideoContentStatus = async (req: Request, res: Response): Promise<void> => {
-  const { fileId } = req.params;
+  const fileId = String(req.params.fileId);
   const { status } = req.body as { status?: FileContentStatus };
 
   const validStatuses: FileContentStatus[] = ['publicado', 'borrador', 'procesando', 'descartado'];
@@ -245,7 +246,7 @@ export const updateVideoContentStatus = async (req: Request, res: Response): Pro
 
     res.status(200).json({ message: 'Estado actualizado.', content_status: fileDoc.content_status });
   } catch (error: any) {
-    console.error('Error al actualizar estado:', error);
+    logger.error('video_status_update_failed', { fileId, errorName: errorName(error) });
     res.status(500).json({ message: 'Error interno.', error: error.message });
   }
 };
@@ -253,7 +254,7 @@ export const updateVideoContentStatus = async (req: Request, res: Response): Pro
 // ── GET /api/videos/:fileId/player-data ──────────────────────────────────────
 // Devuelve file info + transcripción + guión para el reproductor modal
 export const getVideoPlayerData = async (req: Request, res: Response): Promise<void> => {
-  const { fileId } = req.params;
+  const fileId = String(req.params.fileId);
 
   try {
     const fileDoc = await FileModel.findOne({ _id: fileId, userId: ownerId(req) }).lean();
@@ -299,7 +300,7 @@ export const getVideoPlayerData = async (req: Request, res: Response): Promise<v
         : null,
     });
   } catch (error: any) {
-    console.error('Error al obtener datos del reproductor:', error);
+    logger.error('video_player_data_failed', { fileId, errorName: errorName(error) });
     res.status(500).json({ message: 'Error interno.', error: error.message });
   }
 };
@@ -320,7 +321,7 @@ export const getMetrics = async (req: Request, res: Response) => {
 
     res.json({ totalVideos, guionesEstructurados, clipsRandom, clipsSinVoz });
   } catch (error) {
-    console.error('Error al obtener métricas:', error);
+    logger.error('video_metrics_failed', { errorName: errorName(error) });
     res.status(500).json({ error: 'Error al calcular métricas' });
   }
 };
@@ -328,7 +329,7 @@ export const getMetrics = async (req: Request, res: Response) => {
 // ── DELETE /api/videos/:fileId/delete-file ────────────────────────────────────
 export const deleteFileFromDisk = async (req: Request, res: Response) => {
   try {
-    const { fileId } = req.params;
+    const fileId = String(req.params.fileId);
     const fileDoc = await FileModel.findOne({ _id: fileId, userId: ownerId(req) });
 
     if (!fileDoc) return res.status(404).json({ error: 'Archivo no encontrado' });
@@ -347,7 +348,7 @@ export const deleteFileFromDisk = async (req: Request, res: Response) => {
 
     res.json({ message: 'Archivo eliminado físicamente del disco' });
   } catch (error) {
-    console.error('Error al eliminar archivo:', error);
+    logger.error('video_file_delete_failed', { errorName: errorName(error) });
     res.status(500).json({ error: 'Error al eliminar el archivo físico' });
   }
 };
@@ -407,7 +408,7 @@ export const getCalendarVideos = async (req: Request, res: Response) => {
 
     res.json({ videos: results });
   } catch (error) {
-    console.error('Error al obtener videos del calendario:', error);
+    logger.error('calendar_list_failed', { errorName: errorName(error) });
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 };
@@ -429,7 +430,7 @@ export const updateScheduledDate = async (req: Request, res: Response): Promise<
     }
     res.json({ scheduled_date: fileDoc.scheduled_date ?? null });
   } catch (error: any) {
-    console.error('Error al actualizar fecha programada:', error);
+    logger.error('scheduled_date_update_failed', { errorName: errorName(error) });
     res.status(500).json({ message: 'Error interno.', error: error.message });
   }
 };

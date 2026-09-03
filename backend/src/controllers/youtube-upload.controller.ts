@@ -11,6 +11,8 @@ import { markPlatformLinked } from '../models/user.model';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { recordAuditEvent } from '../services/audit.service';
+import { env } from '../config/env';
+import { errorName, logger } from '../utils/logger';
 
 export const remoteUploadMiddleware = multer({
   dest: path.join(os.tmpdir(), 'esse-uploads'),
@@ -22,9 +24,9 @@ export const remoteUploadMiddleware = multer({
 
 // ── OAuth2 client ─────────────────────────────────────────────────────────────
 const getOAuth2Client = () => new google.auth.OAuth2(
-  process.env.YOUTUBE_CLIENT_ID,
-  process.env.YOUTUBE_CLIENT_SECRET,
-  process.env.YOUTUBE_REDIRECT_URI || 'http://localhost:4000/api/youtube/auth/callback',
+  env.YOUTUBE_CLIENT_ID,
+  env.YOUTUBE_CLIENT_SECRET,
+  env.YOUTUBE_REDIRECT_URI,
 );
 
 const SCOPES = [
@@ -64,7 +66,7 @@ async function getAuthorizedClient(userId: string) {
 }
 
 // ── GET /api/youtube/auth/url ─────────────────────────────────────────────────
-export const getAuthUrl = (req: AuthRequest, res: Response) => {
+export const getAuthUrl = async (req: AuthRequest, res: Response) => {
   const oauth2 = getOAuth2Client();
   const origin = req.query.origin as string | undefined;
   const client = req.query.client as string | undefined;
@@ -74,7 +76,7 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
   const installationId = req.query.installationId as string | undefined;
   const deviceName     = req.query.deviceName as string | undefined;
   const appVersion     = req.query.appVersion as string | undefined;
-  const state = encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
+  const state = await encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
   const url = oauth2.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -89,17 +91,23 @@ export const handleCallback = async (req: Request, res: Response) => {
   const code  = req.query.code  as string;
   const state = req.query.state as string;
 
-  if (!code || !state) {
-    const fallback = process.env.FRONTEND_URL || 'http://localhost:5173';
-    return res.redirect(`${fallback}?youtube_auth=error`);
+  if (!state) {
+    return res.redirect(`${env.FRONTEND_URL}?youtube_auth=error`);
   }
 
-  const { userId, origin, client, installationId, deviceName, appVersion } = decodeState(state);
+  let decoded;
+  try {
+    decoded = await decodeState(state);
+  } catch {
+    return res.redirect(`${env.FRONTEND_URL}?youtube_auth=error`);
+  }
+  const { userId, origin, client, installationId, deviceName, appVersion } = decoded;
   // Android/iOS no tienen una página web en `origin` que lea el query param —
   // vuelven por deep link directo en vez del redirect a `origin` de siempre.
   const redirectTo = (status: string) => client === 'android' || client === 'ios'
     ? `essenalytics://oauth-callback?platform=youtube&status=${encodeURIComponent(status)}`
     : `${origin}?youtube_auth=${status}`;
+  if (!code) return res.redirect(redirectTo('error'));
 
   try {
     const oauth2 = getOAuth2Client();
@@ -111,7 +119,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     });
     res.redirect(redirectTo('success'));
   } catch (err: any) {
-    console.error('YouTube OAuth callback error:', err.message);
+    logger.error('youtube_oauth_callback_failed', { errorName: errorName(err) });
     res.redirect(redirectTo('error'));
   }
 };
@@ -178,7 +186,7 @@ export const getChannelInfo = async (req: AuthRequest, res: Response) => {
 
     res.json({ name, avatarUrl, customUrl });
   } catch (err: any) {
-    console.error('Error YouTube channel-info:', err?.message);
+    logger.warn('youtube_channel_info_failed', { errorName: errorName(err) });
     // invalid_grant: el refresh_token guardado ya no sirve (revocado desde la cuenta
     // de Google, contraseña cambiada, o vencido por inactividad). No es un error
     // transitorio — hay que tratarlo igual que "no conectado" para que el usuario
@@ -286,7 +294,7 @@ export const uploadToYoutube = async (req: AuthRequest, res: Response) => {
       title: response.data.snippet?.title,
     });
   } catch (err: any) {
-    console.error('Error al subir a YouTube:', err?.response?.data ?? err.message);
+    logger.error('youtube_upload_failed', { errorName: errorName(err) });
     res.status(500).json({
       error: 'Error al subir el video',
       detail: err?.response?.data?.error?.message ?? err.message,
@@ -364,7 +372,7 @@ export const remoteUploadToYoutube = async (req: AuthRequest, res: Response) => 
 
     res.json({ ok: true, videoId, videoUrl, title: response.data.snippet?.title });
   } catch (err: any) {
-    console.error('Error remote upload YouTube:', err?.response?.data ?? err.message);
+    logger.error('youtube_remote_upload_failed', { errorName: errorName(err) });
     res.status(500).json({
       error: 'Error al subir el video',
       detail: err?.response?.data?.error?.message ?? err.message,
@@ -376,7 +384,7 @@ export const remoteUploadToYoutube = async (req: AuthRequest, res: Response) => 
 
 // ── POST /api/youtube/thumbnail/:videoId ──────────────────────────────────────
 export const setThumbnail = async (req: AuthRequest, res: Response) => {
-  const { videoId } = req.params;
+  const videoId = String(req.params.videoId);
   const { imageBase64 } = req.body;
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 requerido' });
 
@@ -401,7 +409,7 @@ export const setThumbnail = async (req: AuthRequest, res: Response) => {
     });
     res.json({ ok: true });
   } catch (err: any) {
-    console.error('Error al subir miniatura:', err?.response?.data ?? err.message);
+    logger.error('youtube_thumbnail_upload_failed', { errorName: errorName(err) });
     res.status(500).json({
       error: 'Error al subir miniatura',
       detail: err?.response?.data?.error?.message ?? err.message,

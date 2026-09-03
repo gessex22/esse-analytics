@@ -1,7 +1,7 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ITranscript extends Document {
-  file_id: Schema.Types.ObjectId;
+  file_id: Types.ObjectId;
   transcript_text: string;
   language: string;
   tipo_contenido: 'GUION_ESTRUCTURADO' | 'CLIP_RANDOM' | 'CLIP_SIN_VOZ';

@@ -5,7 +5,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import videoRouter from './routes/video.routes';
 import streamRouter from './routes/stream.routes';
-import ideaRoutes from './routes/idearoutes';
+import ideaRoutes from './routes/ideaRoutes';
 import authRoutes from './routes/auth.routes';
 import syncRoutes from './routes/sync.routes';
 import publishingStatusRouter from './routes/publishing-status.routes';
@@ -19,12 +19,19 @@ import remoteLibraryRouter   from './routes/remote-library.routes';
 import auditRouter           from './routes/audit.routes';
 import { apiRateLimit } from './middleware/rate-limit.middleware';
 import { runRemoteLibraryRetentionSweep } from './services/remote-library-retention.service';
+import { env } from './config/env';
+import { errorHandler, notFoundHandler } from './middleware/error.middleware';
+import { requestContext, sanitizeProductionErrors } from './middleware/request.middleware';
+import { logger, errorName } from './utils/logger';
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = env.PORT;
 
 // Detrás de Cloudflare Tunnel — confiar en el proxy para que rate-limit lea la IP real
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use(requestContext);
+app.use(sanitizeProductionErrors);
 
 // Seguridad: headers HTTP
 app.use(helmet({
@@ -37,9 +44,7 @@ app.use('/api', apiRateLimit);
 // Seguridad: CORS restringido a orígenes conocidos.
 // Las peticiones server-to-server (local-backend proxy, curl, apps) no llevan Origin → se permiten.
 // El navegador solo nos llama desde la web pública.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
-  'https://esse-analytics.com,https://www.esse-analytics.com')
-  .split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_ORIGINS = env.ALLOWED_ORIGINS;
 
 app.use(cors({
   origin(origin, cb) {
@@ -60,7 +65,14 @@ app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'content-automation-dashboard-api',
-    mongoState: mongoose.connection.readyState,
+  });
+});
+
+app.get('/api/ready', (_req, res) => {
+  const mongoReady = mongoose.connection.readyState === 1;
+  res.status(mongoReady ? 200 : 503).json({
+    ok: mongoReady,
+    dependencies: { mongo: mongoReady ? 'ready' : 'unavailable' },
   });
 });
 
@@ -78,21 +90,59 @@ app.use(componentsRouter);
 app.use(backupRouter);
 app.use(remoteLibraryRouter);
 app.use(auditRouter);
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 const REMOTE_LIBRARY_RETENTION_INTERVAL_MS = 60 * 60 * 1000; // 1h
 
+let retentionTimer: NodeJS.Timeout | undefined;
+
 function scheduleRemoteLibraryRetentionSweep(): void {
   runRemoteLibraryRetentionSweep()
-    .then(r => console.log(`[remote-library-retention] usuarios=${r.usersScanned} protegidos=${r.protectedCount} liberados=${r.evicted} únicaCopia=${r.keptSoleCopy} endurecidos=${r.hardened}`))
-    .catch(err => console.error('[remote-library-retention] error:', err.message));
-  setTimeout(scheduleRemoteLibraryRetentionSweep, REMOTE_LIBRARY_RETENTION_INTERVAL_MS);
+    .then(r => logger.info('remote_library_retention', {
+      usersScanned: r.usersScanned, protectedCount: r.protectedCount,
+      evicted: r.evicted, keptSoleCopy: r.keptSoleCopy, hardened: r.hardened,
+    }))
+    .catch(err => logger.error('remote_library_retention_failed', {
+      errorName: errorName(err),
+    }));
+  retentionTimer = setTimeout(scheduleRemoteLibraryRetentionSweep, REMOTE_LIBRARY_RETENTION_INTERVAL_MS);
+  retentionTimer.unref();
 }
 
-mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 })
+let httpServer: ReturnType<typeof app.listen> | undefined;
+let shuttingDown = false;
+
+async function shutdown(reason: string, exitCode: number): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info('shutdown_started', { reason });
+  if (retentionTimer) clearTimeout(retentionTimer);
+
+  const forceExit = setTimeout(() => process.exit(1), 10_000);
+  forceExit.unref();
+  if (httpServer) await new Promise<void>(resolve => httpServer!.close(() => resolve()));
+  await mongoose.disconnect().catch(() => undefined);
+  clearTimeout(forceExit);
+  process.exit(exitCode);
+}
+
+process.once('SIGTERM', () => void shutdown('SIGTERM', 0));
+process.once('SIGINT', () => void shutdown('SIGINT', 0));
+process.once('uncaughtException', err => {
+  logger.error('uncaught_exception', { errorName: err.name });
+  void shutdown('uncaughtException', 1);
+});
+process.once('unhandledRejection', reason => {
+  logger.error('unhandled_rejection', { errorName: errorName(reason) });
+  void shutdown('unhandledRejection', 1);
+});
+
+mongoose.connect(env.MONGO_URI, { serverSelectionTimeoutMS: 10000 })
   .then(() => {
-    console.log('Conectado exitosamente a MongoDB Atlas');
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`API corriendo en http://0.0.0.0:${PORT}`);
+    logger.info('mongo_connected');
+    httpServer = app.listen(PORT, '0.0.0.0', () => {
+      logger.info('server_listening', { port: PORT, environment: env.NODE_ENV });
     });
     // Almacenamiento dinámico de Biblioteca remota: libera bytes de video que
     // ya no son "el próximo a publicar" de ninguna plataforma (ver
@@ -102,6 +152,6 @@ mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 
     scheduleRemoteLibraryRetentionSweep();
   })
   .catch((err) => {
-    console.error('Error de conexion a MongoDB:', err.message);
-    process.exit(1);
+    logger.error('mongo_connection_failed', { errorName: errorName(err) });
+    void shutdown('mongo_connection_failed', 1);
   });

@@ -1,4 +1,5 @@
 import { AuditEventModel, AuditEventType } from '../models/audit-event.model';
+import { errorName, logger } from '../utils/logger';
 
 export interface RecordAuditEventParams {
   userId: string;
@@ -23,6 +24,6 @@ export async function recordAuditEvent(params: RecordAuditEventParams): Promise<
   try {
     await AuditEventModel.create({ ...params, at: new Date() });
   } catch (err: any) {
-    console.error('[audit] no se pudo registrar el evento:', params.type, err.message);
+    logger.error('audit_event_write_failed', { type: params.type, errorName: errorName(err) });
   }
 }

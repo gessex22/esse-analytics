@@ -8,7 +8,7 @@ import { getRecentTikTokVideos, getVideoStatsByIds as getTiktokVideoStats, resol
 import { getValidToken as getValidTikTokToken } from './tiktok-upload.controller';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
-import { FileModel } from '../models/file.model';
+import { FileModel, Platform } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { applyPlatformPublish } from './backup.controller';
 import { recordAuditEvent } from '../services/audit.service';
@@ -163,7 +163,8 @@ export const markOrphan = async (req: AuthRequest, res: Response): Promise<void>
 // evita que un link eliminado en Electron vuelva a aparecer al sincronizar.
 export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { fileId, platform } = req.params;
+    const fileId = String(req.params.fileId);
+    const platform = String(req.params.platform) as Platform;
     const userId = req.user!.id;
     if (!['youtube', 'instagram', 'tiktok', 'facebook'].includes(platform)) {
       res.status(400).json({ message: 'Plataforma no válida' }); return;
@@ -1057,7 +1058,8 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
 
     const storedMap = new Map(stored.map(c => [c.platform as string, c]));
 
-    const allConfigs = await Promise.all(['youtube', 'tiktok', 'instagram'].map(async (platform) => {
+    const calendarPlatforms: SyncPlatform[] = ['youtube', 'tiktok', 'instagram'];
+    const allConfigs = await Promise.all(calendarPlatforms.map(async (platform) => {
       const override = storedMap.get(platform);
       const dynamic = await computeLastPublishedDynamic(userId, platform);
 
@@ -1195,7 +1197,7 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
 // PATCH /api/sync/calendar-config/:platform — fija el último video publicado en cualquier plataforma
 export const updateCalendarConfig = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { platform } = req.params;
+    const platform = String(req.params.platform) as SyncPlatform;
     const { lastPublishedDate, lastPublishedTitle, intervalDays, lastVideoId, nextVideoId, nextRemoteLibraryVideoId } = req.body;
     if (!['tiktok', 'instagram', 'youtube'].includes(platform)) {
       res.status(400).json({ message: 'Plataforma no válida' });
@@ -1249,7 +1251,7 @@ export const updateCalendarConfig = async (req: AuthRequest, res: Response): Pro
 // GET; no expone el PATCH administrativo que permite fijar toda la agenda.
 export const skipNextCalendarVideo = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { platform } = req.params;
+    const platform = String(req.params.platform) as SyncPlatform;
     const { fileId } = req.body as { fileId?: string };
     if (!['tiktok', 'instagram', 'youtube'].includes(platform) || !fileId) {
       res.status(400).json({ message: 'Plataforma o video no válido.' }); return;

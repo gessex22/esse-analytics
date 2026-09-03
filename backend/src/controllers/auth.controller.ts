@@ -1,20 +1,32 @@
 import { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import { UAParser } from 'ua-parser-js';
 import { UserModel } from '../models/user.model';
 import { LoginLogModel } from '../models/login-log.model';
 import { AuthRequest, isOwner } from '../middleware/auth.middleware';
 import { recordAuditEvent } from '../services/audit.service';
+import { env } from '../config/env';
+import { signAuthToken } from '../services/auth-token.service';
+import { timingSafeStringEqual } from '../utils/secure-compare';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'esse_secret_key_2024';
-// Bug preexistente encontrado de paso (no relacionado con Fase 5): localResetPassword
-// y localDeactivate ya comparaban contra esta constante más abajo, pero nunca estaba
-// declarada -- ReferenceError en cuanto se invocara cualquiera de los dos endpoints.
-// Mismo nombre y mismo fallback de dev que ya usa local-backend/src/routes/auth-proxy.routes.ts
-// al mandar el header X-Client-Key, para que ambos lados coincidan sin configurar nada en dev.
-const CLIENT_REGISTER_KEY = process.env.CLIENT_REGISTER_KEY || 'dev-only-not-a-real-key';
+function hasValidClientKey(value: string | string[] | undefined): boolean {
+  return timingSafeStringEqual(value, env.CLIENT_REGISTER_KEY);
+}
+
+function tokenFor(user: {
+  _id: unknown; username: string; role: any; tier: any;
+  hasCloudStorage?: boolean; authVersion?: number;
+}): string {
+  return signAuthToken({
+    id: String(user._id),
+    username: user.username,
+    role: user.role,
+    tier: user.tier,
+    hasCloudStorage: user.hasCloudStorage ?? false,
+    authVersion: user.authVersion ?? 0,
+  });
+}
 
 function getClientIp(req: Request): string {
   const forwarded = req.headers['x-forwarded-for'];
@@ -47,7 +59,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
   const { username, password, email } = req.body as { username?: string; password?: string; email?: string };
 
   // El registro solo está disponible desde la aplicación instalada
-  if (req.headers['x-client-key'] === '__disabled__') {
+  if (!hasValidClientKey(req.headers['x-client-key'])) {
     res.status(403).json({ message: 'El registro solo está disponible desde la aplicación instalada.' });
     return;
   }
@@ -80,14 +92,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       ...(email ? { email } : {}),
     });
 
-    const token = jwt.sign(
-      {
-        id: user._id, username: user.username, role: user.role, tier: user.tier,
-        isOwner: isOwner(user.username), hasCloudStorage: user.hasCloudStorage,
-      },
-      JWT_SECRET,
-      { expiresIn: '7d' },
-    );
+    const token = tokenFor(user);
 
     res.status(201).json({
       token,
@@ -152,14 +157,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       installationId, deviceName, source, appVersion, ip,
     });
 
-    const token = jwt.sign(
-      {
-        id: user._id, username: user.username, role: user.role, tier: user.tier,
-        isOwner: isOwner(user.username), hasCloudStorage: user.hasCloudStorage,
-      },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = tokenFor(user);
 
     res.json({
       token,
@@ -279,10 +277,11 @@ export const deactivateUser = async (req: AuthRequest, res: Response): Promise<v
   try {
     const user = await UserModel.findByIdAndUpdate(
       req.params.id,
-      { status: 'deleted', deletedAt: new Date() },
+      { $set: { status: 'deleted', deletedAt: new Date() }, $inc: { authVersion: 1 } },
       { new: true },
     ).select('-password');
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    await mongoose.connection.db?.collection('oauth_tokens').deleteMany({ userId: String(user._id) });
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ message: 'Error al dar de baja.', error: err.message });
@@ -403,10 +402,11 @@ export const deactivateMe = async (req: AuthRequest, res: Response): Promise<voi
   try {
     const user = await UserModel.findByIdAndUpdate(
       req.user!.id,
-      { status: 'deleted', deletedAt: new Date() },
+      { $set: { status: 'deleted', deletedAt: new Date() }, $inc: { authVersion: 1 } },
       { new: true },
     ).select('-password');
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
+    await mongoose.connection.db?.collection('oauth_tokens').deleteMany({ userId: String(user._id) });
     const { installationId, deviceName, source } = req.body as
       { installationId?: string; deviceName?: string; source?: string };
     await recordAuditEvent({
@@ -435,7 +435,7 @@ export const deactivateMe = async (req: AuthRequest, res: Response): Promise<voi
 // logout, y de paso es MÁS estricto que antes (solo la PC principal puede
 // hacer esto, no cualquier dispositivo que alguna vez matcheó installId).
 export const localResetPassword = async (req: Request, res: Response): Promise<void> => {
-  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+  if (!hasValidClientKey(req.headers['x-client-key'])) {
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
@@ -457,6 +457,7 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
       return;
     }
     user.password = await bcrypt.hash(newPassword, 10);
+    user.authVersion = (user.authVersion ?? 0) + 1;
     await user.save();
     await recordAuditEvent({
       userId: String(user._id), type: 'account_setting_changed',
@@ -479,7 +480,7 @@ export const localResetPassword = async (req: Request, res: Response): Promise<v
 // FIX 2026-08-14: mismo criterio que localResetPassword arriba -- primaryDeviceId
 // en vez de installId (que se borraba en cada logout normal).
 export const localDeactivate = async (req: Request, res: Response): Promise<void> => {
-  if (req.headers['x-client-key'] !== CLIENT_REGISTER_KEY) {
+  if (!hasValidClientKey(req.headers['x-client-key'])) {
     res.status(403).json({ message: 'Solo disponible desde la aplicación instalada.' });
     return;
   }
@@ -501,6 +502,7 @@ export const localDeactivate = async (req: Request, res: Response): Promise<void
     // 1. Marcar la cuenta como dada de baja
     user.status = 'deleted';
     user.deletedAt = new Date();
+    user.authVersion = (user.authVersion ?? 0) + 1;
     await user.save();
 
     // 2. Revocar acceso a los canales: borrar todos los tokens OAuth del usuario
@@ -535,7 +537,11 @@ export const setUserTier = async (req: AuthRequest, res: Response): Promise<void
   }
 
   try {
-    const user = await UserModel.findByIdAndUpdate(id, { tier }, { new: true }).select('-password');
+    const user = await UserModel.findByIdAndUpdate(
+      id,
+      { $set: { tier }, $inc: { authVersion: 1 } },
+      { new: true },
+    ).select('-password');
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
     res.json({ id: user._id, username: user.username, role: user.role, tier: user.tier });
   } catch (err: any) {
@@ -554,7 +560,11 @@ export const setUserCloudStorage = async (req: AuthRequest, res: Response): Prom
   }
 
   try {
-    const user = await UserModel.findByIdAndUpdate(id, { hasCloudStorage }, { new: true }).select('-password');
+    const user = await UserModel.findByIdAndUpdate(
+      id,
+      { $set: { hasCloudStorage }, $inc: { authVersion: 1 } },
+      { new: true },
+    ).select('-password');
     if (!user) { res.status(404).json({ message: 'Usuario no encontrado.' }); return; }
     res.json({ id: user._id, username: user.username, tier: user.tier, hasCloudStorage: user.hasCloudStorage });
   } catch (err: any) {

@@ -6,6 +6,8 @@ import { Server, EVENTS } from '@tus/server';
 import { FileStore } from '@tus/file-store';
 import sharp from 'sharp';
 import { decodeAuthToken } from '../middleware/auth.middleware';
+import { env } from '../config/env';
+import { errorName, logger } from '../utils/logger';
 
 // Único punto de la app que sabe DÓNDE y CÓMO se guardan los bytes de la
 // Biblioteca remota (disco local de la central, vía TUS resumable). Si más
@@ -153,9 +155,7 @@ export function buildRemoteLibraryTusServer(
   // @tus/server maneja su propio CORS (independiente del cors() de Express en
   // server.ts) -- sin esto responde Access-Control-Allow-Origin: * en vez de
   // respetar ALLOWED_ORIGINS como el resto de la API.
-  const allowedOrigins = (process.env.ALLOWED_ORIGINS ||
-    'https://esse-analytics.com,https://www.esse-analytics.com')
-    .split(',').map(s => s.trim()).filter(Boolean);
+  const allowedOrigins = env.ALLOWED_ORIGINS;
 
   // El Location que arma @tus/server por default sale de req.headers.host --
   // detrás del túnel de Cloudflare eso es 'localhost:5001' (el host interno,
@@ -163,7 +163,7 @@ export function buildRemoteLibraryTusServer(
   // fragmentos siguientes a una URL inalcanzable desde afuera de la Mac.
   // Fijamos el origin público explícito en vez de depender de que Cloudflare
   // reenvíe X-Forwarded-Host/Proto (respectForwardedHeaders) correctamente.
-  const publicOrigin = process.env.PUBLIC_API_ORIGIN || 'https://api.esse-analytics.com';
+  const publicOrigin = env.PUBLIC_API_ORIGIN;
 
   const tusServer = new Server({
     path: '/api/remote-library/tus',
@@ -180,7 +180,7 @@ export function buildRemoteLibraryTusServer(
     onUploadCreate: async (req, upload) => {
       const auth = req.headers.get('authorization');
       const token = auth?.startsWith('Bearer ') ? auth.slice(7) : undefined;
-      const user = token ? decodeAuthToken(token) : null;
+      const user = token ? await decodeAuthToken(token) : null;
       if (!user) throw tusError(401, 'Token requerido o inválido.');
 
       const contentId = upload.metadata?.contentId || undefined;
@@ -230,7 +230,7 @@ export function buildRemoteLibraryTusServer(
       const tmpPath = path.join(tempDir, upload.id);
       await fs.promises.rename(tmpPath, resolveRemoteLibraryFilePath(userId, storedFileName));
     } catch (err) {
-      console.error('[remote-library] Error moviendo archivo subido por TUS:', err);
+      logger.error('remote_library_file_move_failed', { errorName: errorName(err) });
     }
 
     // Limpieza del registro interno de TUS (el archivo ya no vive en tempDir,
