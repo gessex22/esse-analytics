@@ -28,6 +28,17 @@ const secret = (k) => buildEnv[k] ?? process.env[k] ?? '';
 if (!secret('YOUTUBE_API_KEY') || !secret('CLIENT_REGISTER_KEY')) {
   console.warn('⚠ Faltan secretos de build (electron/.env.build). El bundle saldrá sin YOUTUBE_API_KEY / CLIENT_REGISTER_KEY.');
 }
+// JWT_SECRET: igual que los otros, se hornea en build-time. Es la única forma
+// realista de que el bundle distribuido (server.cjs, corre in-process bajo
+// Electron -- ver main.ts `require('./server.cjs')`) tenga el mismo secreto
+// que la central: dotenv.config() en tiempo de ejecución busca .env en
+// process.cwd(), que bajo Electron es la carpeta de la app, no local-backend/
+// -- ahí nunca hay un .env real, así que sin esto el bundle cae siempre al
+// fallback hardcodeado de local-backend/src/config.ts, sin importar qué diga
+// local-backend/.env (eso solo aplica a `npm run dev` corrido suelto ahí).
+if (!secret('JWT_SECRET')) {
+  console.warn('⚠ Falta JWT_SECRET en electron/.env.build. El bundle usará el fallback hardcodeado y NO va a poder verificar tokens firmados por la central.');
+}
 
 await build({
   entryPoints: [localBackendEntry],
@@ -40,6 +51,7 @@ await build({
   define: {
     'process.env.YOUTUBE_API_KEY':     JSON.stringify(secret('YOUTUBE_API_KEY')),
     'process.env.CLIENT_REGISTER_KEY': JSON.stringify(secret('CLIENT_REGISTER_KEY')),
+    'process.env.JWT_SECRET':          JSON.stringify(secret('JWT_SECRET')),
   },
   // Módulos nativos y módulos de Node que no deben ser bundleados
   external: [
