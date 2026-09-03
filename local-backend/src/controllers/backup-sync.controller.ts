@@ -251,6 +251,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       // Preferimos matchear por content_id (estable ante renombres); si la nube
       // todavía no tiene content_id (registro viejo) o no matchea, caemos a file_name.
       let localFile = cf.content_id ? fileRepo.findByContentId(cf.content_id) : undefined;
+      const matchedByNameOnly = !localFile;
       if (!localFile) {
         const { rows } = fileRepo.findAll({ search: cf.file_name, limit: 5, offset: 0 });
         localFile = rows.find(r => r.file_name === cf.file_name);
@@ -259,6 +260,24 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       if (!localFile) {
         orphans++;
         continue;
+      }
+
+      // Guarda contra falso positivo: el match por content_id es estable (mismo
+      // archivo real, sobrevive renombres), pero el fallback por file_name es una
+      // comparación de string pelada -- si alguien recicla el nombre exacto de un
+      // video viejo para un archivo nuevo y NO relacionado (borrado y vuelto a
+      // grabar con el mismo nombre por costumbre), este chequeo evita heredar
+      // badges/estado de publicación de un video que en realidad es otro. No es
+      // a prueba de balas (dos archivos idénticos en duración son indistinguibles
+      // acá), pero descarta la inmensa mayoría de coincidencias de nombre entre
+      // videos genuinamente distintos sin pedir nada nuevo al usuario. Solo aplica
+      // al fallback por nombre -- un match por content_id ya es confiable de por sí.
+      if (matchedByNameOnly && cf.duracion_segundos != null && localFile.duracion_segundos != null) {
+        const diff = Math.abs(cf.duracion_segundos - localFile.duracion_segundos);
+        if (diff > 1.5) {
+          orphans++;
+          continue;
+        }
       }
 
       const cloudTs = new Date(cf.local_updated_at).getTime();
