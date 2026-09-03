@@ -1,8 +1,8 @@
+import './load-env'; // ⚠️ DEBE ir primero: carga .env antes de que otros módulos lean process.env
 import './db/database'; // inicializa SQLite y crea las tablas
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 
@@ -29,8 +29,6 @@ import { configRepo } from './db/config.repo';
 import { flushHistoryOutbox } from './services/history-outbox.service';
 import { historyOutboxRepo } from './db/history-outbox.repo';
 import { fetchInstallationRole } from './services/installation-role.service';
-
-dotenv.config();
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
