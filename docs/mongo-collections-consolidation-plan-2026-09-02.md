@@ -359,6 +359,17 @@ truncation, no un bug. Se limpiaron los documentos de prueba en
 `backup_canary_comparison_state`/`results` antes de dejar esto listo para
 la ventana real.
 
+**Primer par real registrado (2026-09-02, tráfico real desde Electron/
+macgessemberg22 tras desplegar `4777a1f`):** `legacyCount=1159`,
+`canonicalCount=1121`, `onlyLegacy=38` (los mismos `ELIMINADO_DISCO` de
+siempre), `onlyCanonical=0`, `fieldDiffs=0`. `hasDiff=true` está marcando
+exactamente la diferencia ya explicada y esperada -- primera confirmación
+con tráfico real de que la lectura canónica es correcta. Pares: 1/200.
+Tardó dos intentos de deploy en activarse: el primero falló porque la
+máquina de producción (`macgessemberg22`, un Mac -- no la PC Windows que
+describe el CLAUDE.md del repo, vale la pena corregir esa doc en algún
+momento) seguía en `main`@`de02a31`, muy anterior a la Entrega A.
+
 - Comparar en paralelo únicamente para `userId` incluidos en una allowlist
   canary. Dentro de esa allowlist se admite como máximo una comparación por
   usuario cada 15 minutos; fuera de ella no se duplica ninguna lectura. Se
