@@ -75,11 +75,15 @@ las colecciones que representan datos relacionados.
   implementada 2026-09-02: `FileSchema` extendida + servicio de lectura
   canónica + flag `BACKUP_CANONICAL_READS` (default apagado). Ver
   `docs/mongo-collections-consolidation-plan-2026-09-02.md` sección 5.
-- [ ] Crear migración con dry-run por defecto, snapshot previo obligatorio de
+- [x] Crear migración con dry-run por defecto, snapshot previo obligatorio de
   `backup_files`, actualizaciones condicionadas, postflight automático y
-  rollback generado desde el snapshot.
+  rollback generado desde el snapshot. `backend/scripts/mongo-files-consolidation.js`,
+  corrido en `--apply` global 2026-09-02: 1121 actualizados, 0 ambiguos/
+  colisiones/errores/concurrent_change, verificado contra la base real.
 - [ ] Ejecutar primero una muestra pequeña y verificar push, pull, wipe+restore,
   renombre, calendario, Matches, Estadísticas, Historial y Biblioteca remota.
+  (El `--apply` ya corrió global directo porque solo hay un usuario real con
+  datos en estas colecciones — no hubo con qué hacer una muestra más chica.)
 - [ ] Retirar `backup_files` inmediatamente después del postflight exitoso del
   `--apply` global — sin ventana de observación adicional, dado que el
   snapshot ya cubre el rollback.

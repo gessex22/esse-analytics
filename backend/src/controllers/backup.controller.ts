@@ -4,7 +4,7 @@ import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptBackupModel } from '../models/transcript-backup.model';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
-import { IdeaCentral } from '../models/ideacentral';
+import { IdeaCentral } from '../models/ideaCentral';
 import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
@@ -20,6 +20,7 @@ import {
   getCanonicalBackupStatus,
   getCanonicalSyncStatusBackedUpSet,
 } from '../services/backup-file-canonical.service';
+import { maybeCompareCanary } from '../services/backup-canary-comparator.service';
 
 // Entrega A de docs/mongo-collections-consolidation-plan-2026-09-02.md:
 // interruptor para leer los 3 endpoints GET de /api/backup desde `files`
@@ -145,12 +146,54 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       ? merged
       : merged.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
     res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
+
+    // Entrega C (docs/mongo-collections-consolidation-plan-2026-09-02.md §5):
+    // comparación canary en paralelo, DESPUÉS de responder -- nunca puede
+    // demorar ni romper esta request. Sin CANARY_USER_IDS configurado (o
+    // fuera de esa allowlist) es un no-op inmediato, no pega a Mongo.
+    maybeCompareCanary(userId, includeResolved, files).catch(() => undefined);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 }
 
 const hasData = (arr: any): boolean => Array.isArray(arr) && arr.length > 0;
+
+// Pausa administrativa de POST /api/backup/files/bulk -- Entrega B de
+// docs/mongo-collections-consolidation-plan-2026-09-02.md ("Concurrencia y
+// reentrada"): el apply global de mongo-files-consolidation.js necesita una
+// ventana breve donde nadie escriba `files`/`backup_files` mientras se toma
+// el snapshot y se corre la migración, sin depender solo de `ordered:false`
+// para el resto de las garantías. En memoria del proceso a propósito -- es
+// una pausa operativa de minutos activada a mano por quien corre la
+// migración, no una config persistente; un restart del backend la limpia
+// sola, que es el comportamiento correcto (nunca debe sobrevivir un deploy).
+let bulkPauseUntil: number | null = null;
+
+export function pauseBackupBulkWrites(seconds: number): { until: string } {
+  bulkPauseUntil = Date.now() + Math.max(0, seconds) * 1000;
+  return { until: new Date(bulkPauseUntil).toISOString() };
+}
+
+export function resumeBackupBulkWrites(): void {
+  bulkPauseUntil = null;
+}
+
+// GET/POST de administración -- gateadas por requireOwner en las rutas.
+export async function adminPauseBackupBulk(req: AuthRequest, res: Response): Promise<void> {
+  const seconds = Number((req.body as any)?.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) {
+    res.status(400).json({ message: 'seconds debe ser un número entre 1 y 3600.' });
+    return;
+  }
+  const result = pauseBackupBulkWrites(seconds);
+  res.json({ ok: true, paused: true, ...result });
+}
+
+export async function adminResumeBackupBulk(_req: AuthRequest, res: Response): Promise<void> {
+  resumeBackupBulkWrites();
+  res.json({ ok: true, paused: false });
+}
 
 // POST /api/backup/files/bulk
 // Upserts many records. Last-write-wins by local_updated_at — PERO un archivo que
@@ -159,6 +202,20 @@ const hasData = (arr: any): boolean => Array.isArray(arr) && arr.length > 0;
 // nube sí tiene esa info, aunque su timestamp sea más nuevo. Así el backup real
 // sobrevive a un catálogo reconstruido desde cero.
 export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Promise<void> {
+  // Corta ANTES de tocar el body -- el plan exige "sin aceptar parcialmente
+  // el body" durante la ventana de migración. Retry-After en segundos,
+  // redondeado hacia arriba para no invitar a un reintento inmediato que
+  // vuelva a pegar contra la ventana.
+  if (bulkPauseUntil !== null) {
+    if (Date.now() >= bulkPauseUntil) {
+      bulkPauseUntil = null;
+    } else {
+      const retryAfterSeconds = Math.ceil((bulkPauseUntil - Date.now()) / 1000);
+      res.set('Retry-After', String(retryAfterSeconds));
+      res.status(503).json({ message: 'Backup temporalmente en pausa por mantenimiento.', retryAfterSeconds });
+      return;
+    }
+  }
   try {
     const userId = req.user!.id;
     const incoming: any[] = req.body.files;

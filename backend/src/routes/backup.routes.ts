@@ -1,8 +1,14 @@
 import { Router } from 'express';
-import { verifyToken, requirePremium } from '../middleware/auth.middleware';
-import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getSyncStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas, getBackupConfig, upsertBackupConfig, getBackupPlatformVideos, bulkUpsertBackupPlatformVideos } from '../controllers/backup.controller';
+import { verifyToken, requirePremium, requireOwner } from '../middleware/auth.middleware';
+import { getBackupFiles, bulkUpsertBackupFiles, getBackupStatus, getSyncStatus, getBackupTranscripts, bulkUpsertBackupTranscripts, getBackupIdeas, getBackupConfig, upsertBackupConfig, getBackupPlatformVideos, bulkUpsertBackupPlatformVideos, adminPauseBackupBulk, adminResumeBackupBulk } from '../controllers/backup.controller';
 
 const router = Router();
+
+// Ventana de mantenimiento para el apply global de
+// mongo-files-consolidation.js (Entrega B, docs/mongo-collections-consolidation-plan-2026-09-02.md)
+// -- solo el owner del servicio, nunca expuesto a un cliente instalado.
+router.post('/api/backup/admin/pause-bulk',  verifyToken, requireOwner, adminPauseBackupBulk);
+router.post('/api/backup/admin/resume-bulk', verifyToken, requireOwner, adminResumeBackupBulk);
 
 // Backup en línea es una gema Premium → guard server-side, no solo en la UI.
 router.get('/api/backup/files',           verifyToken, requirePremium, getBackupFiles);
