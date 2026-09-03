@@ -251,6 +251,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       // Preferimos matchear por content_id (estable ante renombres); si la nube
       // todavía no tiene content_id (registro viejo) o no matchea, caemos a file_name.
       let localFile = cf.content_id ? fileRepo.findByContentId(cf.content_id) : undefined;
+      const matchedByNameOnly = !localFile;
       if (!localFile) {
         const { rows } = fileRepo.findAll({ search: cf.file_name, limit: 5, offset: 0 });
         localFile = rows.find(r => r.file_name === cf.file_name);
@@ -259,6 +260,42 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       if (!localFile) {
         orphans++;
         continue;
+      }
+
+      // Guarda contra falso positivo: el match por content_id es estable (mismo
+      // archivo real, sobrevive renombres), pero el fallback por file_name es una
+      // comparación de string pelada -- si alguien recicla el nombre exacto de un
+      // video viejo para un archivo nuevo y NO relacionado (borrado y vuelto a
+      // grabar con el mismo nombre por costumbre), este chequeo evita heredar
+      // badges/estado de publicación de un video que en realidad es otro. No es
+      // a prueba de balas (dos archivos idénticos en duración son indistinguibles
+      // acá), pero descarta la inmensa mayoría de coincidencias de nombre entre
+      // videos genuinamente distintos sin pedir nada nuevo al usuario. Solo aplica
+      // al fallback por nombre -- un match por content_id ya es confiable de por sí.
+      if (matchedByNameOnly && cf.duracion_segundos != null && localFile.duracion_segundos != null) {
+        const diff = Math.abs(cf.duracion_segundos - localFile.duracion_segundos);
+        if (diff > 1.5) {
+          orphans++;
+          continue;
+        }
+      }
+
+      // Reconcilia content_id: un archivo reescaneado (wipe, instalación nueva)
+      // nace con un content_id RANDOM nuevo -- si este match por nombre es real
+      // (pasó la guarda de arriba), curar el local al de la nube evita que quede
+      // divergiendo para siempre. Sin esto, cualquier sistema que identifique
+      // "es el mismo video" por content_id (ensureNextVideoInRemoteLibrary, el
+      // índice único de la nube, etc.) deja de reconocerlo como conocido y lo
+      // trata como nuevo -- caso real confirmado 2026-09-03: subió una segunda
+      // copia a Biblioteca remota de un video que ya estaba, gastando cupo.
+      // try/catch: content_id tiene índice único local -- si por lo que sea ya
+      // hay otra fila con ese valor (no debería, pero mejor no tumbar el pull
+      // entero por esto), se ignora y sigue como venía viniendo.
+      if (matchedByNameOnly && cf.content_id && cf.content_id !== localFile.content_id) {
+        try {
+          fileRepo.update(localFile.id, { content_id: cf.content_id });
+          localFile = { ...localFile, content_id: cf.content_id };
+        } catch { /* índice único content_id -- se deja como estaba */ }
       }
 
       const cloudTs = new Date(cf.local_updated_at).getTime();

@@ -3,8 +3,15 @@
 **Fecha:** 2026-09-02  
 **Estado:** diseño e inventario terminados, incluida la revisión del enfoque
 de rollback (snapshot único en vez de shadow-write largo) y la propuesta de
-nombres de colecciones (sección 9, documentada, ejecución separada);
-implementación y migración sin empezar.  
+nombres de colecciones (sección 9, documentada, ejecución separada).
+**Entrega A implementada** (ver sección 5) -- schema extendido, servicio de
+lectura canónica y flag `BACKUP_CANONICAL_READS` (default apagado).
+**Entrega B implementada y aplicada en producción** (ver sección 5) --
+`mongo-files-consolidation.js` corrido en `--apply` global sobre los 1121
+`files` con backup histórico: 0 ambiguos, 0 colisiones, 0 errores, 0
+concurrent_change, verificado contra la base real después de aplicar.
+Entregas C-D (comparación canary con `BACKUP_CANONICAL_READS`, retirada de
+`backup_files`) sin empezar.  
 **Regla:** ningún paso de este plan modifica producción por defecto.
 
 ## 1. Decisión de arquitectura
@@ -190,19 +197,91 @@ perderlos al borrar la colección.
 
 ### Entrega A — adapter canónico (sin shadow write de largo plazo)
 
-- Extender `FileSchema` con los campos de sincronización.
-- Extraer de `backup.controller.ts` un servicio/repositorio que produzca el DTO
-  estable de backup desde `files`.
-- Mantener `bulkUpsertBackupFiles` escribiendo ambas colecciones (como ya hace
-  hoy) mientras dura esta entrega — no es shadow write nuevo, es el
-  comportamiento actual, que se retira recién en la Entrega B.
-- Mantener inicialmente las lecturas desde el flujo viejo.
-- Agregar flag de servidor para activar canonical read; default conservador.
+**✅ Implementada 2026-09-02** (`backend/`, rama `feat/mongo-consolidation-entrega-a`):
 
-**Gate:** typecheck sin errores nuevos y pruebas de contrato de los cuatro
-endpoints de backup.
+- `FileSchema` extendida con `tipo_contenido`, `local_updated_at`,
+  `platforms_updated_at`, `backup_synced_at`, `backup_source_device_id`
+  (`models/file.model.ts`), todos opcionales, sin migración de datos.
+- `bulkUpsertBackupFiles` ahora también puebla esos 5 campos en `files` al
+  escribir (además de seguir escribiendo `backup_files` sin cambios, como ya
+  hacía) -- se completan solos con el próximo push de cada archivo, sin
+  backfill.
+- Servicio nuevo `services/backup-file-canonical.service.ts`: lee los 3 GET de
+  `/api/backup` (`files`, `status`, `sync-status`) desde `files` en
+  exclusiva.
+- Flag `BACKUP_CANONICAL_READS` (env, default apagado) en
+  `backup.controller.ts` -- gatea únicamente las 3 lecturas; el bulk de
+  escritura no está gateado, sigue escribiendo ambas colecciones igual que
+  hoy.
+- Script de solo lectura `scripts/backup-canonical-contract-check.ts`:
+  compara legacy vs canónico para un usuario sin escribir nada. Corrido contra
+  producción (owner, `includeResolved` true y false): **0 diferencias no
+  explicadas** -- las únicas 38 discrepancias encontradas fueron archivos con
+  `status='ELIMINADO_DISCO'` que el camino viejo seguía filtrando hacia el
+  catálogo remoto (bug preexistente, `onlyInCentral` nunca chequeaba
+  `status`) y que el canónico excluye a propósito (ver comentario en el
+  servicio). `status`/`sync-status` canónicos dan vacío hasta que corran
+  pushes nuevos que completen `backup_synced_at` -- esperado, no es una
+  migración de datos existentes.
+
+**Gate:** typecheck sin errores nuevos (27 antes y después, baseline sin
+tocar) y pruebas de contrato de los cuatro endpoints de backup (script de
+arriba; sin test runner en el repo, ver `docs/product-backlog.md`).
+
+**Pendiente dentro de A -- resuelto por hallazgo, no por prueba (2026-09-02):**
+se intentó correr el mismo script contra 2-3 cuentas no-owner, pero
+`db.collection('backup_files').distinct('userId')` y lo mismo sobre `files`
+devuelven **un solo `userId`** (el owner) -- de los 17 usuarios reales de la
+central, ninguno más tiene todavía ni un documento en `files` ni en
+`backup_files`. La producción actual es de hecho mono-tenant para todo lo
+que toca esta migración: no hay una segunda cuenta real contra la cual
+probar. Esto no es un blocker -- es información real sobre el alcance
+verdadero del riesgo (ver también Entrega B más abajo). Sigue pendiente
+decidir si el flag se activa alguna vez fuera de la allowlist canary de la
+Entrega C.
 
 ### Entrega B — migración reversible
+
+**Estado: script escrito y corrido en dry-run real contra producción
+(2026-09-02).** Implementa exactamente lo de abajo, incluidas las secciones
+de concurrencia/reentrada y la salida finita de `ambiguous`. Un bug real
+encontrado y corregido en la primera corrida: los `return` tempranos de
+dry-run/plantilla liberaban el lock y desconectaban Mongo a mano, y el
+`finally` de `main()` lo volvía a intentar (`MongoNotConnectedError`) --
+corregido dejando que el `finally` sea la única salida.
+
+**Resultado del dry-run global** (`--limit 3000`, sin `--user-id` -- cubre
+toda `backup_files`, que resultó tener un solo usuario real, ver nota en
+Entrega A): 1121 candidatos, **1121 `safe`, 0 ambiguous, 0 collision, 0
+error, 0 orphan**. Los 38 documentos de diferencia entre `backup_files`
+(1121) y `files` (1159) del mismo usuario coinciden exactamente con los 38
+`ELIMINADO_DISCO` ya identificados en la Entrega A -- consistente, no un
+hallazgo nuevo.
+
+**`--apply` global corrido y verificado (2026-09-02, runId
+`2026-09-03T03-14-43-893Z`).** El clasificador de auto-mode de Claude Code
+bloqueó la escritura desde la sesión de Claude Code (correcto -- una acción
+de escritura en producción real vía Bash); el owner lo corrió directo en su
+propia terminal. Resultado, verificado después contra la base real (no solo
+por la salida de consola):
+
+- 1121 actualizados, 0 concurrent_change, 0 errores.
+- Postflight: 1121/1121 releídos, todos con `backup_synced_at`.
+- Confirmado con una consulta aparte: 1121 de los 1159 `files` del owner
+  tienen ahora `backup_synced_at`/`local_updated_at` poblados (los 38
+  restantes son los `ELIMINADO_DISCO` esperados, sin tocar).
+- Muestra inspeccionada a mano: `tipo_contenido`/`local_updated_at`/
+  `backup_synced_at` completados correctamente; `platforms` intacto (regla
+  6 -- ya tenía datos, no se tocó).
+- `applied-<runId>.ndjson`: 1121 líneas, las 1121 con `modified:true`.
+- Rollback generado (`rollback-<runId>.js`) y verificado por sintaxis
+  (`node -c`), sin necesidad de usarlo -- no hubo errores que revertir.
+
+No se corrió con la pausa de `POST /api/backup/files/bulk` activa (el
+mecanismo vive en el código local todavía sin desplegar al backend real que
+sirve producción) -- mitigado por la concurrencia optimista (0
+`concurrent_change` reales, confirma que no hubo colisión con un push en
+vivo durante la ventana).
 
 Crear `backend/scripts/mongo-files-consolidation.js` con:
 
@@ -251,6 +330,45 @@ activar esa pausa, el apply global se pospone; no se confía solo en
 `ordered:false`.
 
 ### Entrega C — lectura canónica y comparación
+
+**Estado (2026-09-02): comparador escrito e implementado**
+(`backend/src/services/backup-canary-comparator.service.ts`), enganchado en
+`getBackupFiles` después de `res.json(...)` (fire-and-forget, nunca puede
+demorar ni romper la respuesta real). Implementa allowlist por
+`CANARY_USER_IDS`, concurrencia=1 en memoria, cooldown de 15 min por
+usuario, auto-apagado a 200 pares o 24h (estado persistido en
+`backup_canary_comparison_state` para sobrevivir un restart), y resultados
+en `backup_canary_comparison_results`. Probado de punta a punta con datos
+reales (limpiado después -- ver nota abajo) y typecheck sin regresión
+(27/27).
+
+**No está corriendo en producción todavía por dos motivos, no uno solo:**
+1. `CANARY_USER_IDS` está vacío en el `.env` real -- sin esto el comparador
+   es un no-op total, a propósito.
+2. Más importante: **no está claro si el backend que sirve tráfico real hoy
+   ya corre el código de este checkout** (Entrega A, el mecanismo de pausa,
+   y ahora este comparador). El `--apply` de la Entrega B escribió directo a
+   Mongo sin pasar por ese proceso, así que no prueba nada sobre si está
+   desplegado. Antes de setear `CANARY_USER_IDS` hace falta confirmar (o
+   forzar) que el backend real corre esta rama.
+
+Nota de verificación: la primera prueba end-to-end se hizo con una muestra
+truncada de 50 archivos como "legacy" (no los 1121 reales) para no tener que
+esperar tráfico real -- produjo un diff enorme que es un artefacto de esa
+truncation, no un bug. Se limpiaron los documentos de prueba en
+`backup_canary_comparison_state`/`results` antes de dejar esto listo para
+la ventana real.
+
+**Primer par real registrado (2026-09-02, tráfico real desde Electron/
+macgessemberg22 tras desplegar `4777a1f`):** `legacyCount=1159`,
+`canonicalCount=1121`, `onlyLegacy=38` (los mismos `ELIMINADO_DISCO` de
+siempre), `onlyCanonical=0`, `fieldDiffs=0`. `hasDiff=true` está marcando
+exactamente la diferencia ya explicada y esperada -- primera confirmación
+con tráfico real de que la lectura canónica es correcta. Pares: 1/200.
+Tardó dos intentos de deploy en activarse: el primero falló porque la
+máquina de producción (`macgessemberg22`, un Mac -- no la PC Windows que
+describe el CLAUDE.md del repo, vale la pena corregir esa doc en algún
+momento) seguía en `main`@`de02a31`, muy anterior a la Entrega A.
 
 - Comparar en paralelo únicamente para `userId` incluidos en una allowlist
   canary. Dentro de esa allowlist se admite como máximo una comparación por

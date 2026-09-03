@@ -4,7 +4,7 @@ import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptBackupModel } from '../models/transcript-backup.model';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
-import { IdeaCentral } from '../models/ideacentral';
+import { IdeaCentral } from '../models/ideaCentral';
 import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
@@ -15,6 +15,23 @@ import { getVideoPublishedAt as getYoutubePublishedAt } from '../services/youtub
 import { getMediaPublishedAt as getInstagramPublishedAt } from '../services/instagram.service';
 import { getVideoPublishedAt as getTiktokPublishedAt } from '../services/tiktok.service';
 import { upsertConfirmed, deriveStatesFromToggle } from '../utils/platform-state.util';
+import {
+  getCanonicalBackupFiles,
+  getCanonicalBackupStatus,
+  getCanonicalSyncStatusBackedUpSet,
+} from '../services/backup-file-canonical.service';
+import { maybeCompareCanary } from '../services/backup-canary-comparator.service';
+
+// Entrega A de docs/mongo-collections-consolidation-plan-2026-09-02.md:
+// interruptor para leer los 3 endpoints GET de /api/backup desde `files`
+// exclusivamente (backup-file-canonical.service.ts) en vez del merge viejo
+// contra `backup_files`. Default apagado a propósito -- activarlo primero
+// solo para la comparación/allowlist canary de la Entrega C, nunca en
+// producción real hasta que esa comparación cierre sin diferencias. El
+// bulk de escritura (bulkUpsertBackupFiles) NO está gateado por esto: sigue
+// escribiendo ambas colecciones igual que hoy, eso se retira recién en la
+// Entrega D.
+const BACKUP_CANONICAL_READS = process.env.BACKUP_CANONICAL_READS === 'true';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -35,6 +52,13 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
   try {
     const userId = req.user!.id;
     const includeResolved = req.query.includeResolved === 'true';
+
+    if (BACKUP_CANONICAL_READS) {
+      const { files, video_folder } = await getCanonicalBackupFiles(userId, includeResolved);
+      res.json({ files, total: files.length, video_folder });
+      return;
+    }
+
     const [allFiles, user, centralFiles] = await Promise.all([
       BackupFileModel.find({ userId }).lean(),
       UserModel.findById(userId, { video_folder: 1 }).lean(),
@@ -122,12 +146,54 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       ? merged
       : merged.filter(f => (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0) < 3);
     res.json({ files, total: files.length, video_folder: user?.video_folder ?? null });
+
+    // Entrega C (docs/mongo-collections-consolidation-plan-2026-09-02.md §5):
+    // comparación canary en paralelo, DESPUÉS de responder -- nunca puede
+    // demorar ni romper esta request. Sin CANARY_USER_IDS configurado (o
+    // fuera de esa allowlist) es un no-op inmediato, no pega a Mongo.
+    maybeCompareCanary(userId, includeResolved, files).catch(() => undefined);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 }
 
 const hasData = (arr: any): boolean => Array.isArray(arr) && arr.length > 0;
+
+// Pausa administrativa de POST /api/backup/files/bulk -- Entrega B de
+// docs/mongo-collections-consolidation-plan-2026-09-02.md ("Concurrencia y
+// reentrada"): el apply global de mongo-files-consolidation.js necesita una
+// ventana breve donde nadie escriba `files`/`backup_files` mientras se toma
+// el snapshot y se corre la migración, sin depender solo de `ordered:false`
+// para el resto de las garantías. En memoria del proceso a propósito -- es
+// una pausa operativa de minutos activada a mano por quien corre la
+// migración, no una config persistente; un restart del backend la limpia
+// sola, que es el comportamiento correcto (nunca debe sobrevivir un deploy).
+let bulkPauseUntil: number | null = null;
+
+export function pauseBackupBulkWrites(seconds: number): { until: string } {
+  bulkPauseUntil = Date.now() + Math.max(0, seconds) * 1000;
+  return { until: new Date(bulkPauseUntil).toISOString() };
+}
+
+export function resumeBackupBulkWrites(): void {
+  bulkPauseUntil = null;
+}
+
+// GET/POST de administración -- gateadas por requireOwner en las rutas.
+export async function adminPauseBackupBulk(req: AuthRequest, res: Response): Promise<void> {
+  const seconds = Number((req.body as any)?.seconds);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) {
+    res.status(400).json({ message: 'seconds debe ser un número entre 1 y 3600.' });
+    return;
+  }
+  const result = pauseBackupBulkWrites(seconds);
+  res.json({ ok: true, paused: true, ...result });
+}
+
+export async function adminResumeBackupBulk(_req: AuthRequest, res: Response): Promise<void> {
+  resumeBackupBulkWrites();
+  res.json({ ok: true, paused: false });
+}
 
 // POST /api/backup/files/bulk
 // Upserts many records. Last-write-wins by local_updated_at — PERO un archivo que
@@ -136,6 +202,20 @@ const hasData = (arr: any): boolean => Array.isArray(arr) && arr.length > 0;
 // nube sí tiene esa info, aunque su timestamp sea más nuevo. Así el backup real
 // sobrevive a un catálogo reconstruido desde cero.
 export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Promise<void> {
+  // Corta ANTES de tocar el body -- el plan exige "sin aceptar parcialmente
+  // el body" durante la ventana de migración. Retry-After en segundos,
+  // redondeado hacia arriba para no invitar a un reintento inmediato que
+  // vuelva a pegar contra la ventana.
+  if (bulkPauseUntil !== null) {
+    if (Date.now() >= bulkPauseUntil) {
+      bulkPauseUntil = null;
+    } else {
+      const retryAfterSeconds = Math.ceil((bulkPauseUntil - Date.now()) / 1000);
+      res.set('Retry-After', String(retryAfterSeconds));
+      res.status(503).json({ message: 'Backup temporalmente en pausa por mantenimiento.', retryAfterSeconds });
+      return;
+    }
+  }
   try {
     const userId = req.user!.id;
     const incoming: any[] = req.body.files;
@@ -304,7 +384,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
           ...(contentIds.length ? [{ content_id: { $in: contentIds } }] : []),
         ],
       },
-      { file_name: 1, content_id: 1, platforms: 1, platforms_discarded: 1 },
+      { file_name: 1, content_id: 1, platforms: 1, platforms_discarded: 1, tipo_contenido: 1 },
     ).lean();
     const fileModelExistingByFileName  = new Map(fileModelExisting.map(e => [e.file_name, e]));
     const fileModelExistingByContentId = new Map(fileModelExisting.filter(e => e.content_id).map(e => [e.content_id as string, e]));
@@ -315,7 +395,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       await FileModel.bulkWrite(
         incoming.map(f => {
           const ex = resolveFileModelExisting(f);
-          const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
+          const { platforms, platforms_discarded, platforms_updated_at } = resolvePlatforms(f, ex as any);
           const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
           return {
             updateOne: {
@@ -334,6 +414,17 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
                   resolucion:          f.resolucion          ?? null,
                   formato:             f.formato             ?? null,
                   fecha_creacion:      f.fecha_creacion      ?? null,
+                  // Entrega A de la consolidación (docs/mongo-collections-consolidation-plan-2026-09-02.md
+                  // §5) -- `files` empieza a absorber lo mismo que hoy solo vive en
+                  // `backup_files`, sin todavía cambiar qué colección leen los 4 endpoints
+                  // de /api/backup (eso lo hace el flag BACKUP_CANONICAL_READS). No pisa
+                  // tipo_contenido con null si este push no lo trae (regla 7 del plan:
+                  // "se copia si falta en files").
+                  tipo_contenido:           f.tipo_contenido ?? (ex as any)?.tipo_contenido ?? null,
+                  local_updated_at:         new Date(f.local_updated_at),
+                  platforms_updated_at,
+                  backup_synced_at:         new Date(),
+                  backup_source_device_id:  deviceId ?? null,
                 },
                 // Solo al crear: campos requeridos que la app no envía (el remoto no
                 // hace stream, así que file_path es un placeholder).
@@ -1284,15 +1375,17 @@ export async function getSyncStatus(req: AuthRequest, res: Response): Promise<vo
       return;
     }
 
-    const [backedUp, inRemoteLibrary] = await Promise.all([
-      BackupFileModel.find({ userId, content_id: { $in: contentIds } }, { content_id: 1 }).lean(),
+    const [backedUpSet, inRemoteLibrary] = await Promise.all([
+      BACKUP_CANONICAL_READS
+        ? getCanonicalSyncStatusBackedUpSet(userId, contentIds)
+        : BackupFileModel.find({ userId, content_id: { $in: contentIds } }, { content_id: 1 }).lean()
+            .then(rows => new Set(rows.map(f => f.content_id))),
       // storedFileName != null -- si no, "en la nube" quedaba en true para
       // siempre aunque el almacenamiento dinámico ya haya liberado los bytes
       // (ver remote-library-retention.service.ts): el doc/miniatura sobreviven
       // a propósito, pero eso ya no es "hay bytes reales en la nube".
       RemoteLibraryVideoModel.find({ userId, contentId: { $in: contentIds }, storedFileName: { $ne: null } }, { contentId: 1 }).lean(),
     ]);
-    const backedUpSet = new Set(backedUp.map(f => f.content_id));
     const remoteSet = new Set(inRemoteLibrary.map(v => v.contentId));
 
     const status = contentIds.map(id => ({
@@ -1311,6 +1404,11 @@ export async function getSyncStatus(req: AuthRequest, res: Response): Promise<vo
 export async function getBackupStatus(req: AuthRequest, res: Response): Promise<void> {
   try {
     const userId = req.user!.id;
+    if (BACKUP_CANONICAL_READS) {
+      const { total, lastSync } = await getCanonicalBackupStatus(userId);
+      res.json({ total, lastSync });
+      return;
+    }
     const total  = await BackupFileModel.countDocuments({ userId });
     const latest = await BackupFileModel.findOne({ userId }, { updatedAt: 1 })
       .sort({ updatedAt: -1 }).lean();

@@ -8,7 +8,7 @@ import { FileModel, FileContentStatus } from '../models/file.model';
 // El central corre en la PC del owner; sin esto, otra cuenta vería/publicaría sus archivos.
 const ownerId = (req: Request): string => (req as AuthRequest).user!.id;
 import { PublishingStatusModel } from '../models/publishing-status.model';
-import { IdeaCentral } from '../models/ideacentral';
+import { IdeaCentral } from '../models/ideaCentral';
 import fs from 'fs';
 import path from 'path';
 

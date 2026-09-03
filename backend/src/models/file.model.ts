@@ -36,6 +36,19 @@ export interface IFile extends Document {
   formato?: string;
   fecha_creacion?: Date;  // fecha real del archivo en disco (mtime) — la llena el escáner
   scheduled_date?: Date;  // fecha programada de publicación (opcional)
+
+  // ── Metadata de sincronización (Entrega A, docs/mongo-collections-consolidation-plan-2026-09-02.md §2) ──
+  // `files` absorbe estos campos para poder servir el mismo contrato que hoy
+  // cubre `backup_files`, sin todavía cambiar qué colección leen los 4
+  // endpoints de /api/backup (eso lo activa el flag BACKUP_CANONICAL_READS,
+  // ver backup-file-canonical.service.ts). Todos opcionales a propósito:
+  // ningún documento existente los tiene, y no hay migración/backfill en esta
+  // entrega -- se completan solos con el próximo push de cada archivo.
+  tipo_contenido?: string;          // categoría de guión/clip -- espejo de BackupFileModel.tipo_contenido.
+  local_updated_at?: Date;          // última modificación general informada por el escritorio (push).
+  platforms_updated_at?: Date;      // reloj dedicado de badges/descartes (SYNC-01 #3), igual que en BackupFileModel.
+  backup_synced_at?: Date;          // cuándo la central aceptó el último push de backup para este archivo.
+  backup_source_device_id?: string; // deviceId de la instalación que produjo ese último push aceptado.
 }
 
 const FileSchema = new Schema<IFile>({
@@ -75,6 +88,11 @@ const FileSchema = new Schema<IFile>({
   formato: { type: String },
   fecha_creacion: { type: Date },
   scheduled_date: { type: Date },
+  tipo_contenido: { type: String },
+  local_updated_at: { type: Date },
+  platforms_updated_at: { type: Date },
+  backup_synced_at: { type: Date },
+  backup_source_device_id: { type: String },
 }, { timestamps: true });
 
 // Único por usuario + content_id (Fase 6, SYNC-02#1, 2026-08-31) -- antes
