@@ -1,3 +1,4 @@
+import './_setup-env'; // debe ir primero -- ver ese archivo.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { requireCloudStorage, requirePremium, requireRole } from '../middleware/auth.middleware';

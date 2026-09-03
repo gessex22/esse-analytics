@@ -22,7 +22,7 @@ import { runRemoteLibraryRetentionSweep } from './services/remote-library-retent
 import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { requestContext, sanitizeProductionErrors } from './middleware/request.middleware';
-import { logger } from './utils/logger';
+import { logger, errorName } from './utils/logger';
 
 const app = express();
 const PORT = env.PORT;
@@ -104,7 +104,7 @@ function scheduleRemoteLibraryRetentionSweep(): void {
       evicted: r.evicted, keptSoleCopy: r.keptSoleCopy, hardened: r.hardened,
     }))
     .catch(err => logger.error('remote_library_retention_failed', {
-      errorName: err instanceof Error ? err.name : 'UnknownError',
+      errorName: errorName(err),
     }));
   retentionTimer = setTimeout(scheduleRemoteLibraryRetentionSweep, REMOTE_LIBRARY_RETENTION_INTERVAL_MS);
   retentionTimer.unref();
@@ -134,9 +134,7 @@ process.once('uncaughtException', err => {
   void shutdown('uncaughtException', 1);
 });
 process.once('unhandledRejection', reason => {
-  logger.error('unhandled_rejection', {
-    errorName: reason instanceof Error ? reason.name : 'UnknownError',
-  });
+  logger.error('unhandled_rejection', { errorName: errorName(reason) });
   void shutdown('unhandledRejection', 1);
 });
 
@@ -154,8 +152,6 @@ mongoose.connect(env.MONGO_URI, { serverSelectionTimeoutMS: 10000 })
     scheduleRemoteLibraryRetentionSweep();
   })
   .catch((err) => {
-    logger.error('mongo_connection_failed', {
-      errorName: err instanceof Error ? err.name : 'UnknownError',
-    });
+    logger.error('mongo_connection_failed', { errorName: errorName(err) });
     void shutdown('mongo_connection_failed', 1);
   });

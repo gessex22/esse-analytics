@@ -37,6 +37,47 @@ function port(): number {
   return parsed;
 }
 
+// Config verdaderamente opcional por plataforma (YouTube/Meta/TikTok): si
+// falta, esa plataforma queda deshabilitada -- el código que la usa ya
+// chequea truthiness antes de llamarla (ej. `if (configId) {...}` en
+// instagram-upload.controller.ts, o el uso best-effort de YOUTUBE_API_KEY en
+// youtube.service.ts). A diferencia de `value()`, NUNCA debe impedir que el
+// resto del backend arranque, ni en producción -- un cliente que solo usa
+// TikTok no tiene por qué configurar YouTube/Meta para poder levantar.
+function optionalValue(name: string): string {
+  return process.env[name]?.trim() ?? '';
+}
+
+// Igual que optionalValue, pero si SÍ hay un valor cargado exige el mismo
+// mínimo de entropía que un secreto obligatorio en producción -- evita el
+// caso a medio configurar (client id puesto, secret puesto pero corto).
+function optionalSecret(name: string): string {
+  const configured = process.env[name]?.trim() ?? '';
+  if (configured && isProduction && configured.length < 32) {
+    throw new Error(`${name} debe tener al menos 32 caracteres en producción (o dejarse vacío para deshabilitar esa plataforma).`);
+  }
+  return configured;
+}
+
+// Igual que optionalValue, pero valida formato de URL / HTTPS solo cuando
+// hay un valor -- si la plataforma no está configurada, esta URL no se usa
+// nunca, así que no tiene sentido exigirla ni validarla.
+function optionalUrl(name: string, httpsInProduction = false): string {
+  const raw = process.env[name]?.trim();
+  if (!raw) return '';
+  const configured = raw.replace(/\/$/, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new Error(`${name} debe ser una URL válida si se configura.`);
+  }
+  if (isProduction && httpsInProduction && parsed.protocol !== 'https:') {
+    throw new Error(`${name} debe usar HTTPS en producción.`);
+  }
+  return configured;
+}
+
 const allowedOriginsRaw = value(
   'ALLOWED_ORIGINS',
   'http://localhost:5173,http://127.0.0.1:5173,https://esse-analytics.com,https://www.esse-analytics.com',
@@ -51,7 +92,10 @@ export const env = Object.freeze({
   NODE_ENV: process.env.NODE_ENV || 'development',
   IS_PRODUCTION: isProduction,
   PORT: port(),
-  MONGO_URI: value('MONGO_URI', 'mongodb://localhost:27017/renders_manager'),
+  // Sin fallback: content-automation-dashboard/CLAUDE.md es explícito ("La
+  // central no arranca sin MONGO_URI") -- ni siquiera en desarrollo debe
+  // conectar en silencio contra un Mongo local no configurado a propósito.
+  MONGO_URI: value('MONGO_URI'),
   JWT_SECRET: secret('JWT_SECRET', 'esse_secret_key_2024'),
   CLIENT_REGISTER_KEY: secret('CLIENT_REGISTER_KEY', 'dev-only-not-a-real-key'),
   OAUTH_STATE_SECRET: secret('OAUTH_STATE_SECRET', 'development-oauth-state-secret-change-me'),
@@ -60,18 +104,21 @@ export const env = Object.freeze({
   API_URL: url('API_URL', 'http://localhost:4000', true),
   PUBLIC_API_ORIGIN: url('PUBLIC_API_ORIGIN', 'http://localhost:4000', true),
   ALLOWED_ORIGINS: allowedOrigins,
-  YOUTUBE_CLIENT_ID: value('YOUTUBE_CLIENT_ID', ''),
-  YOUTUBE_CLIENT_SECRET: secret('YOUTUBE_CLIENT_SECRET', 'development-youtube-client-secret-placeholder'),
-  YOUTUBE_REDIRECT_URI: url('YOUTUBE_REDIRECT_URI', 'http://localhost:4000/api/youtube/auth/callback', true),
-  YOUTUBE_API_KEY: value('YOUTUBE_API_KEY', ''),
-  YOUTUBE_CHANNEL_ID: value('YOUTUBE_CHANNEL_ID', ''),
-  META_APP_ID: value('META_APP_ID', ''),
-  META_APP_SECRET: secret('META_APP_SECRET', 'development-meta-app-secret-placeholder'),
-  META_LOGIN_CONFIG_ID: value('META_LOGIN_CONFIG_ID', ''),
-  META_REDIRECT_URI: url('META_REDIRECT_URI', 'http://localhost:4000/api/instagram/auth/callback', true),
-  TIKTOK_CLIENT_KEY: value('TIKTOK_CLIENT_KEY', ''),
-  TIKTOK_CLIENT_SECRET: secret('TIKTOK_CLIENT_SECRET', 'development-tiktok-client-secret-placeholder'),
-  TIKTOK_REDIRECT_URI: url('TIKTOK_REDIRECT_URI', 'http://localhost:4000/api/tiktok/auth/callback', true),
+  // Las tres plataformas son opcionales por diseño (un cliente puede usar
+  // solo una) -- optionalValue/optionalSecret/optionalUrl nunca impiden que
+  // arranque el resto del backend, en ningún ambiente.
+  YOUTUBE_CLIENT_ID: optionalValue('YOUTUBE_CLIENT_ID'),
+  YOUTUBE_CLIENT_SECRET: optionalSecret('YOUTUBE_CLIENT_SECRET'),
+  YOUTUBE_REDIRECT_URI: optionalUrl('YOUTUBE_REDIRECT_URI', true),
+  YOUTUBE_API_KEY: optionalValue('YOUTUBE_API_KEY'),
+  YOUTUBE_CHANNEL_ID: optionalValue('YOUTUBE_CHANNEL_ID'),
+  META_APP_ID: optionalValue('META_APP_ID'),
+  META_APP_SECRET: optionalSecret('META_APP_SECRET'),
+  META_LOGIN_CONFIG_ID: optionalValue('META_LOGIN_CONFIG_ID'),
+  META_REDIRECT_URI: optionalUrl('META_REDIRECT_URI', true),
+  TIKTOK_CLIENT_KEY: optionalValue('TIKTOK_CLIENT_KEY'),
+  TIKTOK_CLIENT_SECRET: optionalSecret('TIKTOK_CLIENT_SECRET'),
+  TIKTOK_REDIRECT_URI: optionalUrl('TIKTOK_REDIRECT_URI', true),
 });
 
 export type AppEnv = typeof env;

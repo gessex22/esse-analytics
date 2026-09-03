@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { env } from '../config/env';
+import { timingSafeBufferEqual } from './secure-compare';
 
 const STATE_TTL_SECONDS = 10 * 60;
 const STATE_VERSION = 1;
@@ -101,7 +102,7 @@ export async function decodeState(state: string): Promise<DecodedState> {
     throw new Error('OAuth state inválido.');
   }
   const expected = hmac(body);
-  if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) {
+  if (!timingSafeBufferEqual(signature, expected)) {
     throw new Error('OAuth state inválido.');
   }
 

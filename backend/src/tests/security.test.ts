@@ -1,3 +1,4 @@
+import './_setup-env'; // debe ir primero -- ver ese archivo.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import mongoose from 'mongoose';
@@ -6,6 +7,25 @@ import { decodeAuthToken } from '../middleware/auth.middleware';
 import { UserModel } from '../models/user.model';
 import { decodeState, encodeState, safeOrigin } from '../utils/oauth-state';
 import { timingSafeStringEqual } from '../utils/secure-compare';
+import { sanitizeErrorsIf } from '../middleware/request.middleware';
+
+// Doble mínimo de Response -- statusCode mutable + res.json/res.send reales
+// (no mocks) para poder verificar que sanitizeErrorsIf de verdad reemplaza lo
+// que se manda, no solo que lo intenta.
+function responseDouble() {
+  const state = { statusCode: 200, sent: undefined as unknown, locals: { requestId: 'req-test-1' } };
+  const response: any = {
+    statusCode: 200,
+    locals: state.locals,
+    json(body: unknown) { state.sent = body; return response; },
+    send(body: unknown) { state.sent = body; return response; },
+  };
+  Object.defineProperty(response, 'statusCode', {
+    get: () => state.statusCode,
+    set: (v: number) => { state.statusCode = v; },
+  });
+  return { response, state };
+}
 
 const claims = {
   id: '507f1f77bcf86cd799439011',
@@ -107,4 +127,45 @@ test('OAuth state está firmado, expira y su nonce se consume una sola vez', asy
   } finally {
     (mongoose.connection as any).db = previousDb;
   }
+});
+
+// Cobertura nueva del hallazgo "sanitizeProductionErrors sin ningún test" --
+// usa sanitizeErrorsIf(true) directo en vez de depender de NODE_ENV=production
+// real (env.IS_PRODUCTION queda congelado al importar env.ts una sola vez).
+test('saneo de errores 500 reemplaza el cuerpo solo en producción y solo si statusCode>=500', () => {
+  const middleware = sanitizeErrorsIf(true);
+  const { response, state } = responseDouble();
+  middleware({} as any, response, () => {});
+  response.statusCode = 500;
+  response.json({ message: 'boom', error: 'ruta física secreta' });
+  assert.deepEqual(state.sent, { message: 'Error interno.', requestId: 'req-test-1' });
+});
+
+test('saneo de errores 500 también cubre res.send, no solo res.json', () => {
+  const middleware = sanitizeErrorsIf(true);
+  const { response, state } = responseDouble();
+  middleware({} as any, response, () => {});
+  response.statusCode = 500;
+  response.send('stack trace filtrado a mano por un controlador legacy');
+  assert.deepEqual(JSON.parse(state.sent as string), { message: 'Error interno.', requestId: 'req-test-1' });
+});
+
+test('saneo de errores no toca respuestas 2xx/4xx', () => {
+  const middleware = sanitizeErrorsIf(true);
+  const { response, state } = responseDouble();
+  middleware({} as any, response, () => {});
+  response.statusCode = 404;
+  response.json({ message: 'Usuario no encontrado.' });
+  assert.deepEqual(state.sent, { message: 'Usuario no encontrado.' });
+});
+
+test('saneo de errores es no-op fuera de producción', () => {
+  const middleware = sanitizeErrorsIf(false);
+  const { response, state } = responseDouble();
+  let nextCalled = false;
+  middleware({} as any, response, () => { nextCalled = true; });
+  response.statusCode = 500;
+  response.json({ message: 'boom', error: 'detalle interno' });
+  assert.equal(nextCalled, true);
+  assert.deepEqual(state.sent, { message: 'boom', error: 'detalle interno' });
 });

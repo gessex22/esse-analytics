@@ -28,17 +28,37 @@ export function requestContext(req: Request, res: Response, next: NextFunction):
 // Muchos controladores legacy capturan sus propios errores. Esta última barrera
 // garantiza que ninguna respuesta 5xx exponga err.message, stack o rutas físicas
 // cuando el proceso corre en producción.
-export function sanitizeProductionErrors(_req: Request, res: Response, next: NextFunction): void {
-  if (!env.IS_PRODUCTION) {
-    next();
-    return;
-  }
-  const originalJson = res.json.bind(res);
-  res.json = ((body: unknown) => {
-    if (res.statusCode >= 500) {
-      return originalJson({ message: 'Error interno.', requestId: res.locals.requestId });
+//
+// Es un parche de transporte, no la corrección de fondo -- la corrección real
+// es migrar los ~75 sitios `catch (err) { res.status(500).json({error: err.message}) }`
+// a `catch (err) { next(err) }` para que lleguen de verdad a errorHandler
+// (error.middleware.ts), que hoy nunca se ejecuta (0 controladores llaman
+// next(err)). Eso es un refactor grande, deliberadamente fuera de esta
+// entrega -- lo que sí se corrigió acá: cubrir también res.send (antes solo
+// se parchaba res.json, dejando pasar cualquier 500 armado con res.send) y
+// hacerlo testeable de verdad (ver security.test.ts) en vez de depender de
+// NODE_ENV=production real para poder probarlo.
+//
+// sanitizeErrorsIf(isProduction) es la función pura, inyectable en tests;
+// sanitizeProductionErrors (abajo) es la instancia real que usa server.ts,
+// atada al env.IS_PRODUCTION congelado del proceso real.
+export function sanitizeErrorsIf(isProduction: boolean) {
+  return function sanitizeErrorsMiddleware(_req: Request, res: Response, next: NextFunction): void {
+    if (!isProduction) {
+      next();
+      return;
     }
-    return originalJson(body);
-  }) as Response['json'];
-  next();
+    const sanitizedBody = () => ({ message: 'Error interno.', requestId: res.locals.requestId });
+    const originalJson = res.json.bind(res);
+    res.json = ((body: unknown) => {
+      return res.statusCode >= 500 ? originalJson(sanitizedBody()) : originalJson(body);
+    }) as Response['json'];
+    const originalSend = res.send.bind(res);
+    res.send = ((body?: unknown) => {
+      return res.statusCode >= 500 ? originalSend(JSON.stringify(sanitizedBody())) : originalSend(body as any);
+    }) as Response['send'];
+    next();
+  };
 }
+
+export const sanitizeProductionErrors = sanitizeErrorsIf(env.IS_PRODUCTION);
