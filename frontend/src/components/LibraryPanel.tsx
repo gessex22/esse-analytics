@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Folder, Search, Loader2, CheckCircle2, AlertCircle, Save, Trash2, UserMinus, Sparkles, SlidersHorizontal } from "lucide-react";
 import { API_BASE as API } from "../config";
 import { useAuth } from "../hooks/useAuth";
-import { setupService, WorkflowMode } from "../services/api";
+import { setupService, backupService, WorkflowMode } from "../services/api";
 
 interface ScanResult {
   scanned: number;
@@ -32,6 +32,8 @@ export function LibraryPanel() {
   const [scanning,  setScanning]  = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const [result,    setResult]    = useState<ScanResult | null>(null);
+
+  const [reconciling, setReconciling] = useState(false);
 
   const [wiping,      setWiping]      = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState(false);
@@ -90,6 +92,21 @@ export function LibraryPanel() {
   const scan = async () => {
     setError(null); setScanning(true); setResult(null);
     try {
+      // ¿Esta instalación tiene el catálogo local vacío ANTES de escanear? Si es
+      // así, este escaneo es una recuperación (post-wipe, o primera vez en esta
+      // PC) -- los archivos que va a encontrar nacen "en blanco" (sin badges de
+      // publicado ni calendario) hasta que algo reconcilie con la nube. Antes eso
+      // quedaba librado al próximo sync tick automático, que no es inmediato ni
+      // 100% confiable (ver incidente 2026-09-03: quedó así hasta una
+      // intervención manual). Un re-escaneo normal (catálogo ya poblado) NO entra
+      // acá -- ahí el scan solo agrega archivos genuinamente nuevos por ruta
+      // (ver scan.controller.ts), sin nada que reconciliar.
+      let wasEmpty = false;
+      try {
+        const status = await backupService.getLocalStatus();
+        wasEmpty = status.localCount === 0;
+      } catch { /* si falla la consulta, no bloquea el escaneo -- solo no dispara la reconciliación después */ }
+
       const res = await fetch(`${API}/api/videos/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -98,6 +115,15 @@ export function LibraryPanel() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Error al escanear");
       setResult({ scanned: d.scanned, added: d.added, restored: d.restored, missing: d.missing });
+
+      if (wasEmpty && d.added > 0) {
+        setReconciling(true);
+        await Promise.all([
+          backupService.pull().catch(() => {}),
+          backupService.pullTranscripts().catch(() => {}),
+        ]);
+        setReconciling(false);
+      }
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -271,6 +297,11 @@ export function LibraryPanel() {
                 <Stat label="Restaurados" value={result.restored} />
                 <Stat label="Ya no en disco" value={result.missing} accent={result.missing ? "amber" : undefined} />
               </div>
+              {reconciling && (
+                <p className="text-[11px] flex items-center gap-1.5 text-primary pt-1">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Restaurando publicados y calendario desde la nube…
+                </p>
+              )}
             </div>
           )}
         </>
