@@ -280,6 +280,24 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
         }
       }
 
+      // Reconcilia content_id: un archivo reescaneado (wipe, instalación nueva)
+      // nace con un content_id RANDOM nuevo -- si este match por nombre es real
+      // (pasó la guarda de arriba), curar el local al de la nube evita que quede
+      // divergiendo para siempre. Sin esto, cualquier sistema que identifique
+      // "es el mismo video" por content_id (ensureNextVideoInRemoteLibrary, el
+      // índice único de la nube, etc.) deja de reconocerlo como conocido y lo
+      // trata como nuevo -- caso real confirmado 2026-09-03: subió una segunda
+      // copia a Biblioteca remota de un video que ya estaba, gastando cupo.
+      // try/catch: content_id tiene índice único local -- si por lo que sea ya
+      // hay otra fila con ese valor (no debería, pero mejor no tumbar el pull
+      // entero por esto), se ignora y sigue como venía viniendo.
+      if (matchedByNameOnly && cf.content_id && cf.content_id !== localFile.content_id) {
+        try {
+          fileRepo.update(localFile.id, { content_id: cf.content_id });
+          localFile = { ...localFile, content_id: cf.content_id };
+        } catch { /* índice único content_id -- se deja como estaba */ }
+      }
+
       const cloudTs = new Date(cf.local_updated_at).getTime();
       const localTs = new Date(localFile.updated_at).getTime();
 
