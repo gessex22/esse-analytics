@@ -70,8 +70,11 @@ las colecciones que representan datos relacionados.
 - [x] Inventariar todos los lectores y escritores en backend central,
   local-backend, Electron, iOS y Android antes de cambiar el contrato. Ver
   `docs/mongo-collections-consolidation-plan-2026-09-02.md`.
-- [ ] Mantener compatibilidad temporal de API (adaptador o dual-read/dual-write)
-  para que clientes instalados de versiones anteriores no se rompan.
+- [x] Mantener compatibilidad temporal de API (adaptador o dual-read/dual-write)
+  para que clientes instalados de versiones anteriores no se rompan. Entrega A
+  implementada 2026-09-02: `FileSchema` extendida + servicio de lectura
+  canónica + flag `BACKUP_CANONICAL_READS` (default apagado). Ver
+  `docs/mongo-collections-consolidation-plan-2026-09-02.md` sección 5.
 - [ ] Crear migración con dry-run por defecto, snapshot previo obligatorio de
   `backup_files`, actualizaciones condicionadas, postflight automático y
   rollback generado desde el snapshot.

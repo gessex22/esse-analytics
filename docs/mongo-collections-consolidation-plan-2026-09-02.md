@@ -3,8 +3,10 @@
 **Fecha:** 2026-09-02  
 **Estado:** diseño e inventario terminados, incluida la revisión del enfoque
 de rollback (snapshot único en vez de shadow-write largo) y la propuesta de
-nombres de colecciones (sección 9, documentada, ejecución separada);
-implementación y migración sin empezar.  
+nombres de colecciones (sección 9, documentada, ejecución separada).
+**Entrega A implementada** (ver sección 5) -- schema extendido, servicio de
+lectura canónica y flag `BACKUP_CANONICAL_READS` (default apagado). Entregas
+B-D (migración, comparación canary, retirada) sin empezar.  
 **Regla:** ningún paso de este plan modifica producción por defecto.
 
 ## 1. Decisión de arquitectura
@@ -190,17 +192,42 @@ perderlos al borrar la colección.
 
 ### Entrega A — adapter canónico (sin shadow write de largo plazo)
 
-- Extender `FileSchema` con los campos de sincronización.
-- Extraer de `backup.controller.ts` un servicio/repositorio que produzca el DTO
-  estable de backup desde `files`.
-- Mantener `bulkUpsertBackupFiles` escribiendo ambas colecciones (como ya hace
-  hoy) mientras dura esta entrega — no es shadow write nuevo, es el
-  comportamiento actual, que se retira recién en la Entrega B.
-- Mantener inicialmente las lecturas desde el flujo viejo.
-- Agregar flag de servidor para activar canonical read; default conservador.
+**✅ Implementada 2026-09-02** (`backend/`, rama `feat/mongo-consolidation-entrega-a`):
 
-**Gate:** typecheck sin errores nuevos y pruebas de contrato de los cuatro
-endpoints de backup.
+- `FileSchema` extendida con `tipo_contenido`, `local_updated_at`,
+  `platforms_updated_at`, `backup_synced_at`, `backup_source_device_id`
+  (`models/file.model.ts`), todos opcionales, sin migración de datos.
+- `bulkUpsertBackupFiles` ahora también puebla esos 5 campos en `files` al
+  escribir (además de seguir escribiendo `backup_files` sin cambios, como ya
+  hacía) -- se completan solos con el próximo push de cada archivo, sin
+  backfill.
+- Servicio nuevo `services/backup-file-canonical.service.ts`: lee los 3 GET de
+  `/api/backup` (`files`, `status`, `sync-status`) desde `files` en
+  exclusiva.
+- Flag `BACKUP_CANONICAL_READS` (env, default apagado) en
+  `backup.controller.ts` -- gatea únicamente las 3 lecturas; el bulk de
+  escritura no está gateado, sigue escribiendo ambas colecciones igual que
+  hoy.
+- Script de solo lectura `scripts/backup-canonical-contract-check.ts`:
+  compara legacy vs canónico para un usuario sin escribir nada. Corrido contra
+  producción (owner, `includeResolved` true y false): **0 diferencias no
+  explicadas** -- las únicas 38 discrepancias encontradas fueron archivos con
+  `status='ELIMINADO_DISCO'` que el camino viejo seguía filtrando hacia el
+  catálogo remoto (bug preexistente, `onlyInCentral` nunca chequeaba
+  `status`) y que el canónico excluye a propósito (ver comentario en el
+  servicio). `status`/`sync-status` canónicos dan vacío hasta que corran
+  pushes nuevos que completen `backup_synced_at` -- esperado, no es una
+  migración de datos existentes.
+
+**Gate:** typecheck sin errores nuevos (27 antes y después, baseline sin
+tocar) y pruebas de contrato de los cuatro endpoints de backup (script de
+arriba; sin test runner en el repo, ver `docs/product-backlog.md`).
+
+**Pendiente dentro de A, antes de considerarla cerrada del todo:** correr el
+mismo script contra 2-3 cuentas no-owner (con content_id parcial/sin
+migrar) antes de activar el flag en cualquier ambiente, y decidir si el flag
+se activa alguna vez fuera de la allowlist canary de la Entrega C (hoy no hay
+plan de activarlo en producción real todavía).
 
 ### Entrega B — migración reversible
 
