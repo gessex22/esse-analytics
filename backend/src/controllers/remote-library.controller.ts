@@ -19,6 +19,7 @@ import {
 } from '../services/remote-library-storage.service';
 import { ensureRemoteLibraryCapacity } from '../services/remote-library-quota.service';
 import { upsertConfirmed, upsertBadgeOnly, upsertDiscarded } from '../utils/platform-state.util';
+import { errorName, logger } from '../utils/logger';
 
 // ── Failover LAN entre los 2 backends redundantes (Mac + PC Windows, cada uno
 // con su propio conector de Cloudflare Tunnel para el mismo hostname) ─────────
@@ -535,7 +536,7 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
           platform: link.platform, platformId: link.platformId, platformUrl: link.platformUrl,
           fileName: before.fileName, contentId: before.contentId,
           publishedAt: link.publishedAt ? new Date(link.publishedAt) : undefined,
-        }).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] applyPlatformPublish falló:', err.message));
+        }).catch((err: any) => logger.warn('remote_publish_propagation_failed', { errorName: errorName(err) }));
       }
     }
 
@@ -573,7 +574,7 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
           { _id: file._id },
           { $addToSet: { platforms_discarded: { $each: toApply } }, $set: { platform_states: states } },
         );
-      })().catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar descarte a FileModel falló:', err.message));
+      })().catch((err: any) => logger.warn('file_discard_propagation_failed', { errorName: errorName(err) }));
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });

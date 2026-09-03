@@ -43,6 +43,9 @@ export interface IUser extends Document {
   // metadata gratis de backup-sync. Sin billing todavía: el owner lo activa
   // a mano desde Usuarios, igual que tier (ver requireCloudStorage).
   hasCloudStorage: boolean;
+  // Se incrementa en cambios de seguridad/entitlements. Los JWT emitidos con
+  // una versión anterior quedan revocados inmediatamente.
+  authVersion: number;
   createdAt: Date;
 }
 
@@ -65,6 +68,7 @@ const userSchema = new Schema<IUser>({
   theme:              { type: String },
   video_folder:       { type: String },
   hasCloudStorage:    { type: Boolean, default: false },
+  authVersion:        { type: Number, default: 0, min: 0 },
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 export const UserModel = model<IUser>('User', userSchema);

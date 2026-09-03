@@ -1,7 +1,7 @@
-import { Schema, model, Document } from 'mongoose';
+import { Schema, model, Document, Types } from 'mongoose';
 
 interface IVideoVinculado {
-  file_id: { $oid: string } | string;
+  file_id: { $oid: string } | string | Types.ObjectId;
   file_name: string;
   file_path: string;
   fecha_creacion: Date;

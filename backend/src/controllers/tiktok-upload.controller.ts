@@ -1,20 +1,22 @@
 import { Request, Response } from 'express';
 import fs from 'fs';
-import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { FileModel } from '../models/file.model';
 import { applyPlatformPublish } from './backup.controller';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { encodeState, decodeState } from '../utils/oauth-state';
 import { recordAuditEvent } from '../services/audit.service';
+import { signAuthToken } from '../services/auth-token.service';
+import { env } from '../config/env';
+import { errorName, logger } from '../utils/logger';
 
 const TK_BASE   = 'https://open.tiktokapis.com/v2';
 const TK_AUTH   = 'https://www.tiktok.com/v2/auth/authorize/';
 const TK_TOKEN  = `${TK_BASE}/oauth/token/`;
 const TK_REVOKE = `${TK_BASE}/oauth/revoke/`;
 
-const tkKey    = () => process.env.TIKTOK_CLIENT_KEY!;
-const tkSecret = () => process.env.TIKTOK_CLIENT_SECRET!;
+const tkKey    = () => env.TIKTOK_CLIENT_KEY;
+const tkSecret = () => env.TIKTOK_CLIENT_SECRET;
 
 // ── Token storage per user ────────────────────────────────────────────────────
 async function saveTokens(userId: string, data: object) {
@@ -67,7 +69,7 @@ export async function getValidToken(userId: string): Promise<{ access_token: str
 
 // Popup que cierra y notifica al frontend — o deep link si es la app Android/iOS
 // (no hay window.opener en una Custom Tab / ASWebAuthenticationSession, así que ahí no tiene sentido el HTML).
-function popupResult(res: Response, status: string, origin = process.env.FRONTEND_URL || 'http://localhost:5173', client?: string) {
+function popupResult(res: Response, status: string, origin = env.FRONTEND_URL, client?: string) {
   if (client === 'android' || client === 'ios') {
     res.redirect(302, `essenalytics://oauth-callback?platform=tiktok&status=${encodeURIComponent(status)}`);
     return;
@@ -99,18 +101,18 @@ export const getToken = async (req: AuthRequest, res: Response) => {
 };
 
 // ── GET /api/tiktok/auth/url ──────────────────────────────────────────────────
-export const getAuthUrl = (req: AuthRequest, res: Response) => {
+export const getAuthUrl = async (req: AuthRequest, res: Response) => {
   const origin = req.query.origin as string | undefined;
   const client = req.query.client as string | undefined;
   const installationId = req.query.installationId as string | undefined;
   const deviceName     = req.query.deviceName as string | undefined;
   const appVersion     = req.query.appVersion as string | undefined;
-  const state = encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
+  const state = await encodeState(req.user!.id, origin, client, { installationId, deviceName, appVersion });
   const params = new URLSearchParams({
     client_key:    tkKey(),
     scope:         'user.info.basic,video.publish,video.upload,video.list',
     response_type: 'code',
-    redirect_uri:  process.env.TIKTOK_REDIRECT_URI!,
+    redirect_uri:  env.TIKTOK_REDIRECT_URI,
     state,
   });
   res.json({ url: `${TK_AUTH}?${params}` });
@@ -120,10 +122,17 @@ export const getAuthUrl = (req: AuthRequest, res: Response) => {
 export const handleCallback = async (req: Request, res: Response) => {
   const code  = req.query.code  as string;
   const state = req.query.state as string;
-  if (!code || !state) return popupResult(res, 'error');
+  if (!state) return popupResult(res, 'error');
 
-  const { userId, origin, client, installationId, deviceName, appVersion } = decodeState(state);
+  let decoded;
+  try {
+    decoded = await decodeState(state);
+  } catch {
+    return popupResult(res, 'error');
+  }
+  const { userId, origin, client, installationId, deviceName, appVersion } = decoded;
   if (!userId) return popupResult(res, 'error', origin, client);
+  if (!code) return popupResult(res, 'error', origin, client);
 
   try {
     const tokenRes = await fetch(TK_TOKEN, {
@@ -134,7 +143,7 @@ export const handleCallback = async (req: Request, res: Response) => {
         client_secret: tkSecret(),
         code,
         grant_type:    'authorization_code',
-        redirect_uri:  process.env.TIKTOK_REDIRECT_URI!,
+        redirect_uri:  env.TIKTOK_REDIRECT_URI,
       }),
     });
     const data = await tokenRes.json() as any;
@@ -147,7 +156,7 @@ export const handleCallback = async (req: Request, res: Response) => {
     });
     popupResult(res, 'success', origin, client);
   } catch (err: any) {
-    console.error('TikTok OAuth error:', err.message);
+    logger.error('tiktok_oauth_callback_failed', { errorName: errorName(err) });
     popupResult(res, 'error', origin, client);
   }
 };
@@ -177,7 +186,7 @@ export const revokeAuth = async (req: AuthRequest, res: Response) => {
         }),
       });
     } catch (err: any) {
-      console.error('Error al revocar token TikTok:', err.message);
+      logger.warn('tiktok_token_revoke_failed', { errorName: errorName(err) });
     }
   }
   const db = mongoose.connection.db!;
@@ -226,7 +235,7 @@ export const getCreatorInfo = async (req: AuthRequest, res: Response) => {
       maxVideoDurationSec: d.max_video_post_duration_sec,
     });
   } catch (err: any) {
-    console.error('Error TikTok creator-info:', err.message);
+    logger.warn('tiktok_creator_info_failed', { errorName: errorName(err) });
     res.status(500).json({ error: 'Error al obtener info del creador', detail: err.message });
   }
 };
@@ -259,18 +268,14 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
     return res.status(401).json({ error: 'NO_AUTH', message: 'Conecta tu cuenta de TikTok primero' });
   }
 
-  const apiUrl = (process.env.API_URL || '').replace(/\/$/, '');
+  const apiUrl = env.API_URL;
   if (!apiUrl.startsWith('https://')) {
     return res.status(500).json({ error: 'API_URL debe ser una URL pública https para que TikTok descargue el video' });
   }
   // /api/videos/download ahora exige token (fix de ownership) y TikTok descarga esta
   // URL sin headers — se firma un JWT corto del mismo usuario y va en la query string
   // (verifyTokenFromHeaderOrQuery lo acepta). El chequeo de dueño sigue aplicando.
-  const downloadToken = jwt.sign(
-    { id: req.user!.id, username: req.user!.username, role: req.user!.role, tier: req.user!.tier },
-    process.env.JWT_SECRET || 'esse_secret_key_2024',
-    { expiresIn: '2h' },
-  );
+  const downloadToken = signAuthToken(req.user!, '2h');
   const videoUrl = `${apiUrl}/api/videos/download/${fileId}?token=${downloadToken}`;
   console.log(`[TikTok] PULL_FROM_URL: ${apiUrl}/api/videos/download/${fileId}?token=<jwt>`);
 
@@ -358,7 +363,7 @@ export const uploadToTikTok = async (req: AuthRequest, res: Response) => {
       sentToInbox: publishStatus === 'SEND_TO_USER_INBOX',
     });
   } catch (err: any) {
-    console.error('Error al subir a TikTok:', err.message);
+    logger.error('tiktok_upload_failed', { errorName: errorName(err) });
     res.status(500).json({ error: 'Error al subir a TikTok', detail: err.message });
   }
 };

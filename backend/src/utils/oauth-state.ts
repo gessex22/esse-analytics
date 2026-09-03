@@ -1,21 +1,21 @@
-// Helpers para llevar el "origin" del frontend a través del flujo OAuth.
-// El state viaja a Google/Meta/TikTok y vuelve en el callback; ahí decidimos
-// a qué frontend redirigir (local del cliente vs. la versión online).
+import crypto from 'crypto';
+import mongoose from 'mongoose';
+import { env } from '../config/env';
 
-const DEFAULT_ORIGIN = process.env.FRONTEND_URL || 'http://localhost:5173';
+const STATE_TTL_SECONDS = 10 * 60;
+const STATE_VERSION = 1;
 
 interface StatePayload {
-  u: string;   // userId
-  o?: string;  // origin del frontend
-  c?: string;  // client ("android") — si viene, el callback redirige a un deep link en vez del popup HTML
-  // Identidad del dispositivo (Fase 5, auditoría) -- el callback de OAuth es
-  // un redirect del NAVEGADOR/webview, no un request directo del cliente, así
-  // que la única forma de saber QUÉ instalación inició el connect es viajar
-  // esto en el state (igual que origin/client). Claves cortas a propósito:
-  // el state entero viaja en la URL de Google/Meta/TikTok.
-  i?: string;  // installationId
-  d?: string;  // deviceName
-  v?: string;  // appVersion
+  ver: number;
+  u: string;
+  o?: string;
+  c?: string;
+  i?: string;
+  d?: string;
+  v?: string;
+  n: string;
+  iat: number;
+  exp: number;
 }
 
 export interface DecodedState {
@@ -27,57 +27,138 @@ export interface DecodedState {
   appVersion?: string;
 }
 
-// Codifica userId + origin/client/identidad de dispositivo en un state opaco
-// (base64url de JSON).
-export function encodeState(
-  userId: string, origin?: string, client?: string,
+let indexesReady: Promise<unknown> | null = null;
+
+function nonceCollection() {
+  const db = mongoose.connection.db;
+  if (!db) throw new Error('MongoDB no está disponible para emitir state OAuth.');
+  if (!indexesReady) {
+    const collection = db.collection('oauth_state_nonces');
+    indexesReady = Promise.all([
+      collection.createIndex({ nonceHash: 1 }, { unique: true }),
+      collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+    ]);
+  }
+  return db.collection('oauth_state_nonces');
+}
+
+function hmac(body: string): Buffer {
+  return crypto.createHmac('sha256', env.OAUTH_STATE_SECRET).update(body).digest();
+}
+
+function nonceHash(nonce: string): string {
+  return crypto.createHash('sha256').update(nonce).digest('hex');
+}
+
+function bounded(value: string | undefined, max: number): string | undefined {
+  if (!value) return undefined;
+  return value.slice(0, max);
+}
+
+export async function encodeState(
+  userId: string,
+  origin?: string,
+  client?: string,
   device?: { installationId?: string; deviceName?: string; appVersion?: string },
-): string {
-  const payload: StatePayload = { u: userId };
-  if (origin) payload.o = origin;
-  if (client) payload.c = client;
-  if (device?.installationId) payload.i = device.installationId;
-  if (device?.deviceName) payload.d = device.deviceName;
-  if (device?.appVersion) payload.v = device.appVersion;
-  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const payload: StatePayload = {
+    ver: STATE_VERSION,
+    u: userId,
+    n: nonce,
+    iat: now,
+    exp: now + STATE_TTL_SECONDS,
+  };
+  if (origin) payload.o = safeOrigin(origin);
+  if (client) payload.c = bounded(client, 16);
+  if (device?.installationId) payload.i = bounded(device.installationId, 128);
+  if (device?.deviceName) payload.d = bounded(device.deviceName, 128);
+  if (device?.appVersion) payload.v = bounded(device.appVersion, 32);
+
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = hmac(body).toString('base64url');
+  const collection = nonceCollection();
+  await indexesReady;
+  await collection.insertOne({
+    nonceHash: nonceHash(nonce),
+    userId,
+    createdAt: new Date(now * 1000),
+    expiresAt: new Date(payload.exp * 1000),
+  });
+  return `${body}.${signature}`;
 }
 
-// Decodifica el state. Soporta el formato viejo (solo userId en base64url).
-export function decodeState(state: string): DecodedState {
+export async function decodeState(state: string): Promise<DecodedState> {
+  if (state.length > 4096) throw new Error('OAuth state inválido.');
+  const [body, encodedSignature, extra] = state.split('.');
+  if (!body || !encodedSignature || extra !== undefined) throw new Error('OAuth state inválido.');
+
+  let signature: Buffer;
   try {
-    const raw = Buffer.from(state, 'base64url').toString();
-    const parsed = JSON.parse(raw) as StatePayload;
-    if (parsed && typeof parsed.u === 'string') {
-      return {
-        userId: parsed.u, origin: safeOrigin(parsed.o), client: parsed.c,
-        installationId: parsed.i, deviceName: parsed.d, appVersion: parsed.v,
-      };
-    }
+    signature = Buffer.from(encodedSignature, 'base64url');
   } catch {
-    // No es JSON → formato legacy (el state ERA el userId crudo)
+    throw new Error('OAuth state inválido.');
   }
-  const legacyUserId = Buffer.from(state, 'base64url').toString();
-  return { userId: legacyUserId, origin: DEFAULT_ORIGIN };
+  const expected = hmac(body);
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(signature, expected)) {
+    throw new Error('OAuth state inválido.');
+  }
+
+  let payload: StatePayload;
+  try {
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as StatePayload;
+  } catch {
+    throw new Error('OAuth state inválido.');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    payload.ver !== STATE_VERSION || typeof payload.u !== 'string' || !payload.u ||
+    typeof payload.n !== 'string' || !payload.n || typeof payload.iat !== 'number' ||
+    typeof payload.exp !== 'number' || payload.iat > now + 30 || payload.exp <= now ||
+    payload.exp - payload.iat !== STATE_TTL_SECONDS
+  ) {
+    throw new Error('OAuth state inválido o expirado.');
+  }
+
+  const collection = nonceCollection();
+  await indexesReady;
+  const consumed = await collection.findOneAndDelete({
+    nonceHash: nonceHash(payload.n),
+    userId: payload.u,
+    expiresAt: { $gt: new Date() },
+  });
+  if (!consumed) throw new Error('OAuth state ya utilizado o desconocido.');
+
+  return {
+    userId: payload.u,
+    origin: safeOrigin(payload.o),
+    client: payload.c,
+    installationId: payload.i,
+    deviceName: payload.d,
+    appVersion: payload.v,
+  };
 }
 
-// Valida que el origin sea uno permitido (anti open-redirect).
-// Permite: localhost, 127.0.0.1, redes locales (192.168.x, 10.x, 172.16-31.x)
-// y el dominio de producción.
 export function safeOrigin(origin?: string): string {
-  if (!origin) return DEFAULT_ORIGIN;
+  if (!origin) return env.FRONTEND_URL;
   try {
-    const u = new URL(origin);
-    const h = u.hostname;
-    const ok =
-      h === 'localhost' ||
-      h === '127.0.0.1' ||
-      h.startsWith('192.168.') ||
-      h.startsWith('10.') ||
-      /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
-      h === 'esse-analytics.com' ||
-      h.endsWith('.esse-analytics.com');
-    return ok ? origin.replace(/\/$/, '') : DEFAULT_ORIGIN;
+    const parsed = new URL(origin);
+    const normalized = `${parsed.protocol}//${parsed.host}`;
+    if (env.ALLOWED_ORIGINS.includes(normalized)) return normalized;
+
+    // La app instalada sirve su UI en localhost:4000 y la vista LAN usa una
+    // IP privada. El state firmado impide que un tercero cambie este destino;
+    // aun así se limita a loopback/RFC1918 y a http(s), nunca a un host público
+    // arbitrario.
+    const host = parsed.hostname;
+    const isLocal = host === 'localhost' || host === '127.0.0.1' ||
+      host.startsWith('192.168.') || host.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (isLocal && (parsed.protocol === 'http:' || parsed.protocol === 'https:')) return normalized;
   } catch {
-    return DEFAULT_ORIGIN;
+    // Usa el origen configurado y seguro.
   }
+  return env.FRONTEND_URL;
 }

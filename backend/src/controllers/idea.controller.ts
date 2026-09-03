@@ -1,10 +1,11 @@
 import { Response } from 'express';
-import { IdeaCentral, IdeaStatus } from '../models/ideacentral';
+import { IdeaCentral, IdeaStatus } from '../models/ideaCentral';
 import { AuthRequest } from '../middleware/auth.middleware';
 import mongoose from 'mongoose';
 import * as fs from 'fs';
 
 import path from 'path'
+import { errorName, logger } from '../utils/logger';
 
 // ➔ GET: Obtener las ideas procesadas para mapear el diseño del Figma
 export const getTallerIdeas = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -67,7 +68,7 @@ export const getTallerIdeas = async (req: AuthRequest, res: Response): Promise<v
 
     res.status(200).json(processedIdeas);
   } catch (error) {
-    console.error("Error en el Taller al traer ideas_centrales:", error);
+    logger.error('ideas_list_failed', { errorName: errorName(error) });
     res.status(500).json({ message: "Error interno en el servidor." });
   }
 };
@@ -104,7 +105,7 @@ export const setMainVersion = async (req: AuthRequest, res: Response): Promise<v
 
     res.status(200).json({ message: "Versión principal actualizada con éxito.", idea: updatedIdea });
   } catch (error: any) {
-    console.error("Error al actualizar la versión principal:", error);
+    logger.error('idea_primary_update_failed', { errorName: errorName(error) });
     res.status(500).json({ message: "Error interno al procesar la solicitud.", error: error.message });
   }
 };
@@ -112,7 +113,8 @@ export const setMainVersion = async (req: AuthRequest, res: Response): Promise<v
 
 // ➔ DELETE: Eliminar video individual, su .mp4 en disco y su transcripción .txt asociada
 export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Promise<void> => {
-  const { ideaId, videoId } = req.params;
+  const ideaId = String(req.params.ideaId);
+  const videoId = String(req.params.videoId);
   const userId = req.user!.id;
 
   try {
@@ -150,7 +152,7 @@ export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Pr
     // Accedemos a la colección 'transcripts' de forma nativa usando el Schema que me diste
     const transcriptCollection = db.collection('transcripts'); // <- Asegúrate de que tu colección se llame así en Compass
     const transcriptDeleted = await transcriptCollection.deleteOne({ file_id: fileObjectId });
-    console.log(`-> Transcripción nativa eliminada: ${transcriptDeleted.deletedCount} documento(s)`);
+    logger.info('idea_transcript_deleted', { deletedCount: transcriptDeleted.deletedCount });
 
 
     // ========================================================
@@ -167,14 +169,14 @@ export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Pr
     // Borramos el archivo físico (.mp4) del almacenamiento de tu computadora
     if (pathABorrar && fs.existsSync(pathABorrar)) {
       fs.unlinkSync(pathABorrar);
-      console.log(`-> ARCHIVO FÍSICO ELIMINADO TOTALMENTE DEL DISCO: ${pathABorrar}`);
+      logger.info('idea_video_file_deleted', { ideaId, videoId });
     } else {
-      console.log(`-> Alerta: No se encontró el archivo físico en la ruta: ${pathABorrar}`);
+      logger.warn('idea_video_file_missing', { ideaId, videoId });
     }
 
     // Eliminamos el documento de la colección de archivos de la base de datos
     const fileDeleted = await filesCollection.deleteOne({ _id: fileObjectId });
-    console.log(`-> Documento de archivo eliminado de la colección files: ${fileDeleted.deletedCount}`);
+    logger.info('idea_file_document_deleted', { deletedCount: fileDeleted.deletedCount });
 
 
     // ========================================================
@@ -200,7 +202,7 @@ export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Pr
         // Promovemos el primer video disponible de la lista a principal
         idea.videos_vinculados[0].rol = 'POR_DEFECTO';
         idea.video_principal_id = String(idea.videos_vinculados[0].file_id);
-        console.log(`-> Seguridad: Se promovió automáticamente el video [${idea.videos_vinculados[0].file_name}] a POR_DEFECTO.`);
+        logger.info('idea_primary_auto_promoted', { ideaId });
       } else {
         // Si sí hay un POR_DEFECTO pero el video_principal_id quedó desincronizado
         const principalActual = idea.videos_vinculados.find(v => v.rol === 'POR_DEFECTO');
@@ -222,7 +224,7 @@ export const deleteVideoIndividual = async (req: AuthRequest, res: Response): Pr
     });
 
   } catch (error: any) {
-    console.error("Error crítico en el backend al eliminar el contenido de forma nativa:", error);
+    logger.error('idea_video_delete_failed', { ideaId, videoId, errorName: errorName(error) });
     res.status(500).json({ message: "Error interno del servidor.", error: error.message });
   }
 };
@@ -276,7 +278,7 @@ export const deleteIdeaCentral = async (req: AuthRequest, res: Response): Promis
     const transcriptsCollection = db.collection('transcripts');
     const filesCollection = db.collection('files');
 
-    console.log(`\n=== INICIANDO BORRADO EN GRUPO PARA LA IDEA: ${ideaId} ===`);
+    logger.info('idea_delete_started', { ideaId });
 
     // 2. Iterar de forma limpia sobre todos los videos vinculados de la idea
     if (idea.videos_vinculados && idea.videos_vinculados.length > 0) {
@@ -298,12 +300,12 @@ export const deleteIdeaCentral = async (req: AuthRequest, res: Response): Promis
           if (fs.existsSync(pathABorrar)) {
             try {
               fs.unlinkSync(pathABorrar);
-              console.log(`-> [GRUPO] ARCHIVO FÍSICO ELIMINADO: ${pathABorrar}`);
+              logger.info('idea_group_file_deleted', { ideaId });
             } catch (fsErr: any) {
-              console.error(`-> [GRUPO ERROR DISCO] No se pudo borrar ${pathABorrar}:`, fsErr.message);
+              logger.error('idea_group_file_delete_failed', { ideaId, errorName: errorName(fsErr) });
             }
           } else {
-            console.log(`-> [GRUPO ALERTA] No se encontró en el disco: ${pathABorrar}`);
+            logger.warn('idea_group_file_missing', { ideaId });
           }
         }
 
@@ -314,7 +316,7 @@ export const deleteIdeaCentral = async (req: AuthRequest, res: Response): Promis
 
     // 3. Una vez que el disco y las colecciones alternas están 100% limpios, borramos la Idea Central
     await IdeaCentral.findByIdAndDelete(ideaId);
-    console.log(`=== BORRADO EN GRUPO FINALIZADO CON ÉXITO ===\n`);
+    logger.info('idea_delete_finished', { ideaId });
 
     res.status(200).json({
       success: true,
@@ -322,7 +324,7 @@ export const deleteIdeaCentral = async (req: AuthRequest, res: Response): Promis
     });
 
   } catch (error: any) {
-    console.error("Error crítico en el backend al eliminar la idea en cascada:", error);
+    logger.error('idea_delete_failed', { ideaId, errorName: errorName(error) });
     res.status(500).json({ message: "Error interno del servidor.", error: error.message });
   }
 };

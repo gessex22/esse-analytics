@@ -2,12 +2,12 @@ import { Response } from 'express';
 import { AuthRequest, isOwner } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptBackupModel } from '../models/transcript-backup.model';
-import { FileModel } from '../models/file.model';
+import { FileModel, Platform } from '../models/file.model';
 import { UserModel } from '../models/user.model';
-import { IdeaCentral } from '../models/ideacentral';
+import { IdeaCentral } from '../models/ideaCentral';
 import { BackupConfigModel } from '../models/backup-config.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
-import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { RemoteLibraryVideoModel, RemotePlatform } from '../models/remote-library-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
 import { recordAuditEvent } from '../services/audit.service';
@@ -15,6 +15,7 @@ import { getVideoPublishedAt as getYoutubePublishedAt } from '../services/youtub
 import { getMediaPublishedAt as getInstagramPublishedAt } from '../services/instagram.service';
 import { getVideoPublishedAt as getTiktokPublishedAt } from '../services/tiktok.service';
 import { upsertConfirmed, deriveStatesFromToggle } from '../utils/platform-state.util';
+import { errorName, logger } from '../utils/logger';
 
 // GET /api/backup/files
 // Mismo filtro por defecto que la vista principal de Videos del escritorio
@@ -282,7 +283,10 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
         // índice único -- no abortamos el resto del push (FileModel, Nube,
         // reconciliación) por un duplicado aislado. Antes esto tumbaba el backup
         // completo con un solo E11000 (hallazgo H7 de la revisión independiente).
-        console.warn('[bulkUpsertBackupFiles] BackupFileModel.bulkWrite con errores parciales:', err.writeErrors?.length ?? err.message);
+        logger.warn('backup_files_bulk_partial_failure', {
+          writeErrorCount: err.writeErrors?.length ?? null,
+          errorName: errorName(err),
+        });
       }
     }
 
@@ -348,7 +352,10 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     } catch (err: any) {
       // Mismo criterio que arriba: no abortar el resto del push por un duplicado
       // aislado (hallazgo H7).
-      console.warn('[bulkUpsertBackupFiles] FileModel.bulkWrite con errores parciales:', err.writeErrors?.length ?? err.message);
+      logger.warn('files_bulk_partial_failure', {
+        writeErrorCount: err.writeErrors?.length ?? null,
+        errorName: errorName(err),
+      });
     }
 
     // Revivir: un archivo que vuelve en el push pero estaba archivado se reactiva.
@@ -372,7 +379,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
         .map(f => {
           const ex = resolveFileModelExisting(f);
           const { platforms } = resolvePlatforms(f, ex as any);
-          const previous = new Set(ex?.platforms ?? []);
+          const previous = new Set<string>(ex?.platforms ?? []);
           const added = platforms.filter((p: string) => !previous.has(p));
           return added.length > 0 ? { fileName: f.file_name, added } : null;
         })
@@ -389,13 +396,16 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
           .map(n => {
             const remote = remoteMap.get(n.fileName);
             if (!remote) return null; // este video nunca estuvo en Nube, nada que sincronizar
-            const platforms = new Set(remote.platforms ?? []);
+            const platforms = new Set<string>(remote.platforms ?? []);
             n.added.forEach((p: string) => platforms.add(p));
             const platformsDiscarded = (remote.platformsDiscarded ?? []).filter((p: string) => !platforms.has(p));
             return {
               updateOne: {
                 filter: { _id: remote._id },
-                update: { $set: { platforms: Array.from(platforms), platformsDiscarded } },
+                update: { $set: {
+                  platforms: Array.from(platforms) as RemotePlatform[],
+                  platformsDiscarded: platformsDiscarded as RemotePlatform[],
+                } },
               },
             };
           })
@@ -755,7 +765,7 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
 // siempre en vez de saltarlo.
 async function syncCalendarAfterPublish(
   userId: string,
-  platform: string,
+  platform: Platform,
   publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null,
   publishedAt: Date,
 ): Promise<void> {
@@ -804,7 +814,7 @@ async function syncCalendarAfterPublish(
       { upsert: true },
     );
   } catch (err: any) {
-    console.warn('[calendar] sync tras publish falló:', err.message);
+    logger.warn('calendar_sync_after_publish_failed', { errorName: errorName(err) });
   }
 }
 
@@ -917,7 +927,7 @@ export async function updateFilePlatforms(req: AuthRequest, res: Response): Prom
       RemoteLibraryVideoModel.updateOne(
         { ...remoteQuery, platforms: { $nin: newlyDiscarded } } as any,
         { $addToSet: { platformsDiscarded: { $each: newlyDiscarded } } },
-      ).catch((err: any) => console.warn('[updateFilePlatforms] propagar descarte a Nube falló:', err.message));
+      ).catch((err: any) => logger.warn('remote_library_discard_propagation_failed', { errorName: errorName(err) }));
     }
   } catch (err: any) {
     res.status(500).json({ message: err.message });
@@ -1134,7 +1144,7 @@ export async function applyPlatformPublish(userId: string, data: {
         );
       }
     } catch (err: any) {
-      console.warn('[applyPlatformPublish] sync a Biblioteca remota falló:', err.message);
+      logger.warn('remote_library_publish_sync_failed', { errorName: errorName(err) });
     }
   }
 
