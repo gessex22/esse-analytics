@@ -1,5 +1,29 @@
 # Product backlog
 
+## Descartar en bloque videos viejos sin link en 2 plataformas
+
+**Estado:** pendiente, anotado el 2026-09-06. Surgió al revisar la cola de
+"Emparejar entre plataformas" (Electron) tras el rediseño de prioridad por
+link faltante (ver `docs/bug-reports.md`, sección de sync.controller.ts /
+`decidedCount`/`pendingLinkCount`/`linkedCount`): de 62 candidatos reales,
+la mayoría son videos de 2024 con 1 solo link real (YouTube) y 2 faltantes
+(Instagram/TikTok) — casi seguro nunca se llegaron a publicar ahí, no que
+falte vincularlos.
+
+- [ ] Armar un script de solo-lectura que liste esos candidatos (3
+  plataformas decididas, exactamente 1 link real, 2 faltantes, por
+  antigüedad) para que el usuario confirme cuáles antes de tocar nada —
+  **no descartar nada sin esa confirmación explícita, uno por uno o en
+  bloque a criterio del usuario**.
+- [ ] Una vez confirmada la lista: marcar como `platforms_discarded` las 2
+  plataformas faltantes de cada uno (mismo efecto que descartar a mano
+  desde la UI, vía `updateFilePlatforms`/`applyPlatformPublish` o un update
+  directo revisado) — saca a esos archivos de la cola de "Pendientes" para
+  siempre, sin necesitar un filtro por fecha en el código.
+- [ ] Evaluar si además conviene un filtro por fecha en el criterio de
+  elegibilidad de `getCrossMatchCandidates` (alternativa/complemento al
+  descarte manual, discutida pero no decidida el 2026-09-06).
+
 ## Instagram sin Página de Facebook
 
 - [ ] Soportar dos formas de conexión de Instagram:
