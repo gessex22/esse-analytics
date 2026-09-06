@@ -36,7 +36,7 @@ Usar el siguiente formato:
 
 ## BUG-2026-09-06-05 — "final  - sufre.mp4" (doble espacio en disco) sin miniatura en Calendario y sin badge "Próximo" en Videos iOS
 
-- Estado: `corregido` (backend, matching por content_id). Cliente iOS sin tocar -- ver Pendiente.
+- Estado: `corregido` (backend + iOS, ambos verificados con build/typecheck real).
 - Reportado: 2026-09-06
 - Plataformas: Central (causa de fondo), iOS (síntoma del badge "Próximo")
 - Severidad: baja -- cosmético (miniatura/badge faltante), no pérdida de datos
@@ -93,18 +93,27 @@ primero (estable, sobrevive cualquier diferencia de nombre) y caen a
   espacio) -- el próximo push desde el escritorio deja los dos nombres
   consistentes y el problema desaparece solo, sin depender de ningún fix de
   código.
-- **No implementado a propósito**: el lado iOS (`LibraryView.swift`, badge
-  "Próximo") sigue comparando por `fileName`/título en vez de `contentId` --
-  mismo patrón frágil, mismo tipo de bug latente para cualquier otro typo de
-  nombre futuro. Se ofreció al usuario endurecerlo (comparar por
-  `contentId`, mismo criterio que el fix de acá), sin build real posible
-  desde este entorno (Windows, sin Xcode) -- a la espera de que lo pida.
+- **Lado iOS corregido** (pedido explícito del usuario tras la investigación
+  inicial): `LibraryView.swift`/`UploadView.swift`/`RemoteLibraryView.swift`
+  ya no comparan el badge "Próximo" por `fileName`/título -- `NextVideoDTO`
+  gana `matches(localFile:)`/`matches(remoteVideo:)` (`CalendarDTOs.swift`),
+  que prioriza `remoteLibraryVideoId` (identidad real, sin ambigüedad)
+  cuando ambos lados lo tienen, y cae a título solo para archivos 100%
+  locales que nunca pasaron por Biblioteca remota. **Build real verificado**
+  vía SSH a `macgessemberg22` (`xcodebuild -scheme Esse-Analytics -destination
+  'generic/platform=iOS Simulator'`), `BUILD SUCCEEDED`, 0 errores, 0
+  warnings nuevos en los 7 archivos tocados. Commiteado y pusheado a `main`
+  de `essenalytics-ios` (`553b656`).
 
 ### Historial
 - 2026-09-06 — agente: investigado en vivo contra Mongo de producción,
   causa raíz confirmada (doble espacio en el nombre real del archivo),
   corregido el cruce por content_id en los 2 lugares del backend
-  encontrados; lado iOS documentado, sin tocar.
+  encontrados.
+- 2026-09-06 — agente: a pedido del usuario, corregido también el lado iOS
+  (comparación por `remoteLibraryVideoId` en vez de título) en los 3 lugares
+  donde se repetía el mismo patrón; build real verificado vía SSH, sin
+  errores ni warnings nuevos; commiteado y pusheado.
 
 ## BUG-2026-09-06-04 — Un push de catálogo de la PC podía revertir en silencio un publish/link real ya confirmado del lado central
 
@@ -211,7 +220,7 @@ link/publish real nunca se pierde en silencio.
 
 ## BUG-2026-09-06-03 — Pegar el link de un video VIEJO en Nube lo hubiera marcado "publicado hoy" (fecha real pisada por `Date()` del cliente)
 
-- Estado: `corregido` (backend, mitigado server-side) — typecheck limpio (27/27, ninguno nuevo). Los 3 clientes conservan el mismo bug de origen sin tocar (server ya no confía en su dato, ver Corrección).
+- Estado: `corregido` (backend mitigado + Electron/iOS limpiados en el origen). Android sin confirmar/tocar.
 - Reportado: 2026-09-06
 - Plataformas: Central (mitigación); Electron, iOS, probablemente Android (bug de origen sin corregir en el cliente, ver Investigación)
 - Severidad: alta -- silenciosa, distorsiona Estadísticas/Historial/Calendario con fecha falsa
@@ -275,13 +284,18 @@ no confía en ese dato para el caso que importa.
   nuevo.
 - Pendiente crítico de siempre: no corre en el proceso real hasta reiniciar
   la central.
-- **Pendiente, no urgente**: limpiar el bug de origen en los clientes
-  (Electron `RemoteLibraryView.tsx`, iOS `RemoteVideoDetailAdapter.swift`,
-  confirmar Android) para no depender solo de la mitigación server-side --
-  mismo criterio que ya se aplicó correctamente en `LocalVideoDetailAdapter.swift`
-  (iOS, la contraparte de Videos local) y en `recordUploadEvent`, que sí
-  distinguen "hay link previo" de "es nuevo" y solo en el segundo caso mandan
-  `nil`/omiten el campo.
+- **Bug de origen limpiado en Electron e iOS** (pedido explícito del
+  usuario): `RemoteLibraryView.tsx::EditRemoteLinksModal.handleSave` y
+  `RemoteVideoDetailAdapter.swift::writeLink` ya no mandan
+  `Date()`/`new Date().toISOString()` para un link nuevo -- solo reusan
+  `existing?.publishedAt` cuando ya había uno (mismo criterio que
+  `LocalVideoDetailAdapter.swift`/`recordUploadEvent`, que ya lo hacían
+  bien). `RemoteLibraryPlatformLink`/`RemoteLibraryPlatformLinkDTO.publishedAt`
+  pasan a opcionales en los 2 clientes. Electron: `npm run build`/`npm run lint`
+  limpios. iOS: build real vía SSH (`xcodebuild`, `BUILD SUCCEEDED`, 0
+  errores/warnings nuevos), commiteado junto con el fix de BUG-2026-09-06-05
+  (`553b656`). **Android sin confirmar ni tocar** -- queda pendiente si se
+  quiere cerrar del todo.
 - **Backfill de BUG-2026-09-06-02**: con esta mitigación ya en pie, el script
   de reconciliación pendiente ahí debe llamar `applyPlatformPublish` con
   `publishedAt: undefined` siempre (nunca reusar el `publishedAt` ya guardado
@@ -295,6 +309,9 @@ no confía en ese dato para el caso que importa.
   propuesto en BUG-2026-09-06-02 se aplicara a un video viejo; investigado,
   confirmado el riesgo real (fecha falsa por default de cliente), mitigado
   server-side sin esperar a tocar los 3 clientes.
+- 2026-09-06 — agente: a pedido del usuario, limpiado el bug de origen en
+  Electron e iOS (Android sin tocar/confirmar); build real de iOS verificado
+  vía SSH, sin errores ni warnings nuevos; commiteado y pusheado.
 
 ## BUG-2026-09-06-02 — Pegar un link real en Nube para una plataforma ya marcada "publicada" (badge) nunca propagaba a FileModel/PlatformVideoModel/Calendario/Estadísticas
 

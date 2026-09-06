@@ -1057,7 +1057,12 @@ export interface RemoteLibraryPlatformLink {
   platform: RemotePlatform;
   platformId: string;
   platformUrl?: string;
-  publishedAt: string;
+  // Opcional -- BUG-2026-09-06-03 (docs/bug-reports.md): un link NUEVO (sin
+  // fecha real conocida todavía) debe mandar esto vacío, no `Date()` --
+  // el backend tiene un best-effort para resolver la fecha real vía la API
+  // de la plataforma, pero solo corre si esto llega ausente/null. Mandar
+  // "ahora" por error lo desactivaba.
+  publishedAt?: string;
 }
 
 export interface RemoteLibraryVideo {

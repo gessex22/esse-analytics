@@ -74,11 +74,15 @@ function EditRemoteLinksModal({ video, onClose, onSaved }: {
         ? Array.from(new Set([...video.platforms, p]))
         : video.platforms.filter(x => x !== p);
       const platformsDiscarded = video.platformsDiscarded.filter(x => x !== p);
+      // BUG-2026-09-06-03: solo se manda una fecha si YA había un link
+      // previo para esta plataforma (real, no adivinada) -- un link nuevo
+      // deja publishedAt sin mandar, así el backend resuelve la fecha real
+      // vía la API de la plataforma en vez de marcarlo "publicado ahora".
       const link: RemoteLibraryPlatformLink = {
         platform: p,
         platformId: trimmed ? extractPlatformId(p, trimmed) : (existing?.platformId ?? ""),
         platformUrl: trimmed || undefined,
-        publishedAt: existing?.publishedAt ?? new Date().toISOString(),
+        publishedAt: existing?.publishedAt,
       };
       const updated = await remoteLibraryService.updatePlatforms(video._id, {
         platforms, platformsDiscarded, platformLinks: [link],
