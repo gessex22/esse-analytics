@@ -34,6 +34,578 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-06-04 — Un push de catálogo de la PC podía revertir en silencio un publish/link real ya confirmado del lado central
+
+- Estado: `corregido` -- confirmado EN VIVO en producción (se reprodujo solo, sin buscarlo) y verificado que el fix lo resuelve. Typecheck limpio (27/27, ninguno nuevo).
+- Reportado: 2026-09-06
+- Plataformas: Central (afecta a cualquier cuenta con al menos una instalación de escritorio activa)
+- Severidad: crítica -- pérdida silenciosa de datos ya confirmados, sin ningún error visible, reproducible con solo esperar a que corra un sync tick normal
+- Reportado por: agente (encontrado en vivo al verificar el fix de BUG-2026-09-06-02)
+
+### Síntoma y pasos para reproducir
+
+Al aplicar el backfill de BUG-2026-09-06-02 para `final - linux gaming.mp4`
+(Instagram), se verificó que `FileModel.platforms` quedó correcto
+(`["tiktok","youtube","instagram"]`). ~30 segundos después, sin que nadie
+tocara nada a propósito, `platforms` volvió a `["tiktok","youtube"]` --
+Instagram desapareció de nuevo, aunque `platform_states.instagram` seguía en
+`"confirmed"` (documento internamente inconsistente: el estado detallado
+decía "hay un link real" pero el array plano que lee TODO lo demás --
+Calendario, Cross-match, `getBackupFiles`, badges de Videos -- decía que no).
+
+### Investigación
+
+Causa raíz: `bulkUpsertBackupFiles` (`backend/src/controllers/backup.controller.ts`,
+el endpoint que recibe el push periódico de catálogo de cada instalación de
+escritorio -- corre en cada publicación local Y cada ~5-20 min vía
+`syncOrchestrator.runSyncTick`, ver `frontend/src/services/syncOrchestrator.ts`)
+escribe `platforms`/`platforms_discarded` en **`FileModel`** (no solo en
+`BackupFileModel`) usando `resolvePlatforms()`, un helper que **solo protege
+un caso**: "el push viene con `platforms` vacío Y ya había algo guardado". Si
+el push viene con `platforms` NO vacío -- el caso normal, la copia de la PC
+en su SQLite local -- ese valor **siempre gana, sin comparar nada contra lo
+que ya hay en el central**. `FileModel` es la única de las 2 colecciones que
+además tiene `platform_states` (`confirmed`/`badge_only`/`discarded`) -- un
+publish real hecho del lado central (`applyPlatformPublish`, disparado por
+ejemplo desde el link pegado en Nube, BUG-2026-09-06-02) puede confirmar una
+plataforma que la PC todavía no conoce (no hizo `pull` todavía, o su próximo
+push salió armado ANTES de enterarse) -- y el siguiente push de esa PC la
+borra de `platforms` sin que nadie lo note, aunque `platform_states` quede
+diciendo lo contrario.
+
+Agravante de diseño: `runSyncTick` hace **push ANTES que pull**
+(`syncOrchestrator.ts:21-22` -- `push()` primero, `pull()` después) -- incluso
+si el `pull` de esa misma PC más tarde trajera el dato correcto de vuelta con
+su propio LWW (que sí compara timestamps correctamente, ver `pullFromCloud`
+en `local-backend`), el `push` que corrió segundos antes en el MISMO tick ya
+alcanzó a pisar el dato central bueno primero.
+
+`platforms_updated_at` en `FileModel` (el campo pensado para un LWW real,
+"SYNC-01 #3") solo lo escribe este mismo `bulkUpsertBackupFiles` con el valor
+que la PC reporta -- ningún otro caller que cambia `platforms` en `FileModel`
+(`applyPlatformPublish`, `updateFilePlatforms`, el mirror de
+`updateRemoteLibraryVideoPlatforms`) lo actualiza nunca, así que ni siquiera
+había con qué comparar del lado central para una LWW real por timestamp.
+
+### Corrección
+
+`backend/src/controllers/backup.controller.ts::bulkUpsertBackupFiles` (rama
+que escribe `FileModel`): antes de aceptar el `platforms`/`platforms_discarded`
+que resuelve `resolvePlatforms()`, se le suman de vuelta todas las plataformas
+que `FileModel` ya tiene como `platform_states: 'confirmed'` (y se las saca de
+`platforms_discarded` si estuvieran ahí) -- un push de catálogo nunca puede
+borrar ni descartar una plataforma con link real ya confirmado, sin importar
+qué traiga. No es un LWW por timestamp (ese arreglo de fondo -- que todos los
+callers bumpeen `platforms_updated_at` de verdad -- queda pendiente, ver
+abajo); es una regla conservadora y suficiente para el caso que importa: un
+link/publish real nunca se pierde en silencio.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline, ninguno
+  nuevo.
+- **Verificado en vivo contra producción**: se corrigió `final - linux gaming.mp4`
+  a mano reusando `applyPlatformPublish` (`backend/src/scripts/refix-linux-gaming-2026-09-06.ts`,
+  mismo codepath revisado, no un `updateOne` a mano) -- `platforms` volvió a
+  incluir `instagram`, consistente con `platform_states`. Pendiente confirmar
+  que sobrevive al PRÓXIMO push real de esa PC (el fix ya está en el código,
+  pero no corre en el proceso real hasta reiniciar la central).
+- **Pendiente crítico de siempre**: no corre en el proceso real detrás de
+  `api.esse-analytics.com` hasta reiniciar ese proceso en la Mac -- en este
+  caso puntual es más urgente que de costumbre, porque sin el reinicio el
+  próximo push real de esa PC puede volver a pisar `final - linux gaming.mp4`
+  (o cualquier otro archivo con un publish central reciente) exactamente
+  igual que antes.
+- **No implementado a propósito (fix de fondo, más grande)**: un LWW real por
+  `platforms_updated_at` -- requiere que TODOS los callers que tocan
+  `platforms`/`platforms_discarded`/`platform_states` en `FileModel`
+  (`applyPlatformPublish`, `updateFilePlatforms`, el mirror de
+  `updateRemoteLibraryVideoPlatforms`) bumpeen ese campo, y que
+  `bulkUpsertBackupFiles` compare timestamps en vez de "incoming no vacío
+  siempre gana". La regla de "nunca pisar un `confirmed`" ya cubre el caso
+  más grave (perder un link real) sin necesitar ese trabajo más grande --
+  queda como mejora de fondo, no bloqueante.
+- **Alcance no verificado**: no se confirmó si `BackupFileModel` (la otra
+  colección que toca el mismo endpoint, usada por Android/iOS vía
+  `getBackupFiles`) tiene el mismo problema -- no tiene `platform_states`
+  (solo `FileModel` lo tiene), así que la misma protección no aplica
+  directo ahí. Sin investigar todavía.
+
+### Historial
+- 2026-09-06 — agente: encontrado en vivo (no buscado a propósito) al
+  verificar que el backfill de BUG-2026-09-06-02 funcionara -- causa raíz
+  confirmada citando el código exacto, corregido, dato de producción ya
+  afectado reparado a mano con el mismo codepath revisado.
+
+## BUG-2026-09-06-03 — Pegar el link de un video VIEJO en Nube lo hubiera marcado "publicado hoy" (fecha real pisada por `Date()` del cliente)
+
+- Estado: `corregido` (backend, mitigado server-side) — typecheck limpio (27/27, ninguno nuevo). Los 3 clientes conservan el mismo bug de origen sin tocar (server ya no confía en su dato, ver Corrección).
+- Reportado: 2026-09-06
+- Plataformas: Central (mitigación); Electron, iOS, probablemente Android (bug de origen sin corregir en el cliente, ver Investigación)
+- Severidad: alta -- silenciosa, distorsiona Estadísticas/Historial/Calendario con fecha falsa
+- Reportado por: usuario (pregunta directa: "¿qué pasaría si hago eso con un video viejo?", haciendo referencia al backfill propuesto en [[BUG-2026-09-06-02]])
+
+### Síntoma (potencial, atajado antes de que pasara en producción)
+
+Al preguntar por las consecuencias del backfill de BUG-2026-09-06-02, se
+encontró que el bug de origen es más amplio: pegar el link de un video
+publicado hace semanas/meses (afuera de la app, recién ahora cargado) en el
+editor de links de Nube -- en CUALQUIERA de los 3 clientes -- manda
+`publishedAt = ahora` en vez de la fecha real de publicación. Eso hubiera
+hecho que ese video apareciera "publicado hoy" en Estadísticas/Historial (con
+el orden por fecha ya arreglado en BUG-2026-08-18-01, empujaría todo lo demás
+para abajo) y corrido el "próximo" del Calendario para esa plataforma sin
+ningún motivo real -- el mismo síntoma tipo "counter reseteado" que ya se vio
+con `short - blu.mp4` (ver [[BUG-2026-09-05-03]]), pero producido a propósito
+por el backfill en vez de por una publicación real.
+
+### Investigación
+
+Los 3 clientes arman el link a mandar con el mismo patrón:
+`publishedAt: existing?.publishedAt ?? Date()` (o `new Date().toISOString()`
+en Electron) -- **si no había un link previo para esa plataforma, siempre
+manda "ahora"**, nunca `nil`/`undefined`:
+- Electron: `EditRemoteLinksModal.handleSave`
+  (`frontend/src/components/RemoteLibraryView.tsx:81`).
+- iOS: `RemoteVideoDetailAdapter.writeLink`
+  (`essenalytics-ios/.../RemoteLibrary/RemoteVideoDetailAdapter.swift:44-59`).
+- Android: no verificado en este incidente (mismo patrón esperable, ver
+  `PlatformUpdateOutbox.kt`/equivalente -- pendiente de confirmar).
+
+`applyPlatformPublish` (`backend/src/controllers/backup.controller.ts:1090-1108`)
+YA tiene exactamente la protección para esto -- un best-effort que resuelve la
+fecha real desde la API de la plataforma (YouTube/Instagram/TikTok) vía
+`getYoutube/Instagram/TiktokPublishedAt` -- pero **solo corre si
+`publishedAt` llega `undefined`**. Un "ahora" generado por error en el
+cliente pasa la prueba `if (!publishedAtDate)` como válido y desactiva la
+protección -- exactamente el mismo patrón de bug ya documentado y corregido
+en `recordUploadEvent` para OTRO caller (BUG-2026-08-15-06, comentario "OJO:
+NO defaultear acá a `new Date()`"): ese fix nunca se replicó a este segundo
+camino (el editor de links de Nube), que lo tiene igual en los 2 clientes
+revisados.
+
+### Corrección
+
+Mitigado en un solo lugar (server), en vez de en cada cliente:
+`backend/src/controllers/remote-library.controller.ts::updateRemoteLibraryVideoPlatforms`
+-- el `publishedAt` que el caller manda solo se usa si YA había un link previo
+para esa plataforma (`existingLink`, un timestamp real guardado de antes); si
+es la primera vez que esta plataforma tiene un link real, se ignora lo que
+haya mandado el cliente y se pasa `undefined` a `applyPlatformPublish` a
+propósito, forzando su resolución real vía la API de la plataforma. No se
+tocó ningún cliente -- el bug de origen (mandar `Date()`/`new Date().toISOString()`
+quemado) sigue ahí en Electron/iOS, pero ya no tiene efecto porque el server
+no confía en ese dato para el caso que importa.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline, ninguno
+  nuevo.
+- Pendiente crítico de siempre: no corre en el proceso real hasta reiniciar
+  la central.
+- **Pendiente, no urgente**: limpiar el bug de origen en los clientes
+  (Electron `RemoteLibraryView.tsx`, iOS `RemoteVideoDetailAdapter.swift`,
+  confirmar Android) para no depender solo de la mitigación server-side --
+  mismo criterio que ya se aplicó correctamente en `LocalVideoDetailAdapter.swift`
+  (iOS, la contraparte de Videos local) y en `recordUploadEvent`, que sí
+  distinguen "hay link previo" de "es nuevo" y solo en el segundo caso mandan
+  `nil`/omiten el campo.
+- **Backfill de BUG-2026-09-06-02**: con esta mitigación ya en pie, el script
+  de reconciliación pendiente ahí debe llamar `applyPlatformPublish` con
+  `publishedAt: undefined` siempre (nunca reusar el `publishedAt` ya guardado
+  en `platformLinks`, que para los casos afectados por este mismo bug puede
+  ser "el momento en que se pegó el link", no la fecha real de publicación) --
+  deja que el best-effort de la API de la plataforma resuelva la fecha real
+  para cada video del backfill.
+
+### Historial
+- 2026-09-06 — agente: el usuario preguntó qué pasaría si el backfill
+  propuesto en BUG-2026-09-06-02 se aplicara a un video viejo; investigado,
+  confirmado el riesgo real (fecha falsa por default de cliente), mitigado
+  server-side sin esperar a tocar los 3 clientes.
+
+## BUG-2026-09-06-02 — Pegar un link real en Nube para una plataforma ya marcada "publicada" (badge) nunca propagaba a FileModel/PlatformVideoModel/Calendario/Estadísticas
+
+- Estado: `corregido` (backend) — typecheck limpio contra el baseline (27/27, ninguno nuevo). **Backfill de los videos ya afectados en producción sin ejecutar todavía** (ver Pendiente).
+- Reportado: 2026-09-06
+- Plataformas: Central (afecta a los 3 clientes: Videos/Calendario/Estadísticas de Electron, iOS, Android)
+- Severidad: alta — silenciosa, sin ningún error visible para el usuario
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El usuario: subió un video manualmente (fuera de la app) a una plataforma,
+copió el link real y lo pegó en el detalle del video en iOS (Nube). Resultado:
+el link no queda registrado del lado de Sincronizar/Estadísticas, Electron no
+lo ve, Estadísticas no lo acomoda y el Calendario no avanza el "próximo" de
+esa plataforma. Ejemplo concreto reportado: `final - linux gaming.mp4` sigue
+ocupando un lugar en la pestaña Nube (3/5) pese a que, según el usuario, "hace
+rato tenía que haberse publicado" -- ver la investigación de
+[[BUG-2026-09-06-01]] arriba para el caso hermano (video sin FileModel).
+
+### Investigación
+
+Verificado en vivo contra Mongo Atlas de producción (read-only) con
+`final - linux gaming.mp4` (`content_id 8837744b...`):
+
+- `RemoteLibraryVideoModel` (Nube) tiene los 3 badges en `platforms` y un
+  link REAL de Instagram (`platformLinks`, publicado 2026-09-05T18:44:16,
+  `platformStates.instagram = "confirmed"`).
+- `FileModel` (el catálogo real que usan Calendario/Cross-match/Videos) para
+  el MISMO `content_id` solo tiene `platforms: ["tiktok","youtube"]` --
+  **Instagram nunca llegó**, y no hay ningún `PlatformVideoModel` para ese
+  `platformId` de Instagram en toda la cuenta.
+- `platform_config.instagram.nextVideoId`/`nextRemoteLibraryVideoId`
+  **siguen apuntando a este mismo video** -- nunca avanzaron, porque nada
+  disparó `applyPlatformPublish` (la única función que llama a
+  `syncCalendarAfterPublish`, la que mueve el "próximo" hacia adelante).
+  Consecuencia directa: `remote-library-retention.service.ts::protectedFor()`
+  sigue considerando este video "el próximo a publicar" de Instagram, así
+  que el barrido de retención NUNCA lo libera de Nube -- de ahí que "siga en
+  la Nube" pese a estar (según su propio badge) resuelto en las 3.
+
+**Causa raíz exacta**: `updateRemoteLibraryVideoPlatforms`
+(`remote-library.controller.ts`, el endpoint detrás de "pegar link" en Nube
+tanto en Electron como en iOS/`RemoteVideoDetailAdapter.writeLink`) decidía
+si un link era "novedad" (y por lo tanto si llamaba a `applyPlatformPublish`)
+comparando contra `before.platforms` (el badge SI/NO) -- `if
+((before.platforms ?? []).includes(link.platform)) continue;`. Secuencia real
+que dispara el bug: (1) el usuario marca la plataforma como "publicada" a
+mano (badge_only, toggle simple, SIN link -- típico de "ya lo subí afuera,
+después pego el link"), eso entra a `platforms`; (2) más tarde pega el link
+real para esa MISMA plataforma -- `link.platform` YA está en
+`before.platforms` desde el paso 1, así que el `continue` se dispara y
+`applyPlatformPublish` NUNCA se llama, aunque esta vez sí venga un link real.
+El link queda guardado en `RemoteLibraryVideoModel.platformLinks` (por eso
+"en Nube" se ve bien) pero invisible para todo lo demás.
+
+### Corrección
+
+`backend/src/controllers/remote-library.controller.ts::updateRemoteLibraryVideoPlatforms`:
+la condición de "ya estaba, no es novedad" ahora compara contra el link REAL
+anterior de esa plataforma (mismo `platformId` en `before.platformLinks`), no
+contra el badge. Un badge_only que pasa a tener link real siempre dispara
+`applyPlatformPublish`, sin importar que el badge ya estuviera en `true`.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline, ninguno
+  nuevo.
+- **Pendiente crítico de siempre**: no corre en el proceso real detrás de
+  `api.esse-analytics.com` hasta reiniciar ese proceso en la Mac.
+- **Backfill pendiente, sin ejecutar, a la espera de confirmación del
+  usuario**: el fix es hacia adelante -- no repara solo el caso ya roto de
+  `final - linux gaming.mp4` (ni otros que puedan existir con el mismo
+  patrón). Re-pegar el mismo link ahí no alcanza (mismo `platformId` de
+  antes -- el nuevo chequeo también lo trataría como "no es novedad", a
+  propósito, para no re-disparar en cada edición sin cambios reales). Para
+  reparar lo ya afectado hace falta un script de reconciliación puntual:
+  recorrer `remote_library_videos` buscando `platformLinks` sin
+  `PlatformVideoModel` correspondiente (mismo `platform`+`platformId`) y
+  llamar `applyPlatformPublish` para cada uno -- mismo patrón que ya usa
+  `getBackupPlatformVideos` para reconciliar `upload_history` huérfano. No
+  se corrió todavía porque escribe en Mongo de producción (crea
+  `PlatformVideoModel`, actualiza `FileModel`/`platform_config`) -- se
+  ofrece como paso siguiente, no asumido.
+
+### Historial
+- 2026-09-06 — agente: investigado en vivo contra Mongo de producción con
+  el caso concreto reportado por el usuario (`final - linux gaming.mp4`),
+  causa raíz confirmada citando los 3 documentos involucrados, corregido en
+  `remote-library.controller.ts`, typecheck limpio contra el baseline.
+  Backfill de datos ya afectados en producción propuesto, sin ejecutar.
+
+## BUG-2026-09-06-01 — Nube: un video subido/tocado ahí sin FileModel previo quedaba invisible para Calendario/Cross-match/Videos ("no corresponde a la línea")
+
+- Estado: `corregido` (backend) — typecheck limpio contra el baseline (27/27, ninguno nuevo en los archivos tocados), sin probar en vivo contra producción todavía (requiere reiniciar el proceso de la central, ver nota de siempre sobre deploy)
+- Reportado: 2026-09-06
+- Plataformas: Central (afecta a los 3 clientes que leen Calendario/Cross-match/Videos)
+- Severidad: media — no pérdida de datos del lado de la propagación, pero SÍ había riesgo latente de pérdida real de bytes (ver Mecanismo 2)
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El usuario reportó ver `short - blu.mp4` en la pestaña **Nube** de Electron
+pese a haberlo "descartado hace rato", y que el video mostrado ahí "no
+corresponde a la línea" (no es el que Calendario espera como próximo).
+
+### Investigación
+
+Verificado en vivo contra Mongo Atlas de producción (read-only, mismo
+criterio que otros incidentes) con la cuenta del owner:
+
+- Hay DOS videos reales distintos, coincidencia de nombre, no el mismo
+  archivo: el de `FileModel` (`content_id 365efefd...`, descartado en
+  Instagram/YouTube hace rato, publicado en TikTok recién el 2026-09-05) vs.
+  el de `RemoteLibraryVideoModel`/Nube (`content_id 56f15b5f...`, subido
+  DIRECTO a Nube el 2026-09-05 17:25, sin ningún `FileModel` asociado --
+  `platforms: ["instagram","youtube"]`, nunca descartado en nada).
+- Causa raíz real: **`handleRemoteLibraryTus`** (el callback de subida TUS,
+  `remote-library.controller.ts`) crea el documento de Nube pero NUNCA
+  resuelve ni crea un `FileModel` -- un video subido directo desde el
+  celular sin catálogo previo en ninguna PC queda para siempre solo en Nube.
+- Encima, **`updateRemoteLibraryVideoPlatforms`** (el toggle de
+  publicado/descartado por plataforma que se hace DESDE la tarjeta de Nube)
+  solo propagaba DESCARTES hacia `FileModel`, y encima solo `if (!file)
+  return` -- si no había `FileModel` (como en este caso), el toggle se
+  quedaba encerrado en `RemoteLibraryVideoModel` para siempre. Ni el
+  publicar (badge sin link) ni el descartar llegaban nunca a
+  Calendario/Cross-match/Videos para un video en esta situación -- de ahí
+  "no corresponde a la línea": ese video literalmente nunca entró a la
+  línea de publicación real, aunque el usuario lo estuviera gestionando
+  desde Nube creyendo que sí.
+- **Mecanismo 2, hallazgo aparte durante la misma investigación**: el TUS
+  handler marcaba `safeToEvict: true` con solo que el upload trajera
+  `contentId` (asumiendo "hay una copia local en algún lado"), sin verificar
+  que existiera de verdad un `FileModel` con ese `content_id`. Para una
+  subida directa desde el celular (sin PC de por medio) esos bytes son la
+  ÚNICA copia real -- con el flag mal puesto, `remote-library-retention.service.ts`
+  podía borrarlos apenas dejaran de ser "el próximo a publicar" de alguna
+  plataforma. Pérdida de datos real y silenciosa, no confirmada en
+  producción todavía (no se encontró evidencia de que ya haya pasado), pero
+  el código lo permitía.
+
+### Corrección
+
+`backend/src/controllers/backup.controller.ts`:
+- `resolveOrCreateFile` pasa a exportada (antes privada) -- ya existía
+  exactamente para este propósito (usada por `updateFilePlatforms`), solo
+  hacía falta reusarla desde el otro controller.
+
+`backend/src/controllers/remote-library.controller.ts`:
+- `handleRemoteLibraryTus`: antes de marcar `safeToEvict`, chequea si YA
+  existe un `FileModel` con ese `content_id`. Si existe, `safeToEvict` sigue
+  en `true` (comportamiento de siempre). Si NO existe, `safeToEvict: false`
+  (protege la única copia real) Y se crea un `FileModel` mínimo vía
+  `resolveOrCreateFile` -- best-effort, no bloquea la subida si falla.
+- `updateRemoteLibraryVideoPlatforms`: el mirror hacia `FileModel` ahora (a)
+  resuelve-o-crea el archivo en vez de exigir que ya exista, y (b) propaga
+  tanto publicaciones nuevas (badge_only) como descartes nuevos, no solo
+  descartes. Mismo criterio conservador de siempre: nunca pisa una
+  plataforma que `FileModel` ya tiene como badge o descarte real.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline exacto que
+  otros incidentes de esta sesión, ninguno nuevo y ninguno en los 2 archivos
+  tocados.
+- **Pendiente crítico de siempre**: este fix no corre en el proceso real
+  detrás de `api.esse-analytics.com` hasta reiniciar ese proceso en la Mac.
+- Pendiente: confirmar en vivo que un video subido directo a Nube desde el
+  celular aparece después como candidato real en Calendario (getCalendarConfig)
+  si queda alguna plataforma sin decidir.
+- **No implementado a propósito**: no se tocaron los 2 documentos duplicados
+  ya existentes de `short - blu.mp4` en `remote_library_videos` (los viejos,
+  de la migración de catálogo, `storedFileName: null`) ni nada retroactivo
+  sobre datos ya en producción -- el fix es hacia adelante. Si se quiere
+  limpiar el caso puntual reportado, es una acción aparte (a definir con el
+  usuario, no asumida acá).
+
+### Historial
+- 2026-09-06 — agente: investigado en vivo contra Mongo de producción,
+  causa raíz confirmada (2 mecanismos), corregido en los 2 controllers,
+  typecheck limpio contra el baseline.
+
+## BUG-2026-09-05-03 — Calendario iOS: "Hoy" queda vacío tras publicar; posible off-by-one por fecha UTC vs. local
+
+- Estado: `en investigación` — un mecanismo (reseteo de ciclo tras publicar) confirmado y esperado; un segundo mecanismo (UTC vs. local) confirmado por código pero sin confirmar si es la causa real de este reporte puntual
+- Reportado: 2026-09-05
+- Plataformas: iOS (síntoma), Central (causa del segundo mecanismo, comparte código con Android/Electron)
+- Severidad: baja-media
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Tras publicar un video desde iOS, el usuario abre Calendario y no ve nada
+para "Hoy" salvo el video recién publicado — esperaba ver algo más (otra(s)
+plataforma(s) pendiente(s)) y sospecha que "se reinició el contador".
+
+### Investigación
+
+**Mecanismo 1 (esperado, no bug):** `syncCalendarAfterPublish`
+(`backend/src/controllers/backup.controller.ts:847-900`) actualiza el
+`platform_config` de la plataforma publicada — `lastPublishedDate = hoy`,
+recalcula `nextVideoId` — scopeado estrictamente por
+`{ userId, platform }` (línea 879-880), sin tocar las otras 2 plataformas.
+En `CalendarView.swift`, `configs(for: .today)` (línea 44-52) exige
+`nextDate <= hoy` — apenas se publica, `nextDate` de ESA plataforma salta al
+próximo ciclo (fuera de "Hoy"), y lo único que queda visible ahí es la fila
+verde "Publicado" (`publishedToday`, que lee `history`, no `configs`). Esto
+es el comportamiento correcto SI esa era la única plataforma pendiente hoy —
+sin confirmar todavía si el usuario tenía otras plataformas que también
+deberían haber seguido apareciendo y desaparecieron (eso sí sería un bug
+real, ya que la query está scopeada por plataforma y no debería tocarlas).
+
+**Mecanismo 2 (bug real confirmado por código, relación con el síntoma sin
+confirmar):** `lastPublishedDate` se guarda como
+`publishedAt.toISOString().slice(0, 10)` (línea 888 del mismo archivo,
+mismo patrón en `computeLastPublishedDynamic:1048`) — es la fecha en **UTC**,
+no la fecha local del usuario. Para un usuario en una zona horaria detrás de
+UTC (ej. México, UTC-6) publicando de noche, el "día" guardado puede ser el
+día siguiente al real, corriendo un día hacia adelante `nextDate` (calculado
+después en el cliente con calendario LOCAL, `CalendarDateSupport` en
+`CalendarView.swift:260-322`, `timeZone = .current`). Esto podría hacer que
+un ciclo que localmente vence hoy aparezca como si venciera mañana. No
+confirmado si aplica al caso puntual reportado (haría falta saber la hora
+exacta de la publicación y la zona horaria del usuario).
+
+### Corrección
+
+Sin implementar — anotado a pedido del usuario (mismo criterio que
+BUG-2026-09-05-01/02). Si se confirma el Mecanismo 2 como causa real,
+la corrección sería computar `lastPublishedDate` con la fecha LOCAL del
+evento (necesitaría saber la zona horaria del dispositivo que publica, no
+solo el timestamp UTC) en vez de `toISOString().slice(0,10)`.
+
+### Verificación y pendiente
+
+Pendiente: confirmar con el usuario (a) si otras plataformas además de la
+publicada también desaparecieron de "Hoy" (Mecanismo 1 vs. bug real), y (b)
+zona horaria + hora aproximada de la publicación, para evaluar si el
+Mecanismo 2 aplica.
+
+### Historial
+- 2026-09-05 — agente: reportado por el usuario ("no sale nada para hoy en
+  Calendario iOS, parece bugeado"); 2 mecanismos identificados por lectura de
+  código, ninguno implementado, a la espera de confirmación del usuario.
+
+## BUG-2026-09-05-02 — "Videos" (PC): archivos viejos descartados en las 3 plataformas no aparecen en la vista por defecto
+
+- Estado: `en investigación` — causa confirmada para el caso general (filtro por diseño), hipótesis sin confirmar para por qué el usuario no los encuentra ni con el filtro "Completos"
+- Reportado: 2026-09-05
+- Plataformas: Web/Electron (PC), posible origen en iOS/central (ver BUG-2026-09-05-01)
+- Severidad: media
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+En la vista "Videos" del escritorio, algunos videos viejos que el usuario
+descartó (en las 3 plataformas) no aparecen marcados como descartados.
+
+### Resultado esperado / resultado observado
+
+Esperado: poder encontrar esos videos y ver su estado de descarte reflejado.
+Observado: no aparecen en la cola/lista tal como el usuario la mira.
+
+### Investigación
+
+Dos causas confirmadas por lectura de código, no necesariamente excluyentes:
+
+1. **Filtro por diseño de la vista principal.** `fileRepo.findAll` en
+   `local-backend/src/db/file.repo.ts:137-139` — sin que el usuario elija un
+   estado a mano, `VideosView.tsx:493` manda `content_status: "no_completo"`,
+   que en SQL es `json_array_length(platforms) + json_array_length(platforms_discarded) < 3`.
+   Un archivo descartado en las 3 plataformas (`platforms_discarded.length === 3`)
+   queda **excluido de la vista por defecto** a propósito — mismo criterio que
+   ya documenta el comentario de `getBackupFiles` en el backend
+   (`backend/src/controllers/backup.controller.ts:38-39`). Existe un chip
+   "Completos" (`VideosView.tsx:1045-1046`, `content_status: "completo"`) que
+   sí debería traerlos — sin confirmar todavía si el usuario lo probó y
+   tampoco aparecieron ahí.
+2. **Posible video sin fila local.** `pullFromCloud`
+   (`local-backend/src/controllers/backup-sync.controller.ts:260-263`) nunca
+   CREA una fila en la SQLite local para un archivo que solo existe en la nube
+   — si no encuentra un `localFile` que matchee (por `content_id` o
+   `file_name`), lo cuenta como `orphans++` y sigue, sin insertar nada. Un
+   video grabado/importado y descartado 100% desde el celular, cuyo archivo
+   físico nunca estuvo (o ya no está) en la carpeta de la PC, **no puede
+   aparecer en "Videos" bajo ningún filtro**, porque esa vista lista filas de
+   `files` en SQLite, no el catálogo de la nube. Coincide con "datan de fechas
+   muy viejas" (candidatos más probables a haber sido borrados del disco de la
+   PC con el tiempo) pero no está confirmado que sea el caso real del usuario.
+
+### Corrección
+
+Sin implementar. Pendiente confirmar con el usuario, por cada video puntual
+que reporte: (a) si aparece al tocar el chip "Completos" en Videos, y (b) si
+el archivo físico todavía existe en la carpeta de video_folder de esa PC —
+eso separa la causa 1 (filtro/UX) de la causa 2 (nunca hay fila local que
+mostrar, requeriría que el pull empiece a crear filas "solo lectura" para
+archivos cloud-only, cambio de alcance mayor).
+
+### Verificación y pendiente
+
+Pendiente de investigar con casos concretos del usuario.
+
+### Historial
+- 2026-09-05 — agente: reportado por el usuario junto con BUG-2026-09-05-01;
+  dos causas candidatas identificadas por lectura de código, sin confirmar
+  cuál aplica ni implementar nada, a pedido del usuario (solo anotar).
+
+## BUG-2026-09-05-01 — Descarte y precarga a Nube desde el celular no se reflejan "al momento" en la PC
+
+- Estado: `en investigación` — causa raíz confirmada por lectura de código (arquitectura conocida, no un bug puntual nuevo); ya había un plan de fix sin implementar para el mismo gap
+- Reportado: 2026-09-05
+- Plataformas: iOS (origen del evento), Web/Electron (PC, donde no se ve)
+- Severidad: media
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+1. Descartar una plataforma de un video desde iOS → no se ve reflejado en la
+   PC al revisarla poco después.
+2. Publicar/subir un video desde el celular → la precarga a Biblioteca remota
+   (Nube) no se dispara "al momento" en la PC.
+
+### Resultado esperado / resultado observado
+
+Esperado: el cambio hecho en el celular se refleja en la PC en tiempo
+razonablemente corto. Observado: puede tardar varios minutos o no aparecer
+hasta que algo puntual dispare una sincronización en la PC.
+
+### Investigación
+
+Ambos síntomas comparten la misma causa raíz: no existe ningún canal de
+notificación push central→Electron. La PC solo se entera de cambios hechos
+en otro dispositivo cuando ella misma corre `runSyncTick()`
+(`frontend/src/services/syncOrchestrator.ts:16-24`) — push + pull + 
+`ensurePreload()` como una sola unidad, con un cooldown COMPARTIDO de 5
+minutos (`MIN_GAP_MS`). Ese tick se dispara:
+- al montar la app (forzado, `useSyncOrchestrator.ts:26`),
+- al recuperar foco/visibilidad de la ventana (sin forzar, sujeto al cooldown),
+- cada 20 min de fallback (`FALLBACK_INTERVAL_MS`),
+- al entrar a "Videos" (`VideosView.tsx:526`, sin forzar).
+
+Si el usuario vuelve a mirar la PC dentro de los 5 minutos del último tick
+(común si la app ya estaba abierta y con foco reciente), ni el pull (síntoma
+1) ni `ensurePreload()` (síntoma 2) vuelven a correr, así que el cambio hecho
+en el celular quedó "de verdad" en la central pero la PC todavía no fue a
+buscarlo.
+
+Esto NO es un hallazgo nuevo: está anotado como pendiente en
+`docs/instant-matches-stats-plan-2026-08-31.md`, Fase 7 — Paso 3
+("invalidación inmediata dentro del mismo dispositivo") y Paso 4
+("notificación cross-device", propone SSE) — con una "Entrega 1" ya diseñada
+(bus de eventos local, sin necesitar SSE todavía) pero sin implementar. Ese
+plan nace de una queja anterior sobre demoras en Estadísticas/Matches, pero
+el mecanismo de fondo (cooldown compartido de `runSyncTick`, sin push
+cross-device) es el mismo que explica este reporte.
+
+### Corrección
+
+Sin implementar — a pedido del usuario, se deja solo anotado por ahora.
+Alcances posibles para retomar (de menor a mayor esfuerzo), a decidir con el
+usuario cuando se priorice:
+1. Fix acotado: que el `pull` (no el push/ensurePreload) corra sin cooldown
+   en focus/mount/Videos — trae cambios ajenos más rápido sin aumentar la
+   carga de escritura hacia la central.
+2. "Entrega 1" del plan de `instant-matches-stats-plan-2026-08-31.md`
+   (invalidación local inmediata tras publicar en el mismo dispositivo) — no
+   cubre el caso celular→PC de este reporte, solo mismo-dispositivo.
+3. Paso 4 del mismo plan (canal SSE central→Electron) — el único que de
+   verdad resuelve la propagación cross-device sin esperar ningún tick.
+
+### Verificación y pendiente
+
+Sin implementar, nada que verificar todavía.
+
+### Historial
+- 2026-09-05 — agente: reportado por el usuario junto con BUG-2026-09-05-02;
+  causa raíz identificada por lectura de código (cooldown compartido de
+  `runSyncTick`, sin canal push cross-device), coincide con gap ya documentado
+  en `docs/instant-matches-stats-plan-2026-08-31.md`. Anotado a pedido del
+  usuario, sin implementar.
+
 ## BUG-2026-08-31-01 — iOS: videos de Biblioteca LAN no desaparecen cuando dejan de estar disponibles
 
 - Estado: `abierto` (solo anotado, sin investigar todavía)

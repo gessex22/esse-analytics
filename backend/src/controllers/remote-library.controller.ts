@@ -6,7 +6,7 @@ import { Readable } from 'stream';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { FileModel } from '../models/file.model';
-import { applyPlatformPublish } from './backup.controller';
+import { applyPlatformPublish, resolveOrCreateFile } from './backup.controller';
 import {
   resolveRemoteLibraryFilePath,
   deleteRemoteLibraryFile,
@@ -88,6 +88,21 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
         userId: info.userId,
         contentId: info.contentId,
       }).select('storedFileName').lean();
+
+      // BUG-2026-09-06-01: `safeToEvict: true` se mandaba SIEMPRE que hubiera
+      // contentId, asumiendo que eso implicaba "hay una copia local real en
+      // algún lado" -- falso para una subida directa desde el celular (Nube
+      // como origen en "Subir", sin que el video haya pasado nunca por la
+      // PC): el contentId lo genera el cliente igual, pero acá esos bytes SON
+      // la única copia real. Con el flag en true de más, el barrido de
+      // retención (remote-library-retention.service.ts) podía borrarlos en
+      // cuanto dejaran de ser "el próximo a publicar" -- pérdida de datos
+      // real y silenciosa. Ahora solo se marca `safeToEvict` si YA existe un
+      // FileModel con este content_id (la garantía real de que hay otra
+      // copia, ver isVideoEvictable).
+      const existingFile = await FileModel.findOne({ userId: info.userId, content_id: info.contentId })
+        .select('_id').lean();
+
       const doc = await RemoteLibraryVideoModel.findOneAndUpdate(
         { userId: info.userId, contentId: info.contentId },
         {
@@ -98,7 +113,7 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
             durationSeconds: info.durationSeconds,
             resolution: info.resolution,
             formato: info.formato,
-            safeToEvict: true,
+            safeToEvict: !!existingFile,
           },
           $setOnInsert: {
             userId: info.userId,
@@ -111,6 +126,17 @@ const remoteLibraryTusServer = buildRemoteLibraryTusServer(
       );
       if (previous?.storedFileName && previous.storedFileName !== info.storedFileName) {
         deleteRemoteLibraryFile(info.userId, previous.storedFileName);
+      }
+
+      // BUG-2026-09-06-01 (parte 2): sin FileModel, este video queda
+      // invisible para Calendario/Cross-match/Videos -- toggles de
+      // publicado/descartado hechos desde acá (updateRemoteLibraryVideoPlatforms)
+      // nunca "entran a la línea" del resto de la app. Registro mínimo, mismo
+      // criterio que resolveOrCreateFile usa para publicaciones/descartes
+      // directos desde el celular -- best-effort, no bloquea la subida si falla.
+      if (!existingFile) {
+        resolveOrCreateFile(info.userId, { fileName: info.fileName, contentId: info.contentId })
+          .catch((err: any) => console.warn('[remote-library-tus] no se pudo crear el FileModel para', info.fileName, err.message));
       }
       return doc;
     }
@@ -527,53 +553,106 @@ export const updateRemoteLibraryVideoPlatforms = async (req: AuthRequest, res: R
     // marcada acá, también puede ser la fuente de verdad para el archivo
     // local del mismo video (por fileName/contentId). Sin esto, el badge y el
     // link quedaban invisibles en Videos/Sincronizar/Calendario.
+    //
+    // BUG-2026-09-06-02 (ver docs/bug-reports.md): el "ya estaba, no es
+    // novedad" comparaba contra `before.platforms` (el badge SI/NO), no
+    // contra si YA había un link real -- un video marcado "publicado" a mano
+    // (badge_only, sin link, ej. un toggle previo o "subí manualmente y voy a
+    // pegar el link después") entraba a `before.platforms` igual que uno con
+    // link real. Cuando el usuario después pegaba el link real de verdad para
+    // esa misma plataforma, `link.platform` YA estaba en `before.platforms` →
+    // se saltaba `applyPlatformPublish` para SIEMPRE -- el link nunca llegaba
+    // a FileModel/PlatformVideoModel/Calendario/Estadísticas, aunque en Nube
+    // (este documento) sí quedara guardado. Ahora compara contra el link
+    // REAL anterior de esa plataforma (por platformId, no por el badge) --
+    // badge_only -> link real siempre dispara la propagación.
     if (Array.isArray(platformLinks)) {
+      const beforeLinks = before.platformLinks ?? [];
       for (const link of platformLinks) {
         if (!link?.platform || !link?.platformId) continue;
-        if ((before.platforms ?? []).includes(link.platform)) continue; // ya estaba, no es novedad
+        const existingLink = beforeLinks.find((l: any) => l.platform === link.platform);
+        if (existingLink?.platformId === link.platformId) continue; // mismo link ya registrado, no es novedad
+
+        // BUG-2026-09-06-03 (ver docs/bug-reports.md): los 3 clientes (Electron
+        // EditRemoteLinksModal, iOS RemoteVideoDetailAdapter.writeLink, y
+        // probablemente Android) arman `publishedAt` como `existing?.publishedAt
+        // ?? ahora()` -- para un link NUEVO (sin `existing`), eso siempre manda
+        // "ahora" como si el video se acabara de publicar, aunque en realidad
+        // se haya publicado hace semanas afuera de la app y recién ahora se
+        // pegue el link (justo el caso que preguntó el usuario: "¿qué pasa si
+        // hago esto con un video viejo?"). `applyPlatformPublish` YA tiene un
+        // best-effort para resolver la fecha REAL desde la API de la
+        // plataforma (getYoutube/Instagram/TiktokPublishedAt, ver más abajo en
+        // ese archivo) -- pero SOLO corre si `publishedAt` llega undefined. Un
+        // "ahora" mandado por error lo pisa y desactiva esa protección.
+        // Mitigado ACÁ (server, un solo lugar en vez de 3 clientes): solo se
+        // confía en el `publishedAt` del caller cuando YA había un link previo
+        // para esta plataforma (ese sí es un timestamp real, no un `Date()`
+        // recién generado) -- para un link genuinamente nuevo, siempre se
+        // manda `undefined` y que `applyPlatformPublish` resuelva la fecha
+        // real. Evita que "publicar hoy el link de un video viejo" lo haga
+        // aparecer con fecha de hoy en Estadísticas/Historial y le corra el
+        // "próximo" del Calendario para adelante sin motivo real.
         applyPlatformPublish(userId, {
           platform: link.platform, platformId: link.platformId, platformUrl: link.platformUrl,
           fileName: before.fileName, contentId: before.contentId,
-          publishedAt: link.publishedAt ? new Date(link.publishedAt) : undefined,
+          publishedAt: existingLink && link.publishedAt ? new Date(link.publishedAt) : undefined,
         }).catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] applyPlatformPublish falló:', err.message));
       }
     }
 
     // Bug real confirmado 2026-08-15 (ver docs/bug-reports.md,
     // BUG-2026-08-15-03): applyPlatformPublish arriba y en backup.controller.ts
-    // ya propaga ALTAS (files -> Nube), pero nada propagaba DESCARTES en
-    // ninguna dirección -- un descarte hecho acá (celular) quedaba invisible
-    // para siempre en FileModel, y por lo tanto para el pull de escritorio
-    // (getBackupFiles, que lee FileModel como fuente de verdad). Mismo
-    // criterio conservador que ya usa applyPlatformPublish para las altas: no
-    // pisa una plataforma que FileModel ya tiene como badge/confirmada real
-    // (filter platforms: $nin) -- un descarte hecho en Nube no puede tirar
-    // abajo un link real que ya existe del lado central.
+    // ya propaga ALTAS con link real (files -> Nube), pero nada propagaba
+    // DESCARTES ni altas de solo-badge (toggle sin link) en la dirección
+    // Nube -> files.
+    //
+    // BUG-2026-09-06-01 (ver docs/bug-reports.md): ese mirror además exigía
+    // que el FileModel YA existiera (`if (!file) return`) -- un video subido
+    // directo a Nube desde el celular (sin catálogo previo en ninguna PC)
+    // nunca tiene FileModel, así que CUALQUIER toggle hecho acá (publicar o
+    // descartar) quedaba encerrado en RemoteLibraryVideoModel para siempre,
+    // invisible para Calendario/Cross-match/Videos -- "no correspondía a la
+    // línea" del resto de la app. Ahora se resuelve-o-crea el FileModel
+    // (mismo helper que ya usa updateFilePlatforms para el caso simétrico:
+    // celular publicando/descartando sin catálogo previo) y se propagan
+    // TANTO badges nuevos como descartes nuevos, no solo descartes. Mismo
+    // criterio conservador de siempre: nunca pisa una plataforma que
+    // FileModel ya tiene como badge/confirmada real (filter por lo que
+    // todavía no está en `platforms` NI en `platforms_discarded` ahí).
     const beforeDiscarded: string[] = before.platformsDiscarded ?? [];
+    const beforePlatforms: string[] = before.platforms ?? [];
     const newlyDiscarded: string[] = Array.isArray(platformsDiscarded)
       ? platformsDiscarded.filter((p: string) => !beforeDiscarded.includes(p))
       : [];
-    if (newlyDiscarded.length > 0 && (before.fileName || before.contentId)) {
-      const fileQuery = before.contentId
-        ? { userId, content_id: before.contentId }
-        : { userId, file_name: before.fileName };
+    const newlyPublished: string[] = Array.isArray(platforms)
+      ? platforms.filter((p: string) => !beforePlatforms.includes(p))
+      : [];
+    if ((newlyDiscarded.length > 0 || newlyPublished.length > 0) && (before.fileName || before.contentId)) {
       (async () => {
+        const file = await resolveOrCreateFile(userId, { fileName: before.fileName, contentId: before.contentId });
+        if (!file) return;
+        const filePlatforms: string[] = (file as any).platforms ?? [];
+        const fileDiscarded: string[] = (file as any).platforms_discarded ?? [];
+        const toPublish = newlyPublished.filter((p) => !filePlatforms.includes(p) && !fileDiscarded.includes(p));
+        const toDiscard = newlyDiscarded.filter((p) => !filePlatforms.includes(p) && !fileDiscarded.includes(p));
+        if (toPublish.length === 0 && toDiscard.length === 0) return;
         // Read-modify-write (en vez de $addToSet directo) para poder tocar
         // también platform_states sin arriesgar 2 entradas para la misma
         // plataforma con estados distintos -- $addToSet compara el subdocumento
         // entero, no por `platform`. Sigue siendo best-effort, corre después
         // de responder.
-        const file = await FileModel.findOne(fileQuery as any).select('platforms platform_states').lean();
-        if (!file) return;
-        const toApply = newlyDiscarded.filter((p) => !(file.platforms ?? []).includes(p as any));
-        if (toApply.length === 0) return;
-        let states = file.platform_states ?? [];
-        for (const p of toApply) states = upsertDiscarded(states, p as any);
+        let states = (file as any).platform_states ?? [];
+        for (const p of toPublish) states = upsertBadgeOnly(states, p as any);
+        for (const p of toDiscard) states = upsertDiscarded(states, p as any);
+        const addToSet: Record<string, unknown> = {};
+        if (toPublish.length) addToSet.platforms = { $each: toPublish };
+        if (toDiscard.length) addToSet.platforms_discarded = { $each: toDiscard };
         await FileModel.updateOne(
-          { _id: file._id },
-          { $addToSet: { platforms_discarded: { $each: toApply } }, $set: { platform_states: states } },
+          { _id: (file as any)._id },
+          { ...(Object.keys(addToSet).length ? { $addToSet: addToSet } : {}), $set: { platform_states: states } },
         );
-      })().catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar descarte a FileModel falló:', err.message));
+      })().catch((err: any) => console.warn('[updateRemoteLibraryVideoPlatforms] propagar estado a FileModel falló:', err.message));
     }
   } catch (err: any) {
     res.status(500).json({ error: err.message });

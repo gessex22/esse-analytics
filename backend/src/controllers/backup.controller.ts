@@ -384,7 +384,7 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
           ...(contentIds.length ? [{ content_id: { $in: contentIds } }] : []),
         ],
       },
-      { file_name: 1, content_id: 1, platforms: 1, platforms_discarded: 1, tipo_contenido: 1 },
+      { file_name: 1, content_id: 1, platforms: 1, platforms_discarded: 1, tipo_contenido: 1, platform_states: 1 },
     ).lean();
     const fileModelExistingByFileName  = new Map(fileModelExisting.map(e => [e.file_name, e]));
     const fileModelExistingByContentId = new Map(fileModelExisting.filter(e => e.content_id).map(e => [e.content_id as string, e]));
@@ -395,7 +395,31 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
       await FileModel.bulkWrite(
         incoming.map(f => {
           const ex = resolveFileModelExisting(f);
-          const { platforms, platforms_discarded, platforms_updated_at } = resolvePlatforms(f, ex as any);
+          let { platforms, platforms_discarded, platforms_updated_at } = resolvePlatforms(f, ex as any);
+
+          // BUG-2026-09-06-04 (ver docs/bug-reports.md): `resolvePlatforms`
+          // (arriba) solo protege el caso "incoming viene vacío" -- si el push
+          // de la PC trae `platforms` NO vacío (su copia local, que puede ser
+          // vieja), gana siempre, sin comparar contra nada. FileModel es la
+          // ÚNICA de las 2 colecciones que además tiene `platform_states` --
+          // un publish real (`applyPlatformPublish`, o el link pegado desde
+          // Nube, ver BUG-2026-09-06-02) puede haber confirmado una plataforma
+          // acá que la PC todavía no sabe que existe (nunca hizo pull todavía,
+          // o su próximo push salió ANTES del pull). Sin esto, ese push de la
+          // PC revierte silenciosamente un link real recién confirmado -- caso
+          // real confirmado en producción: `final - linux gaming.mp4` volvió a
+          // quedar sin Instagram en `platforms` ~30s después de repararlo,
+          // pese a que `platform_states.instagram` seguía en `confirmed`.
+          // Nunca se quita una plataforma `confirmed` de `platforms` ni se la
+          // deja entrar a `platforms_discarded` por un push que no la conoce.
+          const confirmedElsewhere: string[] = ((ex as any)?.platform_states ?? [])
+            .filter((s: any) => s.state === 'confirmed')
+            .map((s: any) => s.platform);
+          if (confirmedElsewhere.length > 0) {
+            platforms = Array.from(new Set([...platforms, ...confirmedElsewhere]));
+            platforms_discarded = platforms_discarded.filter((p: string) => !confirmedElsewhere.includes(p));
+          }
+
           const filter = ex ? { _id: (ex as any)._id } : { userId, file_name: f.file_name };
           return {
             updateOne: {
@@ -907,7 +931,10 @@ async function syncCalendarAfterPublish(
 // matching desde updateFilePlatforms (descartar, ver abajo) -- antes solo
 // "publicar" llegaba a la central; "descartar" desde iOS/Android era 100%
 // local y nunca resolvía ni tocaba este mismo archivo.
-async function resolveOrCreateFile(
+// Exportada (BUG-2026-09-06-01): remote-library.controller.ts la reusa por el
+// mismo motivo -- un video subido/tocado desde Nube sin FileModel todavía
+// quedaba invisible para Calendario/Cross-match/Videos, ver ese incidente.
+export async function resolveOrCreateFile(
   userId: string,
   data: { fileName?: string | null; contentId?: string | null; remoteLibraryVideoId?: string | null },
 ) {
