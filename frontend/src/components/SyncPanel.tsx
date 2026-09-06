@@ -348,7 +348,7 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
           <p className="text-xs text-muted-foreground mt-0.5">
             {resolvedOnly
               ? "Archivos con las 3 plataformas decididas y, las publicadas, ya con su link real"
-              : "Archivos con 2+ plataformas decididas, ya con algún link real, a los que les falta completar otro — los que menos les falta, primero"}
+              : "Archivos con las 3 plataformas decididas, ya con algún link real, a los que les falta completar otro — los que menos les falta, primero"}
             {" "}— completá el link de las que falten. No toca linked_file_id de las que ya están.
           </p>
         </div>

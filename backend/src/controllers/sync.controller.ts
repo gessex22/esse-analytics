@@ -358,14 +358,20 @@ const hasRealPublish = { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } };
 // nuevo) en vez de los ~65 reales -- mismo síntoma que motivó el rediseño de
 // 2026-09-04, por una causa distinta.
 //
-// "Pendientes" exige: (a) AL MENOS 2 decididas (antes 1 sola alcanzaba --
-// eso es justo lo que inundaba la cola con la primera red publicada, ver
-// crossmatch_ux_regression_pending_2026_09_03), (b) al menos 1 link
-// pendiente de esas decisiones (si no falta ningún link, no hay nada que
-// hacer acá), Y (c) al menos 1 link YA resuelto -- sin esto, el catálogo
-// histórico sin ningún link (nunca se pensó vincular, ver arriba) volvía a
-// colar completo. Un archivo "en progreso" (ya tiene algún link real, le
-// falta otro) es un candidato genuino; uno sin NINGÚN link real todavía es
+// "Pendientes" exige: (a) LAS 3 decididas -- no 2 (corregido 2026-09-06,
+// versión anterior de este comentario decía "al menos 2"; el pedido real
+// del usuario fue siempre "3 badges" o "2 badges + 1 descartada", ambos
+// suman 3 decididas -- 2 decididas con la tercera plataforma TODAVÍA sin
+// tocar no es candidato, sigue siendo trabajo de publicar, no de
+// vincular). Antes de esto, "1 sola decidida" alcanzaba y eso es justo lo
+// que inundaba la cola con la primera red publicada (ver
+// crossmatch_ux_regression_pending_2026_09_03) -- exigir las 3 lo
+// resuelve de raíz, no solo lo mitiga. (b) al menos 1 link pendiente de
+// esas decisiones (si no falta ningún link, no hay nada que hacer acá), Y
+// (c) al menos 1 link YA resuelto -- sin esto, el catálogo histórico sin
+// ningún link (nunca se pensó vincular, ver arriba) volvía a colar
+// completo. Un archivo "en progreso" (ya tiene algún link real, le falta
+// otro) es un candidato genuino; uno sin NINGÚN link real todavía es
 // indistinguible de catálogo viejo que nunca buscó vincularse -- no
 // aparece acá, sigue disponible por los otros caminos manuales
 // (Sincronizar → pestañas por plataforma, Editar links en Videos).
@@ -436,7 +442,7 @@ export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): 
       const decided = decidedCount(f);
       const pending = pendingLinkCount(f, linkedSet);
       if (resolvedOnly) return decided === 3 && pending === 0;
-      return decided >= 2 && pending >= 1 && linkedCount(f, pending) >= 1;
+      return decided === 3 && pending >= 1 && linkedCount(f, pending) >= 1;
     });
 
     // 2026-09-06: dentro de "Pendientes", prioriza por menos links
