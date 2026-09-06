@@ -314,26 +314,76 @@ const CROSS_MATCH_TARGET_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const
 // "incompleto" a ojos de este endpoint, aunque no le faltara nada por hacer.
 // Ahora "resuelto" = las 3 plataformas están DECIDIDAS (publicada O
 // descartada), no solo publicadas. Con eso, el filtro de 3 niveles (1/2/3)
-// se simplifica a 2: `resolvedOnly=false` ("Todos", cualquier actividad en
-// al menos 1 red) y `resolvedOnly=true` ("Resuelto", las 3 decididas). Se
-// cae la opción intermedia "2+" -- no aportaba mucho y complicaba la UI.
+// se simplifica a 2: `resolvedOnly=false` (cola de pendientes) y
+// `resolvedOnly=true` ("Resuelto", las 3 decididas). Se cae la opción
+// intermedia "2+" -- no aportaba mucho y complicaba la UI.
 // $expr+$setIsSubset en vez de enumerar combinaciones a mano (como antes)
 // porque acá el chequeo es sobre la UNIÓN de dos arrays, no solo uno --
 // enumerar pares ya no alcanza.
-function buildEligibilityFilter(resolvedOnly: boolean) {
-  if (resolvedOnly) {
-    return {
-      $expr: {
-        $setIsSubset: [CROSS_MATCH_TARGET_PLATFORMS, { $setUnion: ['$platforms', '$platforms_discarded'] }],
-      },
-    };
-  }
-  return {
-    $or: [
-      { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } },
-      { platforms_discarded: { $in: CROSS_MATCH_TARGET_PLATFORMS } },
-    ],
-  };
+//
+// Rediseño 2026-09-04 (queja real reportada 2026-09-03, ver
+// docs/instant-matches-stats-plan-2026-08-31.md y memoria de sesión
+// "crossmatch_ux_regression_pending"): ambas ramas entraban con actividad en
+// `platforms` O `platforms_discarded`, sin exigir que `platforms` tuviera
+// algo -- un archivo 100% descartado en las 3 (nunca publicado en ninguna)
+// calificaba igual (como pendiente antes, como "Resuelto" ahora), aunque
+// nunca tuvo nada vinculable que hacer en esta pantalla: no es un candidato,
+// es un archivo que nunca entró al flujo de publicación. Ahora las DOS
+// ramas exigen actividad REAL de publicación (`platforms` no vacío) --
+// un archivo 100% descartado no aparece en ningún filtro. Además, la cola
+// de pendientes excluye lo ya resuelto (antes esta vista mezclaba pendientes
+// y resueltos, empujando los pendientes viejos al fondo detrás de todo lo
+// ya cerrado).
+const hasRealPublish = { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } };
+
+// Rediseño 2026-09-06 (pedido explícito del usuario, mismo día que
+// BUG-2026-09-06-02/04): los rediseños de arriba miran solo BADGES
+// (platforms/platforms_discarded) para decidir "pendiente" vs "resuelto" --
+// pero lo que esta pantalla resuelve de verdad es el LINK real, no el
+// badge. Un badge se pone en segundos con un toggle; un link real cuesta
+// buscar el video en la plataforma y pegarlo -- por eso el usuario pide
+// usar los badges como señal de "esto ya se decidió" (rápido, adelantado) y
+// priorizar por cuánto FALTA vincular en comparación con lo ya decidido, no
+// por fecha de creación del archivo.
+//
+// `decidedCount` = badges decididos (publicado O descartado), 0-3.
+// `pendingLinkCount`/`linkedCount` = de las plataformas PUBLICADAS (badge,
+// no descarte -- un descarte nunca necesita link), cuántas siguen sin/con
+// un `PlatformVideoModel` real vinculado (`linkedFileId`). Se usa el link
+// real (`linkedSet`, resuelto contra `PlatformVideoModel` más abajo), NO
+// `platform_states` -- verificado en vivo contra producción: `platform_states`
+// no está poblado para gran parte del catálogo histórico (videos viejos
+// marcados con badge mucho antes de que ese campo existiera, BUG-2026-08-15-03),
+// así que usarlo daba 1061 "pendientes" (todo ese catálogo viejo colando de
+// nuevo) en vez de los ~65 reales -- mismo síntoma que motivó el rediseño de
+// 2026-09-04, por una causa distinta.
+//
+// "Pendientes" exige: (a) AL MENOS 2 decididas (antes 1 sola alcanzaba --
+// eso es justo lo que inundaba la cola con la primera red publicada, ver
+// crossmatch_ux_regression_pending_2026_09_03), (b) al menos 1 link
+// pendiente de esas decisiones (si no falta ningún link, no hay nada que
+// hacer acá), Y (c) al menos 1 link YA resuelto -- sin esto, el catálogo
+// histórico sin ningún link (nunca se pensó vincular, ver arriba) volvía a
+// colar completo. Un archivo "en progreso" (ya tiene algún link real, le
+// falta otro) es un candidato genuino; uno sin NINGÚN link real todavía es
+// indistinguible de catálogo viejo que nunca buscó vincularse -- no
+// aparece acá, sigue disponible por los otros caminos manuales
+// (Sincronizar → pestañas por plataforma, Editar links en Videos).
+// "Resuelto" exige las 3 decididas Y cero links pendientes -- ya no alcanza
+// con las 3 badges puestas, tienen que estar de verdad vinculadas (o
+// descartadas, que no necesita link) -- antes un archivo con las 3 badges
+// pero 0 links reales cerraba acá como "Resuelto", exactamente al revés: es
+// el candidato perfecto para esta pantalla, no algo ya cerrado.
+function decidedCount(f: { platforms?: string[]; platforms_discarded?: string[] }): number {
+  return (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
+}
+
+function pendingLinkCount(f: { _id: any; platforms?: string[] }, linkedSet: Set<string>): number {
+  return (f.platforms ?? []).filter((p) => !linkedSet.has(`${f._id}:${p}`)).length;
+}
+
+function linkedCount(f: { platforms?: string[] }, pending: number): number {
+  return (f.platforms?.length ?? 0) - pending;
 }
 
 // GET /api/sync/cross-match/candidates?limit=20&page=1&minPlatforms=1|3 — en
@@ -361,16 +411,55 @@ export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): 
     const page   = Math.max(1, parseInt(req.query.page as string) || 1);
     const resolvedOnly = (parseInt(req.query.minPlatforms as string) || 1) > 1;
 
-    const query = { userId, ...buildEligibilityFilter(resolvedOnly) };
-    const [total, files] = await Promise.all([
-      FileModel.countDocuments(query),
-      FileModel.find(query)
-        .sort({ fecha_creacion: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .select('file_name fecha_creacion duracion_segundos platforms_discarded')
-        .lean(),
-    ]);
+    // Filtro amplio en Mongo (barato, usa el mismo índice de siempre sobre
+    // `platforms`) -- el filtro exacto (decidedCount/pendingLinkCount) y el
+    // orden de "Pendientes" se calculan en JS abajo, ver el comentario
+    // arriba de decidedCount/pendingLinkCount.
+    const broad = await FileModel.find({ userId, ...hasRealPublish })
+      .select('file_name fecha_creacion duracion_segundos platforms platforms_discarded')
+      .lean();
+
+    // linkedSet: qué pares (fileId, platform) ya tienen un PlatformVideoModel
+    // real vinculado -- fuente de verdad para pendingLinkCount/linkedCount
+    // (ver comentario arriba, NO usar platform_states acá). Consulta aparte
+    // de la que arma `resolved` más abajo (esa es solo de la página actual,
+    // ésta necesita el set completo para poder filtrar/ordenar ANTES de
+    // paginar).
+    const linkedForEligibility = await PlatformVideoModel.find({
+      userId,
+      linkedFileId: { $in: broad.map((f) => f._id) },
+      platform: { $in: CROSS_MATCH_TARGET_PLATFORMS },
+    }).select('linkedFileId platform').lean();
+    const linkedSet = new Set(linkedForEligibility.map((l) => `${l.linkedFileId}:${l.platform}`));
+
+    const eligible = broad.filter((f) => {
+      const decided = decidedCount(f);
+      const pending = pendingLinkCount(f, linkedSet);
+      if (resolvedOnly) return decided === 3 && pending === 0;
+      return decided >= 2 && pending >= 1 && linkedCount(f, pending) >= 1;
+    });
+
+    // 2026-09-06: dentro de "Pendientes", prioriza por menos links
+    // pendientes primero (lo más cerca de terminar sube -- 3 badges con 1
+    // solo link faltante es el candidato ideal) y, a igualdad, por más
+    // decisiones ya tomadas; fecha_creacion como último desempate (FIFO,
+    // ver rediseño 2026-09-04 -- sigue evitando que lo último publicado
+    // tape pendientes viejos con el mismo pendingLinkCount). "Resuelto"
+    // sigue por fecha descendente (lo cerrado más reciente arriba, sin
+    // cambios).
+    eligible.sort((a, b) => {
+      if (resolvedOnly) {
+        return new Date(b.fecha_creacion as any).getTime() - new Date(a.fecha_creacion as any).getTime();
+      }
+      const pendingDiff = pendingLinkCount(a, linkedSet) - pendingLinkCount(b, linkedSet);
+      if (pendingDiff !== 0) return pendingDiff;
+      const decidedDiff = decidedCount(b) - decidedCount(a);
+      if (decidedDiff !== 0) return decidedDiff;
+      return new Date(a.fecha_creacion as any).getTime() - new Date(b.fecha_creacion as any).getTime();
+    });
+
+    const total = eligible.length;
+    const files = eligible.slice((page - 1) * limit, (page - 1) * limit + limit);
 
     const fileIds = files.map(f => f._id);
     const linked = await PlatformVideoModel.find({ userId, linkedFileId: { $in: fileIds } })
@@ -876,9 +965,9 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
     if (!fileId && !fileName) { res.status(400).json({ message: 'fileId o fileName requerido.' }); return; }
 
     const file = fileId && Types.ObjectId.isValid(fileId)
-      ? await FileModel.findOne({ _id: fileId, userId }).select('file_name fecha_creacion platforms_discarded').lean()
+      ? await FileModel.findOne({ _id: fileId, userId }).select('file_name content_id fecha_creacion platforms_discarded').lean()
       : fileName
-        ? await FileModel.findOne({ userId, file_name: fileName }).select('file_name fecha_creacion platforms_discarded').lean()
+        ? await FileModel.findOne({ userId, file_name: fileName }).select('file_name content_id fecha_creacion platforms_discarded').lean()
         : null;
     if (!file) { res.status(404).json({ message: 'No encontrado.' }); return; }
 
@@ -893,9 +982,17 @@ export const getFileStats = async (req: AuthRequest, res: Response): Promise<voi
     // no necesariamente en PlatformVideo.thumbnail (la API de la plataforma
     // puede tardar en devolverla). El dashboard móvil necesita estos campos
     // cuando el video recién publicado todavía no entró en group-stats.
-    const remoteMatches = await RemoteLibraryVideoModel.find({
-      userId, fileName: file.file_name,
-    }).select('_id thumbnailStoredFileName').lean();
+    //
+    // BUG-2026-09-06-05 (ver docs/bug-reports.md): matcheaba solo por
+    // `fileName` -- un archivo cuyo nombre real en disco difiere de la copia
+    // en Nube ni siquiera por un renombre real, sino por una diferencia
+    // trivial (ej. doble espacio, mayúsculas) nunca encontraba su miniatura,
+    // aunque fuera el MISMO video (mismo content_id). Ahora matchea por
+    // content_id primero (estable, sobrevive cualquier diferencia de nombre)
+    // y cae a fileName solo si el archivo no tiene content_id todavía.
+    const remoteMatches = await RemoteLibraryVideoModel.find(
+      (file as any).content_id ? { userId, contentId: (file as any).content_id } : { userId, fileName: file.file_name },
+    ).select('_id thumbnailStoredFileName').lean();
     const remoteMatch = remoteMatches.length === 1 ? remoteMatches[0] : null;
 
     const { platforms, stale } = buildFilePlatforms(pvs);
@@ -1163,11 +1260,31 @@ export const getCalendarConfig = async (req: AuthRequest, res: Response): Promis
       // Para la miniatura del Calendario en mobile (iOS/Android): "próximo"
       // suele ser un archivo que solo existe en el catálogo de OTRO
       // dispositivo (la PC que lo grabó), así que el cliente no siempre tiene
-      // una copia local de la que sacar el frame -- mismo cruce por fileName
-      // que ya usa getGroupStats para Estadísticas (Biblioteca remota no
-      // comparte id con FileModel). Ambigüedad de nombre repetido: se deja
-      // sin asignar antes que mostrar la miniatura equivocada.
-      const remoteMatches = await RemoteLibraryVideoModel.find({ userId, fileName: (file as any).file_name })
+      // una copia local de la que sacar el frame -- mismo cruce que ya usa
+      // getGroupStats/getFileStats para Estadísticas (Biblioteca remota no
+      // comparte id con FileModel).
+      //
+      // BUG-2026-09-06-05 (ver docs/bug-reports.md): matcheaba solo por
+      // `fileName` -- confirmado en vivo en producción con "final - sufre.mp4":
+      // el archivo real en disco es "final  - sufre.mp4" (doble espacio),
+      // mientras que la copia en Nube quedó como "final - sufre.mp4" (uno
+      // solo) -- mismo content_id, mismo video, pero el cruce por texto
+      // nunca matcheaba, así que el Calendario mostraba el "próximo" de
+      // YouTube sin miniatura. De paso explica por qué iOS tampoco mostraba
+      // la etiqueta "Próximo" en su lista de Videos: el título que manda
+      // este endpoint (`file.file_name`, con el doble espacio) tampoco
+      // coincidía con el nombre de la copia local en el celular (bajada de
+      // Nube, un solo espacio) -- mismo síntoma, misma causa. Ahora matchea
+      // por content_id primero (estable, sobrevive cualquier diferencia de
+      // nombre) y cae a fileName solo si el archivo no tiene content_id
+      // todavía. Ambigüedad de nombre repetido (fallback por fileName sin
+      // content_id): se deja sin asignar antes que mostrar la miniatura
+      // equivocada.
+      const remoteMatches = await RemoteLibraryVideoModel.find(
+        (file as any).content_id
+          ? { userId, contentId: (file as any).content_id }
+          : { userId, fileName: (file as any).file_name },
+      )
         .select('thumbnailStoredFileName')
         .limit(2)
         .lean();

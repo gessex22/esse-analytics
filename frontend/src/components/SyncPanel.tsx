@@ -257,8 +257,19 @@ function CandidateCard({ candidate, localFileId, onSlotResolved, onOpenVideo }: 
 // cuenta descartado como decidido, no solo publicado -- ver
 // buildEligibilityFilter en sync.controller.ts. La opción intermedia "2+"
 // se sacó por pedido explícito del usuario (complicaba sin aportar mucho).
+// Rediseño 2026-09-04: el chip "Todos" pasó a llamarse "Pendientes" -- desde
+// este cambio ya no mezcla resueltos (ver buildEligibilityFilter), así que
+// "Todos" quedaba engañoso.
+// Rediseño 2026-09-06: "Pendientes"/"Resuelto" pasan a mirar el LINK real
+// (PlatformVideoModel.linkedFileId), no solo el badge -- ver
+// decidedCount/pendingLinkCount/linkedCount en sync.controller.ts. Un
+// archivo con las 3 badges pero sin ningún link real antes cerraba como
+// "Resuelto"; ahora es candidato de "Pendientes" (prioridad alta, ver el
+// orden nuevo del endpoint) -- pero solo si YA tiene algún link real (si no
+// tiene ninguno, es indistinguible de catálogo histórico que nunca buscó
+// vincularse, y no aparece acá para no inundar la cola de nuevo).
 const RESOLVED_ONLY_OPTIONS: { value: boolean; label: string }[] = [
-  { value: false, label: "Todos" },
+  { value: false, label: "Pendientes" },
   { value: true, label: "Resuelto" },
 ];
 
@@ -336,8 +347,8 @@ function CrossMatchPanel({ onOpenVideo }: { onOpenVideo?: (fileId: string, title
           <h3 className="text-sm font-semibold text-foreground">Emparejar entre plataformas</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
             {resolvedOnly
-              ? "Archivos con las 3 plataformas ya decididas (publicada o descartada)"
-              : "Archivos publicados en al menos una red (badge)"}
+              ? "Archivos con las 3 plataformas decididas y, las publicadas, ya con su link real"
+              : "Archivos con 2+ plataformas decididas, ya con algún link real, a los que les falta completar otro — los que menos les falta, primero"}
             {" "}— completá el link de las que falten. No toca linked_file_id de las que ya están.
           </p>
         </div>

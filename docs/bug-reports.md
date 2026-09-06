@@ -34,6 +34,78 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-06-05 — "final  - sufre.mp4" (doble espacio en disco) sin miniatura en Calendario y sin badge "Próximo" en Videos iOS
+
+- Estado: `corregido` (backend, matching por content_id). Cliente iOS sin tocar -- ver Pendiente.
+- Reportado: 2026-09-06
+- Plataformas: Central (causa de fondo), iOS (síntoma del badge "Próximo")
+- Severidad: baja -- cosmético (miniatura/badge faltante), no pérdida de datos
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El usuario: en Electron el "próximo" de YouTube se ve bien (con miniatura),
+pero en iOS, mirando la lista de Videos, no aparece la etiqueta "Próximo"
+para YouTube, y en el Calendario ese mismo video (`final - sufre.mp4`)
+aparece sin miniatura.
+
+### Investigación
+
+Verificado en vivo contra Mongo de producción: el archivo real en el
+Desktop de la PC se llama **`final  - sufre.mp4`** (doble espacio entre
+"final" y "-", confirmado en `file_path`/`file_name` de `FileModel`), pero
+la copia subida a Biblioteca remota (Nube) quedó registrada como
+**`final - sufre.mp4`** (un solo espacio) -- mismo `content_id`
+(`f85ea10d-...`), mismo video real, pero como texto los nombres no
+coinciden.
+
+Dos lugares en `backend/src/controllers/sync.controller.ts` cruzaban
+`FileModel` ↔ `RemoteLibraryVideoModel` por `fileName` (comparación de texto
+exacta) en vez de por `content_id`:
+- `getCalendarConfig` (el "próximo" de Calendario): busca la miniatura del
+  próximo video por `fileName` -- no matcheaba, miniatura quedaba `null`.
+- `getFileStats` (usado por el Dashboard): mismo patrón, mismo problema
+  potencial (no confirmado con un caso real, pero mismo código exacto).
+
+Además, esto explica el síntoma de iOS por un camino aparte: iOS arma el
+badge "Próximo" comparando por STRING el `nextVideo.title` que manda el
+Calendario (`LibraryView.swift:378/397`, `nextUploadTitles[$0] == file.fileName`)
+-- ese título es literalmente `file_name` de `FileModel` (con el doble
+espacio), que tampoco coincide con el nombre de la copia que el celular
+conoce (bajada de Nube, un solo espacio). Mismo síntoma raíz, dos
+mecanismos de comparación por texto distintos rotos por el mismo typo.
+
+### Corrección
+
+`backend/src/controllers/sync.controller.ts`: `getCalendarConfig` y
+`getFileStats` ahora cruzan `RemoteLibraryVideoModel` por `content_id`
+primero (estable, sobrevive cualquier diferencia de nombre) y caen a
+`fileName` solo si el archivo no tiene `content_id` todavía.
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 27 errores, mismo baseline, ninguno
+  nuevo.
+- Pendiente crítico de siempre: no corre en el proceso real hasta reiniciar
+  la central.
+- **Solución más simple y definitiva para ESTE archivo puntual**: renombrar
+  `final  - sufre.mp4` en el Desktop de la PC a `final - sufre.mp4` (un solo
+  espacio) -- el próximo push desde el escritorio deja los dos nombres
+  consistentes y el problema desaparece solo, sin depender de ningún fix de
+  código.
+- **No implementado a propósito**: el lado iOS (`LibraryView.swift`, badge
+  "Próximo") sigue comparando por `fileName`/título en vez de `contentId` --
+  mismo patrón frágil, mismo tipo de bug latente para cualquier otro typo de
+  nombre futuro. Se ofreció al usuario endurecerlo (comparar por
+  `contentId`, mismo criterio que el fix de acá), sin build real posible
+  desde este entorno (Windows, sin Xcode) -- a la espera de que lo pida.
+
+### Historial
+- 2026-09-06 — agente: investigado en vivo contra Mongo de producción,
+  causa raíz confirmada (doble espacio en el nombre real del archivo),
+  corregido el cruce por content_id en los 2 lugares del backend
+  encontrados; lado iOS documentado, sin tocar.
+
 ## BUG-2026-09-06-04 — Un push de catálogo de la PC podía revertir en silencio un publish/link real ya confirmado del lado central
 
 - Estado: `corregido` -- confirmado EN VIVO en producción (se reprodujo solo, sin buscarlo) y verificado que el fix lo resuelve. Typecheck limpio (27/27, ninguno nuevo).
