@@ -8,6 +8,7 @@ import { CENTRAL_API } from '../config';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { stopWatcher } from '../watcher';
 import { flushHistoryOutbox } from '../services/history-outbox.service';
+import { fetchBackupWithMetrics, recordSyncMetric } from '../services/sync-metrics.service';
 
 const CENTRAL = CENTRAL_API;
 
@@ -58,7 +59,7 @@ export async function pushFilesToCloud(authHeader: string): Promise<{ localCount
   // este booleano).
   const isSecondary = configRepo.get('secondary_install') === '1';
   const deviceId = deviceIdentityRepo.getOrCreate();
-  const upstream = await fetch(`${CENTRAL}/api/backup/files/bulk`, {
+  const upstream = await fetchBackupWithMetrics(`${CENTRAL}/api/backup/files/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ files, video_folder, fullSync: !isSecondary, deviceId }),
@@ -139,7 +140,7 @@ async function pushPlatformVideosToCloud(authHeader: string): Promise<void> {
     local_updated_at: pv.updated_at,
   }));
 
-  await fetch(`${CENTRAL}/api/backup/platform-videos/bulk`, {
+  await fetchBackupWithMetrics(`${CENTRAL}/api/backup/platform-videos/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ videos }),
@@ -151,7 +152,7 @@ async function pushTranscriptsToCloud(authHeader: string): Promise<void> {
     .map(t => ({ file_name: t.file_name, transcript_text: t.text, language: t.language }));
   if (transcripts.length === 0) return;
 
-  await fetch(`${CENTRAL}/api/backup/transcripts/bulk`, {
+  await fetchBackupWithMetrics(`${CENTRAL}/api/backup/transcripts/bulk`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ transcripts }),
@@ -172,7 +173,7 @@ async function pushConfigToCloud(authHeader: string): Promise<void> {
     next_video_name:       pc.next_video_id ? fileRepo.findById(pc.next_video_id)?.file_name ?? null : null,
   }));
 
-  await fetch(`${CENTRAL}/api/backup/config`, {
+  await fetchBackupWithMetrics(`${CENTRAL}/api/backup/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     body: JSON.stringify({ workflow_mode, platform_configs }),
@@ -225,7 +226,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
     // filtrada de catálogo. Sin esto, un catálogo ya resuelto en las 3
     // plataformas (el caso típico tras meses de uso) queda invisible acá y
     // la recuperación queda incompleta en silencio.
-    const upstream = await fetch(`${CENTRAL}/api/backup/files?includeResolved=true`, {
+    const upstream = await fetchBackupWithMetrics(`${CENTRAL}/api/backup/files?includeResolved=true`, {
       headers: { Authorization: authHeader },
     });
 
@@ -237,6 +238,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
 
     const { files: cloudFiles }: { files: any[] } = await upstream.json();
 
+    const applyStarted = performance.now();
     let updated = 0;
     let skipped = 0;
     let orphans = 0;
@@ -375,6 +377,8 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       }
     }
 
+    recordSyncMetric('pull_catalog_applied', { applyMs: Math.round(performance.now() - applyStarted), cloudCount: cloudFiles.length, updated, recovered, skipped, orphans });
+
     // Config (workflow_mode + colas por plataforma) — solo rellena lo que falte
     // localmente, nunca pisa una preferencia o cola que la máquina ya tenga activa.
     try {
@@ -405,7 +409,7 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
 // existe un registro local con el mismo platform+platform_id no lo toca (no pisa nada que
 // la máquina ya tenga); si el archivo vinculado no existe localmente, se reporta como huérfano.
 async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recovered: number; skipped: number; orphans: number }> {
-  const upstream = await fetch(`${CENTRAL}/api/backup/platform-videos`, { headers: { Authorization: authHeader } });
+  const upstream = await fetchBackupWithMetrics(`${CENTRAL}/api/backup/platform-videos`, { headers: { Authorization: authHeader } });
   if (!upstream.ok) return { recovered: 0, skipped: 0, orphans: 0 };
 
   const { videos: cloudVideos }: { videos: any[] } = await upstream.json();
@@ -451,7 +455,7 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
 }
 
 async function pullConfigFromCloud(authHeader: string): Promise<void> {
-  const upstream = await fetch(`${CENTRAL}/api/backup/config`, { headers: { Authorization: authHeader } });
+  const upstream = await fetchBackupWithMetrics(`${CENTRAL}/api/backup/config`, { headers: { Authorization: authHeader } });
   if (!upstream.ok) return;
   const cfg: { workflow_mode: string | null; platform_configs: any[] } = await upstream.json();
 
@@ -482,7 +486,7 @@ export async function pullTranscriptsFromCloud(req: Request, res: Response): Pro
   if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
 
   try {
-    const upstream = await fetch(`${CENTRAL}/api/backup/transcripts`, {
+    const upstream = await fetchBackupWithMetrics(`${CENTRAL}/api/backup/transcripts`, {
       headers: { Authorization: authHeader },
     });
 

@@ -21,6 +21,10 @@ import {
   getCanonicalSyncStatusBackedUpSet,
 } from '../services/backup-file-canonical.service';
 import { maybeCompareCanary } from '../services/backup-canary-comparator.service';
+import {
+  mergeRemoteResolutionDelta,
+  RemoteSyncPlatform,
+} from '../services/remote-library-platform-sync.service';
 
 // Entrega A de docs/mongo-collections-consolidation-plan-2026-09-02.md:
 // interruptor para leer los 3 endpoints GET de /api/backup desde `files`
@@ -479,38 +483,60 @@ export async function bulkUpsertBackupFiles(req: AuthRequest, res: Response): Pr
     // video vinculado ahí (bajado alguna vez al celular) nunca se enteraba de
     // que se publicó desde la PC. Solo para cuentas con storage en la nube
     // (mismo gate que requireCloudStorage), y solo lo NUEVO respecto a lo que
-    // ya había en FileModel antes de este push (no todo lo que llegó).
+    // ya quedó resuelto en FileModel. Los descartes también son una resolución:
+    // antes este bloque calculaba únicamente `newlyPublished`, por lo que un
+    // descarte hecho sobre la fila LAN llegaba a SQLite/FileModel pero la fila
+    // Nube del mismo video seguía apareciendo pendiente en iOS.
+    //
+    // Se compara contra Nube en cada full push y solo se escriben divergencias.
+    // Esto también repara casos que quedaron desalineados antes de desplegar el
+    // fix; calcular solo el delta contra el FileModel previo no podría verlos.
     const canUseCloudStorage = isOwner(req.user!.username)
       || (req.user!.tier === 'premium' && req.user!.hasCloudStorage === true);
     if (canUseCloudStorage) {
-      const newlyPublished = incoming
+      const resolvedForRemote = incoming
         .map(f => {
           const ex = resolveFileModelExisting(f);
-          const { platforms } = resolvePlatforms(f, ex as any);
-          const previous = new Set(ex?.platforms ?? []);
-          const added = platforms.filter((p: string) => !previous.has(p));
-          return added.length > 0 ? { fileName: f.file_name, added } : null;
+          const { platforms, platforms_discarded } = resolvePlatforms(f, ex as any);
+          const isRemotePlatform = (p: string): p is RemoteSyncPlatform =>
+            ['youtube', 'instagram', 'tiktok'].includes(p);
+          const desiredPublished = (platforms as string[]).filter(isRemotePlatform);
+          const desiredDiscarded = (platforms_discarded as string[]).filter(isRemotePlatform);
+          return desiredPublished.length > 0 || desiredDiscarded.length > 0
+            ? { contentId: f.content_id, fileName: f.file_name, desiredPublished, desiredDiscarded }
+            : null;
         })
-        .filter((entry): entry is { fileName: string; added: string[] } => entry !== null);
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
-      if (newlyPublished.length > 0) {
+      if (resolvedForRemote.length > 0) {
+        const remoteContentIds = resolvedForRemote.map(n => n.contentId).filter(Boolean);
         const remoteVideos = await RemoteLibraryVideoModel.find(
-          { userId, fileName: { $in: newlyPublished.map(n => n.fileName) } },
-          { fileName: 1, platforms: 1, platformsDiscarded: 1 },
+          {
+            userId,
+            $or: [
+              { fileName: { $in: resolvedForRemote.map(n => n.fileName) } },
+              ...(remoteContentIds.length ? [{ contentId: { $in: remoteContentIds } }] : []),
+            ],
+          },
+          { contentId: 1, fileName: 1, platforms: 1, platformsDiscarded: 1, platformStates: 1 },
         ).lean();
-        const remoteMap = new Map(remoteVideos.map(v => [v.fileName, v]));
+        const remoteByName = new Map(remoteVideos.map(v => [v.fileName, v]));
+        const remoteByContentId = new Map(remoteVideos.filter(v => v.contentId).map(v => [v.contentId as string, v]));
 
-        const remoteOps = newlyPublished
+        const remoteOps = resolvedForRemote
           .map(n => {
-            const remote = remoteMap.get(n.fileName);
+            const remote = (n.contentId && remoteByContentId.get(n.contentId)) ?? remoteByName.get(n.fileName);
             if (!remote) return null; // este video nunca estuvo en Nube, nada que sincronizar
-            const platforms = new Set(remote.platforms ?? []);
-            n.added.forEach((p: string) => platforms.add(p));
-            const platformsDiscarded = (remote.platformsDiscarded ?? []).filter((p: string) => !platforms.has(p));
+            const remotePublished = new Set(remote.platforms ?? []);
+            const remoteDiscarded = new Set(remote.platformsDiscarded ?? []);
+            const missingPublished = n.desiredPublished.filter(p => !remotePublished.has(p));
+            const missingDiscarded = n.desiredDiscarded.filter(p => !remoteDiscarded.has(p));
+            if (missingPublished.length === 0 && missingDiscarded.length === 0) return null;
+            const merged = mergeRemoteResolutionDelta(remote, missingPublished, missingDiscarded);
             return {
               updateOne: {
                 filter: { _id: remote._id },
-                update: { $set: { platforms: Array.from(platforms), platformsDiscarded } },
+                update: { $set: merged },
               },
             };
           })
