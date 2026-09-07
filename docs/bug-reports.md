@@ -34,6 +34,94 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-07-01 — Corregir un cross-match desde "Emparejar entre plataformas" no llegaba a la SQLite local (Comparadas seguía sin el video)
+
+- Estado: `corregido` a mano para el caso puntual (dato ya reparado en producción); la causa de fondo (push local puede volver a pisar una corrección futura) queda documentada, sin fix de código todavía -- a la espera de que el usuario decida si vale la pena la protección LWW.
+- Reportado: 2026-09-07
+- Plataformas: Central + Web/Electron (local-backend)
+- Severidad: media -- dato equivocado visible (un video le "robaba" el link a otro), no pérdida de datos
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El usuario: "final - linux gaming.mp4" no aparecía en Estadísticas →
+Comparadas pese a tener las 3 plataformas confirmadas en la central (ver
+[[BUG-2026-09-06-04]] arriba, ya corregido y verificado).
+
+### Investigación
+
+Dos hallazgos, uno detrás del otro:
+
+1. **"Comparadas" en Electron no lee la central.** `getGroupStats` sin
+   `platform` en `local-backend/src/db/platform-video.repo.ts:218`
+   (`findGroupStatsCandidates`) arma los candidatos ENTERAMENTE desde la
+   SQLite local de esa PC (`files.platforms` + `platform_videos`), no desde
+   Mongo -- el comentario en el archivo ya lo explica a propósito (fuente
+   más fresca que un cross-match central que no se actualiza solo). Un video
+   puede estar perfecto en la central y seguir sin aparecer acá si la SQLite
+   local no tiene el link real de las 3 plataformas.
+2. **El link de TikTok de "final - linux gaming.mp4" estaba vinculado
+   LOCALMENTE a otro archivo distinto: "final - suerte de linux.mp4"**
+   (nombres parecidos, fácil de confundir). La central (`PlatformVideoModel`)
+   tenía el link bien puesto en el archivo correcto -- se había corregido en
+   algún momento vía `POST /api/sync/cross-match/resolve`
+   (`resolveCrossMatchSlot`, `backend/src/controllers/sync.controller.ts:516`),
+   que sí actualiza `PlatformVideoModel` y mirrorea a `backup_platform_videos`
+   (vía `applyPlatformPublish`/`mirrorPlatformVideoToBackup`). Pero el
+   siguiente sync tick de esa PC hizo su push periódico normal
+   (`POST /api/backup/platform-videos/bulk`, con la fila VIEJA que su SQLite
+   todavía tenía) ANTES de hacer pull -- mismo orden push-antes-que-pull ya
+   señalado como agravante en BUG-2026-09-06-04 -- y le pisó otra vez el
+   mirror central con el archivo equivocado. El pull posterior no lo
+   corrigió porque leyó de vuelta ese mismo mirror ya pisado: el ciclo se
+   auto-refuerza (push pisa, pull confirma lo pisado) sin que nadie lo note.
+   `bulkUpsertBackupPlatformVideos` (`backend/src/controllers/backup.controller.ts:774`)
+   no tiene ninguna protección tipo LWW para esto -- a diferencia de
+   `platforms`/`platform_states` en `FileModel` (que sí la tiene desde
+   BUG-2026-09-06-04), acá cualquier push gana siempre, sin comparar contra
+   una corrección más reciente del lado central.
+
+### Corrección
+
+- **Dato puntual reparado** (2026-09-07, con el usuario confirmando cuál era
+  el video correcto antes de tocar nada): el usuario pegó de nuevo el link
+  real de TikTok en el detalle de "final - linux gaming.mp4" desde la app
+  (`PATCH /api/videos/:fileId/platform-link/:platform`,
+  `setPlatformLink` en `local-backend/src/controllers/video.controller.ts:312`)
+  -- mismo mecanismo normal de uso, sin tocar la base a mano. Verificado
+  read-only después: SQLite local, `backup_platform_videos` y
+  `PlatformVideoModel` los tres apuntan ahora a "final - linux gaming.mp4"
+  de forma consistente. "final - suerte de linux.mp4" no perdió nada (ya
+  tenía su propio TikTok distinto vinculado).
+- **No implementado a propósito (fix de fondo)**: una protección LWW en
+  `bulkUpsertBackupPlatformVideos` (comparar contra cuándo se hizo la última
+  corrección real vía `resolveCrossMatchSlot`/`applyPlatformPublish` antes
+  de aceptar el push de una PC) evitaría que esto le vuelva a pasar a
+  CUALQUIER cross-match corregido desde "Emparejar entre plataformas" --
+  mismo patrón de solución que ya existe para `platforms`/`platform_states`
+  en `FileModel` (BUG-2026-09-06-04), pero acá no hay un campo tipo
+  `platform_states.confirmed` para apoyarse: haría falta comparar
+  timestamps (`local_updated_at` del push vs. `updatedAt` del último
+  mirror), con el mismo riesgo de reloj-de-dispositivo-vs-servidor que ya
+  se documentó ahí. Pendiente de que el usuario decida si vale la pena.
+
+### Verificación y pendiente
+
+- Verificado read-only contra SQLite local (copia) y Mongo Atlas de
+  producción después del fix: los 3 lugares (SQLite, mirror, PlatformVideoModel)
+  consistentes.
+- **Pendiente real**: si se vuelve a confirmar un cross-match para OTRO
+  video en "Emparejar entre plataformas", puede sufrir el mismo problema
+  (push de esa PC pisando la corrección) hasta que se implemente la
+  protección LWW de arriba -- no es exclusivo de este archivo.
+
+### Historial
+- 2026-09-07 — agente: investigado en vivo (central + SQLite local de la PC
+  de la sesión) a partir de un reporte del usuario, causa raíz de dos capas
+  confirmada, dato puntual reparado por el usuario desde la app tras
+  confirmar cuál era el video correcto, verificado consistente en los 3
+  lugares. Fix de fondo (LWW) documentado, sin implementar.
+
 ## BUG-2026-09-06-05 — "final  - sufre.mp4" (doble espacio en disco) sin miniatura en Calendario y sin badge "Próximo" en Videos iOS
 
 - Estado: `corregido` (backend + iOS, ambos verificados con build/typecheck real).
@@ -2003,6 +2091,17 @@ identidad de plataforma.
     disponible en este entorno, ver trampa de entorno en `UIEssePanel/CLAUDE.md`)
     -- verificado solo por lectura de código (tipos, balance de llaves,
     imports). Pendiente que el usuario confirme con Android Studio.
+- 2026-09-07 — Codex: reproducido un hueco específico del camino LAN con
+  `final - sufre.mp4`: descartar YouTube desde la fila Biblioteca LAN de iOS
+  actualizó SQLite/Electron y la fila LAN, pero la fila Nube quedó pendiente.
+  `bulkUpsertBackupFiles` propagaba de `FileModel` a
+  `RemoteLibraryVideoModel` únicamente plataformas nuevas publicadas; omitía
+  descartes nuevos. Fix preparado para reconciliar en cada push los estados
+  resueltos que falten en Nube, resolver el video remoto por `contentId` con
+  fallback por nombre y preservar estados `confirmed`. Es autocurativo para
+  divergencias anteriores y no escribe documentos que ya coinciden. Cuatro
+  pruebas unitarias pasan. Pendiente desplegar la central y repetir el caso
+  contra producción.
 
 ## BUG-2026-08-15-02 — TikTok: badge huérfano + platformUrl nunca se corrige tras resolver el id real
 
