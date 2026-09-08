@@ -40,7 +40,13 @@ function assertUriEsLocalYDescartable(uri: string): void {
 async function conectarOSaltear(t: any): Promise<boolean> {
   assertUriEsLocalYDescartable(TEST_URI);
   try {
-    await mongoose.connect(TEST_URI, { serverSelectionTimeoutMS: 2000 });
+    // autoIndex: false a propósito -- con los índices automáticos, Mongoose
+    // recrea las colecciones (vacías) DESPUÉS del dropDatabase() del final,
+    // dejando cáscaras en el Mongo del desarrollador. No es fuga de datos,
+    // pero ensucia y hace ruido al revisar si el harness limpió bien.
+    await mongoose.connect(TEST_URI, { serverSelectionTimeoutMS: 2000, autoIndex: false });
+    // Arranca de cero aunque una corrida anterior se haya cortado a la mitad.
+    await mongoose.connection.dropDatabase();
     return true;
   } catch {
     t.skip(
@@ -145,8 +151,14 @@ test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un 
       'Instagram no debería volver a `platforms` después de un descarte explícito.',
     );
   } finally {
-    // Base descartable: se limpia entera, no solo los documentos del test.
-    await mongoose.connection.dropDatabase().catch(() => { /* nada que limpiar */ });
+    // Base descartable: se limpia entera, no solo los documentos del test. Si
+    // el drop falla se avisa por consola -- tragárselo en silencio dejaría
+    // datos de prueba dando vueltas sin que nadie se entere.
+    try {
+      await mongoose.connection.dropDatabase();
+    } catch (err: any) {
+      console.warn(`[harness] no se pudo limpiar ${TEST_URI}: ${err?.message ?? err}`);
+    }
     await mongoose.disconnect().catch(() => { /* ya cerrada */ });
   }
 });
