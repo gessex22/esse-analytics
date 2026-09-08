@@ -11,6 +11,7 @@ import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { applyPlatformPublish } from './backup.controller';
+import { applyPlatformTransition } from '../services/platform-transition.service';
 import { recordAuditEvent } from '../services/audit.service';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -158,27 +159,52 @@ export const markOrphan = async (req: AuthRequest, res: Response): Promise<void>
   }
 };
 
-// DELETE /api/sync/platform-link/:fileId/:platform
+// DELETE /api/sync/platform-link/:contentId/:platform
 // Quita la asociación central sin borrar el video publicado de la red. Esto
 // evita que un link eliminado en Electron vuelva a aparecer al sincronizar.
+//
+// Entrega 1.3 de docs/sync-convergence-plan-2026-09-08.md -- este endpoint
+// cambió en dos cosas:
+//
+// 1. La clave pasó de `:fileId` a `:contentId`. Antes recibía el id ENTERO de
+//    la SQLite de Electron y lo usaba como filtro `_id` de Mongo, que espera un
+//    ObjectId: el cast fallaba, respondía 500, y el local-backend se lo tragaba
+//    con un console.warn. **Nunca funcionó, ni una vez.** `content_id` sí existe
+//    en los dos lados (100% de los archivos activos) y tiene índice único.
+// 2. Ya no escribe Mongo a mano: delega en el escritor único, que además limpia
+//    el espejo de `backup_platform_videos` (de donde el escritorio reconstruye
+//    sus links al hacer pull -- sin eso el unlink se deshacía solo) y la copia
+//    de Nube.
+const CONTENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { fileId, platform } = req.params;
+    // String(...) explícito: en esta versión de Express `req.params.X` está
+    // tipado `string | string[]`, y este archivo ya arrastra 10 errores de tsc
+    // por ese mismo motivo -- no vale la pena sumar otro.
+    const contentId = String(req.params.contentId ?? '');
+    const platform = String(req.params.platform ?? '');
     const userId = req.user!.id;
     if (!['youtube', 'instagram', 'tiktok', 'facebook'].includes(platform)) {
       res.status(400).json({ message: 'Plataforma no válida' }); return;
     }
-    const file = await FileModel.findOneAndUpdate(
-      { _id: fileId, userId },
-      { $pull: { platforms: platform, platforms_discarded: platform } },
-      { new: true },
-    ).select('_id');
-    if (!file) { res.status(404).json({ message: 'Archivo no encontrado' }); return; }
-    await PlatformVideoModel.updateMany(
-      { userId, linkedFileId: file._id, platform },
-      { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
-    );
-    res.json({ ok: true, fileId, platform });
+    // 400 explícito, no el 500 por CastError de antes: un cliente viejo que
+    // todavía mande el id local tiene que enterarse de que su contrato quedó
+    // obsoleto, no recibir un error genérico que parece una falla del servidor.
+    if (!CONTENT_ID_RE.test(contentId)) {
+      res.status(400).json({
+        message: 'Se espera el content_id del archivo (UUID), no un id local. Actualizá el cliente.',
+        received: contentId,
+      });
+      return;
+    }
+
+    const result = await applyPlatformTransition(userId, {
+      contentId, platform: platform as SyncPlatform, action: 'unlink',
+    });
+    if (!result.ok) { res.status(404).json({ message: 'Archivo no encontrado' }); return; }
+
+    res.json({ ok: true, fileId: result.fileId, contentId, platform });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }

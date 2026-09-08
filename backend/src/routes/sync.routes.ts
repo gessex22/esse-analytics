@@ -38,7 +38,8 @@ router.post('/api/sync/history',                    verifyToken, recordUploadEve
 // Settings) llama a este nombre -- mismo handler, evita tener que tocar/re-buildear
 // la app de iOS (no hay forma de compilarla/probarla desde esta máquina Windows).
 router.post('/api/sync/record-publish',             verifyToken, recordUploadEvent);
-router.delete('/api/sync/platform-link/:fileId/:platform', verifyToken, unlinkPlatform);
+// :contentId (UUID), no el id local -- ver el comentario de unlinkPlatform.
+router.delete('/api/sync/platform-link/:contentId/:platform', verifyToken, unlinkPlatform);
 // "Descartar" desde iOS/Android era 100% local -- ver comentario completo en
 // updateFilePlatforms (backup.controller.ts).
 router.post('/api/sync/file-platforms',             verifyToken, updateFilePlatforms);

@@ -74,26 +74,31 @@ function fakeReqRes(params: Record<string, string>, body: unknown = {}) {
 // BUG 1 — Desvincular desde Electron nunca llegó a la central.
 //
 // `setPlatformLink` con url vacía limpia el link local y avisa a la central vía
-// `reportUnlinkPlatform`, que arma DELETE /api/sync/platform-link/:fileId/:platform
-// con el id de SQLite (un entero autoincremental). Del otro lado,
-// `unlinkPlatform` hace FileModel.findOneAndUpdate({ _id: fileId }) y los _id de
-// la central son ObjectId de 24 hex: el cast falla, la central responde 500 y el
-// local-backend se lo traga con un console.warn. Nunca funcionó.
+// `reportUnlinkPlatform`. Antes armaba el DELETE con el id de SQLite (un entero
+// autoincremental) y del otro lado `unlinkPlatform` lo usaba como filtro `_id`
+// de Mongo, que espera un ObjectId: el cast fallaba, respondía 500 y el
+// local-backend se lo tragaba con un console.warn. Nunca funcionó.
 //
-// Se pone en verde con `remote_file_id` (Entrega 1, punto 2): cuando Electron
-// mande el id remoto, este assert pasa sin tocar el test.
+// La expectativa de este test CAMBIÓ junto con el plan: la clave de mutación
+// pasó a ser `content_id` (UUID), no un `remote_file_id` nuevo -- medido contra
+// producción, el 100% de los archivos activos de los dos lados ya lo tiene, con
+// índice único. Lo que se afirma sigue siendo lo mismo ("Electron tiene que
+// mandar un identificador que la central pueda resolver"); solo cambió cuál es
+// ese identificador. Ver docs/sync-convergence-plan-2026-09-08.md.
 // ---------------------------------------------------------------------------
-test('BUG 1 (rojo) — al desvincular, Electron manda a la central un id que Mongo pueda resolver', async () => {
+test('BUG 1 — al desvincular, Electron manda a la central un identificador que puede resolver', async () => {
   const { db } = await import('../db/database');
   const { fileRepo } = await import('../db/file.repo');
   const { platformVideoRepo } = await import('../db/platform-video.repo');
   const { setPlatformLink } = await import('./video.controller');
 
+  // `fileRepo.create` genera el content_id él mismo (randomUUID, siempre) y no
+  // acepta uno de afuera -- así que se lee el que quedó, en vez de asumir uno.
   const file = fileRepo.create({
     file_name: 'video para desvincular.mp4',
     file_path: 'C:/videos/video para desvincular.mp4',
-    content_id: 'contenido-unlink-1',
-  } as any);
+  });
+  const CONTENT_ID = file.content_id!;
 
   platformVideoRepo.upsert({
     platform: 'instagram',
@@ -116,16 +121,16 @@ test('BUG 1 (rojo) — al desvincular, Electron manda a la central un id que Mon
   const unlinkCall = stub.calls.find(url => url.includes('/api/sync/platform-link/'));
   assert.ok(unlinkCall, 'Electron debería avisarle a la central que se desvinculó la plataforma');
 
-  // El segmento de path que la central va a usar como filtro `_id`.
+  // El segmento de path que la central va a usar para resolver el archivo.
   const sentId = decodeURIComponent(new URL(unlinkCall).pathname.split('/').at(-2) ?? '');
 
   assert.match(
     sentId,
-    /^[0-9a-f]{24}$/i,
-    `La central resuelve este id con FileModel.findOneAndUpdate({ _id }), así que tiene que ser ` +
-    `un ObjectId de 24 hex. Hoy Electron manda "${sentId}" (el id de SQLite): el cast falla, ` +
-    `responde 500 y upload-history.service.ts se lo traga con console.warn. El unlink nunca llega.`,
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    `La central resuelve el archivo por content_id (UUID). Se recibió "${sentId}" -- si es un ` +
+    `número, es el id de SQLite y la central no tiene forma de resolverlo.`,
   );
+  assert.equal(sentId, CONTENT_ID, 'y tiene que ser el content_id de ESE archivo, no otro');
 
   db.close();
 });

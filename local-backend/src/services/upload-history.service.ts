@@ -87,19 +87,42 @@ export async function reportUploadEvent(
   }
 }
 
+/**
+ * Avisa a la central que se soltó una plataforma.
+ *
+ * Entrega 1.3/1.4 de docs/sync-convergence-plan-2026-09-08.md. Dos cambios:
+ *
+ * 1. Se manda `contentId` (UUID compartido por los dos lados), no el id de
+ *    SQLite. Antes se mandaba el entero local y la central lo usaba como filtro
+ *    `_id` de Mongo -> CastError -> 500. El unlink nunca llegó, ni una vez.
+ * 2. Ya NO se traga el error. Antes cualquier fallo terminaba en un
+ *    `console.warn` que nadie mira, y el usuario veía el link desaparecer de su
+ *    pantalla creyendo que se había guardado. Ahora se lanza, y el caller decide
+ *    qué mostrar.
+ *
+ * Lo que NO cambia: sigue siendo una llamada best-effort respecto del estado
+ * local -- para cuando se llama, la SQLite ya se actualizó. Lanzar acá sirve
+ * para AVISAR, no para revertir.
+ */
 export async function reportUnlinkPlatform(
   authHeader: string | undefined,
-  fileId: string,
+  contentId: string | null | undefined,
   platform: string,
 ): Promise<void> {
   if (!authHeader) return;
-  try {
-    const res = await fetch(`${CENTRAL}/api/sync/platform-link/${encodeURIComponent(fileId)}/${encodeURIComponent(platform)}`, {
-      method: 'DELETE',
-      headers: { Authorization: authHeader },
-    });
-    if (!res.ok) console.warn(`[sync] no se pudo desvincular ${platform}: HTTP ${res.status}`);
-  } catch (err: any) {
-    console.warn('[sync] no se pudo propagar la desvinculación:', err.message);
+  if (!contentId) {
+    throw new Error(
+      `No se puede propagar la desvinculación de ${platform}: el archivo no tiene content_id. ` +
+      `Sin él la central no puede identificarlo (el id local no le sirve).`,
+    );
+  }
+
+  const res = await fetch(
+    `${CENTRAL}/api/sync/platform-link/${encodeURIComponent(contentId)}/${encodeURIComponent(platform)}`,
+    { method: 'DELETE', headers: { Authorization: authHeader } },
+  );
+  if (!res.ok) {
+    const detalle = await res.text().catch(() => '');
+    throw new Error(`La central rechazó la desvinculación de ${platform}: HTTP ${res.status}. ${detalle}`.trim());
   }
 }

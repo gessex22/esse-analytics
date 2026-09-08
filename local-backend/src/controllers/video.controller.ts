@@ -325,10 +325,30 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
     platformVideoRepo.unlinkFromFile(fileId, platform);
     fileRepo.removePlatform(fileId, platform as Platform);
     pushFilesToCloudInBackground(req.headers.authorization);
+
     // El espejo central es additive para publicaciones nuevas; una limpieza
     // manual necesita este evento explícito para no resucitar en el próximo pull.
-    await reportUnlinkPlatform(req.headers.authorization, String(fileId), platform);
-    res.json({ platform_url: null, platforms: fileRepo.findById(fileId)!.platforms });
+    //
+    // Se manda `content_id`, no el id local: la central resuelve por ahí (ver
+    // unlinkPlatform). Y el fallo YA NO se traga -- antes terminaba en un
+    // console.warn que nadie mira, y el usuario veía el link desaparecer de la
+    // pantalla creyendo que se había guardado en todos lados. El cambio local ya
+    // está hecho y no se revierte (es la copia de esta PC, y es lo que el
+    // usuario pidió); lo que se agrega es que el cliente se entere de que la
+    // central no lo acompañó.
+    let syncWarning: string | undefined;
+    try {
+      await reportUnlinkPlatform(req.headers.authorization, file.content_id, platform);
+    } catch (err: any) {
+      syncWarning = err?.message ?? 'No se pudo propagar la desvinculación a la central.';
+      console.warn('[sync]', syncWarning);
+    }
+
+    res.json({
+      platform_url: null,
+      platforms: fileRepo.findById(fileId)!.platforms,
+      ...(syncWarning ? { syncWarning } : {}),
+    });
     return;
   }
 
