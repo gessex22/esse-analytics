@@ -23,6 +23,15 @@ export interface IPlatformTransitionOp extends Document {
   action: string;
   /** Revisión de esa plataforma sobre la que el cliente basó su operación. */
   baseVersion?: number;
+  /**
+   * Qué platformIds abarca esta operación, congelados al reclamar.
+   *
+   * Es parte de su identidad, no algo a recalcular: al REANUDAR, volver a
+   * leerlos de la base los devuelve vacíos (el intento anterior ya los soltó) y
+   * la reanudación no terminaría de aplicar. Y al revés, recalcularlos tarde
+   * puede incluir una publicación que entró después, que no le pertenece.
+   */
+  platformIds?: string[];
   /** Revisión resultante, una vez aplicada. */
   resultVersion?: number;
   status: 'pending' | 'completed';
@@ -36,6 +45,7 @@ const PlatformTransitionOpSchema = new Schema<IPlatformTransitionOp>({
   platform:      { type: String, required: true },
   action:        { type: String, required: true },
   baseVersion:   { type: Number },
+  platformIds:   { type: [String], default: undefined },
   resultVersion: { type: Number },
   status:        { type: String, enum: ['pending', 'completed'], default: 'pending' },
   completedAt:   { type: Date },

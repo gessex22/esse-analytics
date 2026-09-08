@@ -259,35 +259,35 @@ Rollback por flag durante una versión completa.
 - **El test del pull necesita rediseño** antes de poder usarse como criterio de
   aceptación (ver 1.1).
 
-## P0 — CERRADOS (con sus 5 casos en verde)
+## P0 — CERRADOS (dos rondas, 25 casos en verde)
 
-Los tres huecos señalados sobre `a80ca41`, cada uno con su regresión:
+### Ronda 1
+
+| P0 | Cómo se cerró |
+|---|---|
+| Caída entre `pending` y el CAS | La señal dejó de inferirse del estado de la operación |
+| El CAS no cubría las proyecciones | La primera escritura de `files` quedó condicionada a la versión reclamada |
+| `operationId` con otro payload | Se valida `contentId`/plataforma/acción/`baseVersion`; si no coinciden → **422** |
+
+### Ronda 2 — lo que quedó DETRÁS de ese verde
 
 | P0 | Qué fallaba | Cómo se cerró |
 |---|---|---|
-| Caída entre `pending` y el CAS | `reanudando` daba por hecho que el CAS ya había corrido; si la caída ocurría en el medio, la revisión no se incrementaba nunca | La señal ya no se infiere: `resultVersion` se escribe **en el momento del claim**, y su presencia es lo que dice si el claim ocurrió |
-| El CAS no cubría las proyecciones | Protegía el claim y terminaba ahí; una publicación podía entrar antes del `$pull` y la transición vieja la destruía | **Todas** las escrituras van condicionadas a `platform_rev.<plataforma> === versión reclamada`. Si alguien la movió, no matchean y la operación corta con 409 |
-| `operationId` con otro payload | Podía reanudar o dar por completada una operación distinta | Se valida que `contentId`, plataforma, acción y `baseVersion` coincidan con el registro; si no, **422** (no 409: reintentar nunca lo va a arreglar) |
+| Claim no atómico entre documentos | El CAS iba en `FileModel` y `resultVersion` en la operación: una caída entre las dos dejaba la revisión movida y la operación sin marca, y al reintentar se rechazaba **a sí misma** por `stale` | `platform_claim` se escribe **en el mismo update del CAS**. O están las dos cosas o ninguna |
+| El guard solo protegía `files` | `backup_files`, `platformvideos`, tombstones y Nube escribían sin condición | Cada proyección se **sella** con la versión (`platform_rev`, `link_version`, `platformRev`) y solo acepta escrituras `>=` a la que ya tiene |
+| Lost update en el mirror de Nube | `applyPlatformPublish` reemplazaba `platformStates`/`platformLinks` desde una foto previa | `$pull`/`$addToSet` acotados, y además **sella la revisión en Nube** para que una transición vieja no la pise |
+| Entrega simultánea idéntica daba 409 | Aceptar 409 no demuestra deduplicación: el cliente puede creer que su operación se perdió | Si el CAS lo pierde otra entrega **de la misma operación**, se responde `deduplicated`, no conflicto |
 
-Además: el `POST` ahora **exige** `operationId` y `baseVersion >= 0`, y
-`applyPlatformPublish` dejó de reemplazar `platform_states` desde una foto
-previa.
+### Dos errores propios que encontraron los tests, no la lectura del código
 
-### Lección: un test de concurrencia que pasa no prueba nada
-
-El caso "transición y publish concurrentes" pasaba con un `Promise.all` a
-secas -- pero solo porque la carrera no llegaba a darse. Al **forzar** el
-intercalado (stub que mete la transición justo entre la lectura y la escritura
-de `platform_states`), falló de inmediato y confirmó el lost update. Los tests
-de concurrencia de este harness fuerzan el intercalado; no lo esperan.
-
-### Instancia restante del mismo patrón, sin cubrir
-
-`applyPlatformPublish` sigue haciendo read-modify-write de `platformStates`
-sobre **`RemoteLibraryVideoModel`** (`backup.controller.ts`, el
-`upsertConfirmed` del mirror de Nube). Es el mismo bug que se acaba de corregir
-en `FileModel`, en la misma función, y **no tiene test todavía**. Red primero
-antes de tocarlo.
+1. **El alcance se leía tarde.** Los `platformId` que la operación puede soltar
+   se leían *después* de las primeras escrituras, así que una publicación
+   intercalada entraba en esa lista y la transición terminaba desvinculándola.
+   Ahora el snapshot se toma antes del claim.
+2. **Y no podía recalcularse al reanudar.** Al mover la lectura antes, la
+   reanudación la recomputaba y volvía **vacía** (el intento anterior ya había
+   soltado los vínculos), así que no terminaba de aplicar. El alcance es parte
+   de la identidad de la operación: se **persiste** en su registro.
 
 ## Semántica de la transición (parcial — ver P0 arriba)
 

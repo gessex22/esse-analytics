@@ -35,6 +35,8 @@ export interface IBackupPlatformVideo extends Document {
   // cualquier campo). Es contra este timestamp que se decide si el push de una
   // PC atrasada puede pisar un tombstone más nuevo.
   link_updated_at?: Date;
+  /** Versión de la transición que dejó este estado de vínculo. */
+  link_version?: number;
   // Idempotencia: repetir la misma operación no cambia el resultado, y permite
   // reanudar una que quedó a medias sin duplicar efectos.
   operation_id?: string;
@@ -56,6 +58,7 @@ const BackupPlatformVideoSchema = new Schema<IBackupPlatformVideo>({
   local_updated_at: { type: Date, required: true },
   link_state:       { type: String, enum: ['linked', 'unlinked'], default: 'linked' },
   link_updated_at:  { type: Date },
+  link_version:     { type: Number },
   operation_id:     { type: String },
 }, { timestamps: true });
 

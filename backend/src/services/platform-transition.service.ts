@@ -152,19 +152,38 @@ export async function applyPlatformTransition(
     }
   }
 
+  // Qué vínculos existían CUANDO ESTA OPERACIÓN empezó. Es el alcance de lo que
+  // puede soltar: una publicación que entre después NO le pertenece.
+  //
+  // Se lee acá, antes del claim, y no a mitad de las proyecciones. Leerlo tarde
+  // era un bug real: una publicación intercalada entre escrituras entraba en
+  // esta lista y la transición terminaba desvinculándola, que es exactamente lo
+  // que el alcance existe para impedir.
+  const pvsDesvinculados = await PlatformVideoModel
+    .find({ userId, linkedFileId: file._id, platform })
+    .select('platformId')
+    .lean();
+  // Si la operación ya venía registrada, manda SU alcance: al reanudar, releer
+  // la base devuelve vacío (el intento anterior ya soltó los vínculos) y la
+  // reanudación no llegaría a completar las proyecciones que faltaban.
+  const idsVinculados: string[] = (opPrevia?.platformIds && opPrevia.platformIds.length > 0)
+    ? opPrevia.platformIds
+    : pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
+
   const revs = (file.platform_rev ?? {}) as Record<string, number>;
   const revActual: number | undefined = revs[platform];
 
-  // P0-1: si el CAS ya se hizo o no NO se puede inferir de que la operación
-  // figure `pending`. Una caída entre el insert de `pending` y el CAS dejaba
-  // ese estado con el claim SIN hacer, y al reanudar se lo salteaba: la
-  // revisión no se incrementaba nunca y la precedencia dejaba de proteger.
+  // Si el CAS ya se hizo NO se puede inferir del estado de la operación, ni de
+  // `resultVersion`: las dos son escrituras SEPARADAS del CAS, y una caída en
+  // el medio deja la revisión ya movida con la operación sin marca -- al
+  // reintentar, esa operación se rechazaría a sí misma por `stale`.
   //
-  // La señal real es `resultVersion`: se escribe EN el mismo momento del claim.
-  // Si está, el claim ya ocurrió; si no está, hay que hacerlo aunque la
-  // operación ya estuviera registrada.
-  const claimHecho = opPrevia?.resultVersion !== undefined && opPrevia?.resultVersion !== null;
-  const reanudando = opPrevia?.status === 'pending' && claimHecho;
+  // La señal vive en el MISMO documento que el CAS: `platform_claim` se escribe
+  // en el propio update que incrementa la revisión, así que o están las dos
+  // cosas o no está ninguna. Si el claim vigente lleva nuestro operationId,
+  // esta operación ya reclamó y lo que falta es terminar de aplicar.
+  const claims = (file.platform_claim ?? {}) as Record<string, string>;
+  const reanudando = !!operationId && claims[platform] === operationId;
 
   // ── Precedencia por revisión causal ─────────────────────────────────────
   // Solo se exige cuando el cliente declara sobre qué revisión trabajó. Al
@@ -189,6 +208,9 @@ export async function applyPlatformTransition(
       await PlatformTransitionOpModel.create({
         userId, operationId, contentId, platform, action,
         baseVersion, status: 'pending',
+        // El alcance se congela acá, con la operación: ver el comentario del
+        // campo en el modelo.
+        platformIds: idsVinculados,
       });
     } catch (err: any) {
       // Índice único: otra entrega de la MISMA operación se nos adelantó. No es
@@ -215,19 +237,40 @@ export async function applyPlatformTransition(
       filtroCas,
       {
         $inc: { [`platform_rev.${platform}`]: 1 },
-        $set: { [`platform_state_changed_at.${platform}`]: ahora },
+        $set: {
+          [`platform_state_changed_at.${platform}`]: ahora,
+          // El claim, en el MISMO update que la revisión: es lo que permite que
+          // una reanudación se reconozca a sí misma después de una caída.
+          ...(operationId ? { [`platform_claim.${platform}`]: operationId } : {}),
+        },
       },
       { new: true },
     ).lean();
 
     if (!claimed) {
+      // El CAS lo puede perder otra entrega de ESTA MISMA operación (la outbox
+      // reintentó antes de recibir la respuesta). Eso no es un conflicto: es una
+      // entrega duplicada, y responderle 409 haría que el cliente creyera que su
+      // operación quedó vieja y armara una nueva.
+      if (operationId) {
+        const relectura = await FileModel.findById(file._id).select('platform_rev platform_claim').lean();
+        const claimVigente = ((relectura?.platform_claim ?? {}) as Record<string, string>)[platform];
+        if (claimVigente === operationId) {
+          return {
+            ok: true,
+            deduplicated: true,
+            fileId: String(file._id),
+            version: ((relectura?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0,
+          };
+        }
+      }
       return { ok: false, reason: 'conflict', fileId: String(file._id) };
     }
     versionResultante = ((claimed as any).platform_rev ?? {})[platform] ?? (revActual ?? 0) + 1;
 
-    // Se deja constancia del claim JUNTO con su resultado. Es lo que permite
-    // distinguir "quedó pendiente antes de reclamar" de "quedó pendiente
-    // después de reclamar" en una reanudación.
+    // Informativo. La señal autoritativa del claim es `platform_claim` en
+    // FileModel, escrita atómicamente arriba; esto solo deja el resultado a mano
+    // para la respuesta y para diagnóstico.
     if (operationId) {
       await PlatformTransitionOpModel.updateOne(
         { userId, operationId },
@@ -235,7 +278,8 @@ export async function applyPlatformTransition(
       );
     }
   } else {
-    versionResultante = opPrevia?.resultVersion ?? revActual ?? 0;
+    // Reanudación: la revisión vigente ES la que reclamó esta operación.
+    versionResultante = revActual ?? 0;
   }
 
   // ── Escrituras ATÓMICAS POR PLATAFORMA ──────────────────────────────────
@@ -289,18 +333,36 @@ export async function applyPlatformTransition(
     );
   }
 
+  // De acá en adelante cada proyección se SELLA con la versión de esta
+  // operación y solo acepta escrituras cuya versión sea >= a la que ya tiene.
+  // Sin esto el guard cubría únicamente el primer update de `files`: una
+  // publicación que entrara DESPUÉS de ese update seguía siendo destruida por
+  // la transición vieja en las otras representaciones.
+  const noPisarMasNuevo = {
+    $or: [
+      { ['platform_rev.' + platform]: { $exists: false } },
+      { ['platform_rev.' + platform]: { $lte: versionResultante } },
+    ],
+  };
+
   // 2) backup_files — la otra copia del mismo catálogo, mientras exista
   //    (se retira en la Entrega 5). Sin esto, el próximo `getBackupFiles`
   //    puede servir el estado viejo desde la colección equivocada.
   const quitarDeBackup: any = { platforms: platform };
   if (action === 'unlink') quitarDeBackup.platforms_discarded = platform;
   await BackupFileModel.updateOne(
-    { userId, content_id: contentId },
-    { $pull: quitarDeBackup, $set: { platforms_updated_at: ahora } },
+    { userId, content_id: contentId, ...noPisarMasNuevo },
+    {
+      $pull: quitarDeBackup,
+      $set: {
+        platforms_updated_at: ahora,
+        ['platform_rev.' + platform]: versionResultante,
+      },
+    },
   );
   if (action === 'discard') {
     await BackupFileModel.updateOne(
-      { userId, content_id: contentId },
+      { userId, content_id: contentId, ['platform_rev.' + platform]: versionResultante },
       { $addToSet: { platforms_discarded: platform } },
     );
   }
@@ -308,16 +370,12 @@ export async function applyPlatformTransition(
   // 3) platformvideos — se desvincula el link real, pero NO se borra el
   //    documento: conserva platformId/métricas/fecha por si el video se vuelve
   //    a emparejar. Mismo criterio que ya usaba `unlinkPlatform`.
-  // Se leen ANTES de soltarlos: después del updateMany ya no se los puede
-  // encontrar por linkedFileId, y se necesitan sus platformId para poder dejar
-  // un tombstone por cada uno (ver más abajo).
-  const pvsDesvinculados = await PlatformVideoModel
-    .find({ userId, linkedFileId: file._id, platform })
-    .select('platformId')
-    .lean();
 
+  // Acotado a los ids que existían cuando esta operación reclamó: una
+  // publicación que entre después NO puede ser desvinculada por una transición
+  // que nunca supo de ella.
   await PlatformVideoModel.updateMany(
-    { userId, linkedFileId: file._id, platform },
+    { userId, linkedFileId: file._id, platform, platformId: { $in: idsVinculados } },
     { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
   );
 
@@ -343,14 +401,18 @@ export async function applyPlatformTransition(
   //    anterior de este mismo servicio, que hacía deleteMany -- no quedaba
   //    ningún tombstone, y una PC vieja con el vínculo lo recreaba en su
   //    próximo push como si nada hubiera pasado.
-  const idsVinculados = pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
 
   await BackupPlatformVideoModel.updateMany(
-    { userId, platform, content_id: contentId },
+    {
+      userId, platform, content_id: contentId,
+      platform_id: { $in: idsVinculados },
+      $or: [{ link_version: { $exists: false } }, { link_version: { $lte: versionResultante } }],
+    },
     {
       $set: {
         link_state: 'unlinked',
         link_updated_at: ahora,
+        link_version: versionResultante,
         content_id: contentId,
         ...(operationId ? { operation_id: operationId } : {}),
       },
@@ -364,6 +426,7 @@ export async function applyPlatformTransition(
         $set: {
           link_state: 'unlinked',
           link_updated_at: ahora,
+          link_version: versionResultante,
           content_id: contentId,
           ...(operationId ? { operation_id: operationId } : {}),
         },
@@ -386,15 +449,25 @@ export async function applyPlatformTransition(
       platforms: platform,
       platformStates: { platform },
       // El link real también se va: es lo que distingue esta acción de un
-      // simple cambio de badge.
-      platformLinks: { platform },
+      // simple cambio de badge. Acotado a los ids del alcance -- si entró una
+      // publicación nueva, su link no es de esta operación.
+      platformLinks: { platform, platformId: { $in: idsVinculados } },
     };
     if (action === 'unlink') quitarDeNube.platformsDiscarded = platform;
 
-    await RemoteLibraryVideoModel.updateOne({ userId, contentId }, { $pull: quitarDeNube });
+    const nubeNoPisarMasNuevo = {
+      $or: [
+        { ['platformRev.' + platform]: { $exists: false } },
+        { ['platformRev.' + platform]: { $lte: versionResultante } },
+      ],
+    };
+    await RemoteLibraryVideoModel.updateOne(
+      { userId, contentId, ...nubeNoPisarMasNuevo },
+      { $pull: quitarDeNube, $set: { ['platformRev.' + platform]: versionResultante } },
+    );
     if (action === 'discard') {
       await RemoteLibraryVideoModel.updateOne(
-        { userId, contentId },
+        { userId, contentId, ['platformRev.' + platform]: versionResultante },
         { $addToSet: { platformsDiscarded: platform, platformStates: { platform, state: 'discarded' } } },
       );
     }

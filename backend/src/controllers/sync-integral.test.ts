@@ -982,39 +982,6 @@ test('P0 — reusar un operationId con otro payload se rechaza, no se confunde c
 });
 
 // ---------------------------------------------------------------------------
-// P0-4 — dos entregas SIMULTÁNEAS de la misma operación.
-//
-// La outbox puede reintentar antes de recibir la respuesta anterior. Las dos
-// entregas llegan a la vez, con la misma clave.
-// ---------------------------------------------------------------------------
-test('P0 — dos entregas simultáneas de la misma operación aplican efectos una sola vez', async (t) => {
-  if (!(await conectarOSaltear(t))) return;
-  await cargarCentral();
-  await limpiarEstado();
-
-  const { contentId } = await sembrarConfirmado();
-  const rev0 = await revisionDe(contentId);
-  const op = 'p0-entregas-simultaneas';
-  const payload = { contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 };
-
-  const [a, b] = await Promise.all([postTransicion(payload), postTransicion(payload)]);
-
-  const oks = [a, b].filter(r => r.status === 200);
-  assert.ok(oks.length >= 1, 'al menos una entrega tiene que prosperar');
-  assert.ok(
-    [a, b].every(r => r.status === 200 || r.status === 409),
-    'y ninguna puede terminar en 500: una entrega duplicada es un caso normal, no un error',
-  );
-
-  assert.equal(
-    await revisionDe(contentId), rev0 + 1,
-    'La revisión se mueve UNA sola vez: si avanza dos, los efectos se aplicaron dos veces.',
-  );
-  const foto = await fotoDelEstado(contentId);
-  assert.deepEqual(foto.files.discarded, [PLATFORM], 'y el estado final es el esperado');
-});
-
-// ---------------------------------------------------------------------------
 // P0-5 — transición concurrente con applyPlatformPublish.
 //
 // Son los dos caminos que escriben estado de plataforma. `applyPlatformPublish`
@@ -1068,4 +1035,227 @@ test('P0 — una transición y un publish concurrentes no se pisan el estado', a
   assert.equal(estados.find(s => s.platform === 'youtube')?.state, 'confirmed',
     'con el suyo. applyPlatformPublish reemplaza platform_states desde una foto previa, así que ' +
     'puede borrar el estado que la transición acaba de escribir para la OTRA plataforma.');
+});
+
+// ===========================================================================
+// P0 (segunda ronda) — huecos que quedaron DETRÁS del verde anterior.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// P0-6 — caída DESPUÉS de un CAS exitoso pero ANTES de guardar `resultVersion`.
+//
+// El fix anterior reemplazó "inferir el claim del estado `pending`" por
+// "inferirlo de `resultVersion`" -- pero `resultVersion` se guarda en una
+// SEGUNDA escritura, sobre otro documento. Una caída entre el CAS y ese guardado
+// deja la revisión YA incrementada y la operación sin claim reconocible: al
+// reintentar, `baseVersion` ya no coincide y la operación muere como `stale`
+// para siempre, sin haberse aplicado nunca.
+//
+// El claim tiene que quedar identificable en el MISMO update que lo hace.
+// ---------------------------------------------------------------------------
+test('P0 — una caída entre el CAS y el guardado de resultVersion no puede matar la operación', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p0-caida-post-cas';
+
+  // Se rompe el updateOne que guarda `resultVersion` en la operación. El CAS
+  // (findOneAndUpdate sobre FileModel) ya ocurrió y quedó persistido.
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+  const originalUpdate = PlatformTransitionOpModel.updateOne.bind(PlatformTransitionOpModel);
+  let rota = false;
+  (PlatformTransitionOpModel as any).updateOne = (...args: any[]) => {
+    if (!rota) { rota = true; throw new Error('caída simulada entre el CAS y el guardado del claim'); }
+    return originalUpdate(...args);
+  };
+
+  try {
+    await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  } catch { /* la caída es el escenario */ } finally {
+    (PlatformTransitionOpModel as any).updateOne = originalUpdate;
+  }
+
+  assert.ok(rota, 'precondición: se cortó donde se quería');
+  assert.equal(await revisionDe(contentId), rev0 + 1, 'precondición: el CAS SÍ alcanzó a incrementar');
+
+  // La outbox reintenta con el MISMO baseVersion: es lo único que conoce.
+  const r = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+
+  assert.notEqual(
+    r.status, 409,
+    'La operación NO puede quedar muerta. Al reintentar, su propio CAS ya movió la revisión, así ' +
+    'que baseVersion no coincide y se la rechaza como atrasada -- pero es la MISMA operación, no ' +
+    'una rezagada. Sin un claim identificable en el update del CAS, no hay forma de distinguirlas.',
+  );
+  assert.equal(r.status, 200, 'tiene que reanudarse y completarse');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.deepEqual(foto.files.discarded, [PLATFORM], 'y aplicar lo que pedía');
+  assert.deepEqual(foto.remote.discarded, [PLATFORM], 'en todas las representaciones');
+});
+
+// ---------------------------------------------------------------------------
+// P0-7 — el guard de versión solo protege `files`.
+//
+// La primera escritura va condicionada a la revisión reclamada, pero las que
+// siguen (backup_files, platformvideos, tombstones, Nube) escriben sin ninguna
+// condición. Una publicación que entre DESPUÉS del update de `files` y antes de
+// las demás sigue siendo destruida por la transición vieja en esas otras
+// proyecciones.
+// ---------------------------------------------------------------------------
+test('P0 — una publicación que entra entre proyecciones no puede ser destruida en las restantes', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+
+  // Se intercala la publicación DESPUÉS del primer update de `files`: el guard
+  // de versión ya pasó, y lo que viene escribe a ciegas.
+  const originalUpdateOne = central.FileModel.updateOne.bind(central.FileModel);
+  let intercalado = false;
+  central.FileModel.updateOne = async (...args: any[]) => {
+    const r = await originalUpdateOne(...args);
+    if (!intercalado) {
+      intercalado = true;
+      central.FileModel.updateOne = originalUpdateOne;
+      await central.applyPlatformPublish(USER_ID, {
+        platform: PLATFORM, platformId: '17777777777777777',
+        platformUrl: 'https://www.instagram.com/reel/DDDDDDDDDDD/',
+        contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+        publishedAt: new Date('2026-09-07T12:00:00.000Z'),
+      });
+    }
+    return r;
+  };
+
+  try {
+    await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink',
+      operationId: 'p0-entre-proyecciones', baseVersion: rev0,
+    });
+  } finally {
+    central.FileModel.updateOne = originalUpdateOne;
+  }
+
+  assert.ok(intercalado, 'precondición: la publicación se intercaló entre proyecciones');
+
+  const pv = await central.PlatformVideoModel.findOne({
+    userId: USER_ID, platform: PLATFORM, platformId: '17777777777777777',
+  }).lean();
+  assert.ok(pv, 'la publicación nueva existe');
+  assert.ok(
+    pv.linkedFileId,
+    'La publicación que entró entre proyecciones tiene que conservar su vínculo. Hoy no: el guard ' +
+    'de versión cubre solo el primer update de `files`, y las proyecciones siguientes escriben sin ' +
+    'condición, así que la transición vieja las pisa igual.',
+  );
+
+  const tomb = await central.BackupPlatformVideoModel.findOne({
+    userId: USER_ID, platform: PLATFORM, platform_id: '17777777777777777',
+  }).lean();
+  assert.notEqual(tomb?.link_state, 'unlinked',
+    'y tampoco puede quedar con tombstone: nunca se pidió desvincular ESA publicación');
+});
+
+// ---------------------------------------------------------------------------
+// P0-8 — el mirror de Nube dentro de applyPlatformPublish (rojo FORZADO).
+//
+// `applyPlatformPublish` sigue haciendo read-modify-write de `platformStates`
+// sobre RemoteLibraryVideoModel: lee la foto, calcula con `upsertConfirmed` y
+// escribe el array entero. Es el mismo lost update que ya se corrigió en
+// `FileModel`, en la misma función.
+//
+// Se fuerza el intercalado, igual que en el caso de FileModel: con `Promise.all`
+// a secas el test pasa sin probar nada, porque la carrera puede no darse.
+// ---------------------------------------------------------------------------
+test('P0 — transición y publish concurrentes tampoco se pisan el estado en Nube', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  // Nube tiene que conocer las dos plataformas para que el lost update sea
+  // observable.
+  await central.RemoteLibraryVideoModel.updateOne(
+    { userId: USER_ID, contentId },
+    { $addToSet: { platforms: 'youtube', platformStates: { platform: 'youtube', state: 'badge_only' } } },
+  );
+
+  // El intercalado se mete entre la lectura y la escritura de platformStates
+  // que hace el mirror de Nube.
+  const originalRemoteUpdate = central.RemoteLibraryVideoModel.updateOne.bind(central.RemoteLibraryVideoModel);
+  let intercalado = false;
+  (central.RemoteLibraryVideoModel as any).updateOne = async (...args: any[]) => {
+    if (!intercalado) {
+      intercalado = true;
+      (central.RemoteLibraryVideoModel as any).updateOne = originalRemoteUpdate;
+      await applyPlatformTransition(USER_ID, { contentId, platform: PLATFORM as any, action: 'discard' });
+    }
+    return originalRemoteUpdate(...args);
+  };
+
+  try {
+    await central.applyPlatformPublish(USER_ID, {
+      platform: 'youtube', platformId: 'YTEEEEEEEEE',
+      platformUrl: 'https://www.youtube.com/shorts/YTEEEEEEEEE',
+      contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+    });
+  } finally {
+    (central.RemoteLibraryVideoModel as any).updateOne = originalRemoteUpdate;
+  }
+
+  assert.ok(intercalado, 'precondición: la transición se intercaló de verdad');
+
+  const remote = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const estados = (remote.platformStates ?? []) as any[];
+
+  assert.ok(
+    (remote.platformsDiscarded ?? []).includes(PLATFORM),
+    'El descarte de Instagram tiene que sobrevivir en Nube. Hoy no: el mirror de applyPlatformPublish ' +
+    'reemplaza platformStates desde una foto previa y borra lo que la transición acaba de escribir.',
+  );
+  assert.equal(estados.find(s => s.platform === PLATFORM)?.state, 'discarded',
+    'con su estado detallado');
+  assert.equal(estados.find(s => s.platform === 'youtube')?.state, 'confirmed',
+    'y la publicación de YouTube también queda');
+});
+
+// ---------------------------------------------------------------------------
+// P0-9 — una entrega simultánea idéntica debe deduplicar, no dar conflicto.
+//
+// El caso anterior aceptaba 200 o 409 como resultado válido para la segunda
+// entrega. Eso no demuestra deduplicación: un 409 dice "tu operación quedó
+// vieja", que semánticamente es otra cosa. Una outbox que lee 409 puede
+// concluir que su operación se perdió y armar una nueva.
+// ---------------------------------------------------------------------------
+test('P0 — dos entregas simultáneas idénticas responden ambas OK, ninguna conflicto', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p0-simultaneas-dedup';
+  const payload = { contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 };
+
+  const [a, b] = await Promise.all([postTransicion(payload), postTransicion(payload)]);
+
+  assert.deepEqual(
+    [a.status, b.status], [200, 200],
+    'Las dos entregas de la MISMA operación tienen que responder OK. Un 409 significa "tu operación ' +
+    'quedó vieja", que es otra cosa: una outbox que lo lea puede creer que se perdió y armar una nueva.',
+  );
+  assert.ok(
+    [a.body?.deduplicated, b.body?.deduplicated].includes(true),
+    'y una de las dos tiene que declararse deduplicada',
+  );
+  assert.equal(await revisionDe(contentId), rev0 + 1, 'los efectos se aplican una sola vez');
 });

@@ -41,6 +41,8 @@ export interface IRemoteLibraryVideo extends Document {
   // 'confirmed' cuando hay un platformLink real, 'badge_only' cuando es un
   // toggle manual sin link. Sparse hasta la migración.
   platformStates?: IPlatformState<RemotePlatform>[];
+  /** Espejo de platform_rev: sella con qué versión se escribió cada plataforma. */
+  platformRev?: Record<string, number>;
   // true cuando estos bytes son una copia deliberada hecha A PARTIR de un
   // archivo local conocido (import server-a-servidor del cliente, o
   // endurecido desde un hardlink -- ver remote-library-retention.service.ts).
@@ -73,6 +75,7 @@ const remoteLibraryVideoSchema = new Schema<IRemoteLibraryVideo>({
   platformsDiscarded:        { type: [String], enum: ['youtube', 'instagram', 'tiktok'], default: [] },
   platformLinks:             { type: [platformLinkSchema], default: [] },
   platformStates:            { type: [platformStateSchemaFields], default: undefined },
+  platformRev:               { type: Schema.Types.Mixed, default: undefined },
   safeToEvict:               { type: Boolean, default: false },
 }, { timestamps: true });
 

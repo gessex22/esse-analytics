@@ -1375,17 +1375,45 @@ export async function applyPlatformPublish(userId: string, data: {
       // hay un platformId real, no solo cuando la plataforma era nueva.
       const remoteState = (remote?.platformStates ?? []).find((s) => s.platform === platform)?.state;
       if (remote && (!remote.platforms.includes(platform as any) || remoteState !== 'confirmed')) {
-        const keptLinks = (remote.platformLinks ?? []).filter((l) => l.platform !== platform);
-        const newRemoteStates = upsertConfirmed(remote.platformStates ?? [], platform as any);
+        // ESCRITURA ATÓMICA en dos pasos, igual que arriba para FileModel.
+        // Antes esto calculaba `platformStates` y `platformLinks` completos
+        // desde una FOTO previa (`upsertConfirmed` + filter) y los escribía con
+        // `$set`: read-modify-write del documento entero. Una transición que
+        // tocara OTRA plataforma en el medio quedaba borrada.
+        //
+        // Es el mismo lost update que ya se había corregido en `FileModel`, en
+        // esta misma función -- quedó vivo acá hasta que un test con el
+        // intercalado FORZADO lo destapó ("transición y publish concurrentes
+        // tampoco se pisan el estado en Nube"). Con `Promise.all` a secas el
+        // caso pasaba sin probar nada.
         await RemoteLibraryVideoModel.updateOne(
           { _id: remote._id },
           {
             $addToSet: { platforms: platform },
-            $pull: { platformsDiscarded: platform },
-            $set: {
-              platformLinks: [...keptLinks, { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate }],
-              platformStates: newRemoteStates,
+            $pull: {
+              platformsDiscarded: platform,
+              platformStates: { platform },
+              platformLinks: { platform },
             },
+          },
+        );
+        // Se sella la revisión de esta plataforma también en Nube, con el valor
+        // que quedó en FileModel. Es lo que permite que una transición vieja
+        // (que reclamó una revisión anterior) no pueda pisar acá la publicación
+        // que acaba de entrar: su guard compara contra este sello.
+        const revTrasPublish = linkedFileId
+          ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
+          : undefined;
+        await RemoteLibraryVideoModel.updateOne(
+          { _id: remote._id },
+          {
+            $addToSet: {
+              platformStates: { platform, state: 'confirmed' },
+              platformLinks: { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate },
+            },
+            ...(revTrasPublish !== undefined
+              ? { $set: { ['platformRev.' + platform]: revTrasPublish } }
+              : {}),
           },
         );
       }

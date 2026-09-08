@@ -21,6 +21,8 @@ export interface IBackupFile extends Document {
   // (pullFromCloud). Opcional: registros viejos o que nunca cambiaron su
   // badge desde que existe este campo no lo tienen.
   platforms_updated_at?: Date;
+  /** Espejo de FileModel.platform_rev: sella con qué versión se escribió. */
+  platform_rev?: Record<string, number>;
 }
 
 const BackupFileSchema = new Schema<IBackupFile>({
@@ -38,6 +40,7 @@ const BackupFileSchema = new Schema<IBackupFile>({
   fecha_creacion:      { type: Date },
   local_updated_at:    { type: Date, required: true },
   platforms_updated_at: { type: Date },
+  platform_rev:         { type: Schema.Types.Mixed, default: undefined },
 }, { timestamps: true });
 
 BackupFileSchema.index({ userId: 1, file_name: 1 }, { unique: true });

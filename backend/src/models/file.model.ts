@@ -67,6 +67,14 @@ export interface IFile extends Document {
   // cuando más se la necesita.
   platform_rev?: Record<string, number>;
 
+  // Qué operación reclamó la revisión vigente de cada plataforma. Se escribe
+  // EN EL MISMO update que hace el CAS -- ese es el punto: si el claim se
+  // registrara aparte, una caída entre las dos escrituras dejaría la revisión
+  // ya movida y la operación sin forma de reconocerse como dueña, y al
+  // reintentar se rechazaría a sí misma por `stale`. Con esto, una reanudación
+  // se identifica leyendo el propio documento.
+  platform_claim?: Record<string, string>;
+
   // Cuándo cambió el estado de cada plataforma. INFORMATIVO -- para diagnóstico
   // y para que el cliente pueda mostrar algo; la precedencia la decide
   // `platform_rev`. También mapa, por el mismo motivo de atomicidad.
@@ -118,6 +126,7 @@ const FileSchema = new Schema<IFile>({
   // Mixed: son mapas plataforma -> valor, escritos con $inc/$set por path
   // (atómico). Un subdocumento tipado obligaría a reescribir el array entero.
   platform_rev:              { type: Schema.Types.Mixed, default: undefined },
+  platform_claim:            { type: Schema.Types.Mixed, default: undefined },
   platform_state_changed_at: { type: Schema.Types.Mixed, default: undefined },
   backup_synced_at: { type: Date },
   backup_source_device_id: { type: String },
