@@ -202,6 +202,20 @@ export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<v
     const result = await applyPlatformTransition(userId, {
       contentId, platform: platform as SyncPlatform, action: 'unlink',
     });
+    // `stale` NO es 404. Mapear cualquier !ok a "no encontrado" hacía que una
+    // outbox reintentara para siempre: el cliente leía "todavía no llegó" cuando
+    // en realidad su operación quedó vieja y nunca va a aplicarse. 409 + la
+    // revisión vigente le permite decidir (descartarla o rebasar sobre el
+    // estado nuevo) en vez de girar en el vacío.
+    if (!result.ok && result.reason === 'stale') {
+      res.status(409).json({
+        message: 'La operación quedó atrasada: el estado de esa plataforma cambió después.',
+        reason: 'stale',
+        lastChangedAt: result.lastChangedAt,
+        contentId, platform,
+      });
+      return;
+    }
     if (!result.ok) { res.status(404).json({ message: 'Archivo no encontrado' }); return; }
 
     res.json({ ok: true, fileId: result.fileId, contentId, platform });

@@ -919,6 +919,15 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
         match_status:     data.matchStatus ?? 'manual',
         title:            data.title ?? null,
         local_updated_at: new Date(),
+        // Resucita el vínculo explícitamente. Sin esto, desvincular y volver a
+        // vincular EXACTAMENTE la misma publicación dejaba la fila con el
+        // tombstone puesto (`unlinked`): el upsert la actualizaba pero nunca
+        // limpiaba ese campo, y el siguiente pull la volvía a desvincular sola.
+        link_state:       'linked' as const,
+        // Reloj del vínculo: si no se mueve, el guard de tombstone en
+        // bulkUpsertBackupPlatformVideos sigue comparando contra el instante
+        // del unlink y descarta pushes legítimos posteriores.
+        link_updated_at:  new Date(),
       },
     },
     { upsert: true },
@@ -1235,6 +1244,14 @@ export async function applyPlatformPublish(userId: string, data: {
               // vieja. Confundir las dos fechas es exactamente el error que el
               // caso 3 del harness integral vigila.
               platforms_updated_at: new Date(),
+              // Reloj de ESTA plataforma: es contra el que applyPlatformTransition
+              // decide precedencia. El global (`platforms_updated_at`) no sirve
+              // para eso -- un cambio en YouTube invalidaría una operación de
+              // Instagram.
+              platform_state_changed_at: [
+                ...((file.platform_state_changed_at ?? []) as any[]).filter((r: any) => r.platform !== platform),
+                { platform, at: new Date() },
+              ],
             },
           },
         );
@@ -1286,7 +1303,19 @@ export async function applyPlatformPublish(userId: string, data: {
       // un reintento del MISMO platformId no debe mover el reloj, porque eso
       // haría parecer rezagada a una operación posterior legítima.
       if ((desvinculados.modifiedCount ?? 0) > 0) {
-        await FileModel.updateOne({ _id: linkedFileId }, { $set: { platforms_updated_at: new Date() } });
+        const relojes = ((publishedFile as any)?.platform_state_changed_at ?? []) as any[];
+        await FileModel.updateOne(
+          { _id: linkedFileId },
+          {
+            $set: {
+              platforms_updated_at: new Date(),
+              platform_state_changed_at: [
+                ...relojes.filter((r: any) => r.platform !== platform),
+                { platform, at: new Date() },
+              ],
+            },
+          },
+        );
       }
     }
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este

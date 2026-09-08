@@ -261,38 +261,51 @@ Rollback por flag durante una versión completa.
 
 ## Estado
 
-### Orden corregido de la Entrega 1 (tras la review del 2026-09-08)
+Numeración corregida: `4136aec` + `(este commit)` cerraron **tombstone + LWW de
+links**, que en el borrador figuraba como "paso 7 / outbox". La outbox NO está
+hecha; es lo que sigue.
 
-Rutear los callers restantes **se posterga** hasta tener las bases. El orden
-que sigue reemplaza al anterior:
-
-| # | Paso | Estado |
+| Paso | Qué | Estado |
 |---|---|---|
-| 1 | Tests rojos que demuestren los bugs | Hecho |
-| 2 | Escritor único (`unlink`/`discard`) | Hecho (núcleo + 5 escrituras) |
-| 3 | `unlink` por `content_id` + dejar de tragarse el error | Hecho (bug 1 cerrado, test en verde) |
-| 4 | Corregir el harness: no cerrar la SQLite compartida | Hecho |
-| 5 | **Rediseñar el test integral**: ciclo push→pull real contra Mongo, en vez de la respuesta de la nube hardcodeada | Pendiente |
-| 6 | **Tombstone** para `unlink` en `backup_platform_videos` | Pendiente |
-| 7 | **Outbox + idempotencia** (`operationId`) en el servicio | Pendiente |
-| 8 | **Acción local durable** en Electron (reintento que sobreviva a un cierre) | Pendiente |
-| 9 | Endpoint `POST /api/sync/platform-transition` con las 4 acciones | Pendiente |
-| 10 | Rutear el resto: remote-library, cross-match, push | Pendiente |
-| 11 | Delegación de `confirm` (último, es el más delicado) | Pendiente |
+| 1.1 | Tests rojos por tramo | Hecho |
+| 1.1b | Harness integral (ciclo real, sin fixtures) + gate `test:integration` | Hecho |
+| 1.2 | Escritor único (`applyPlatformTransition`) | Hecho |
+| 1.3 | Rutear los 6 escritores | **1 de 6** (`unlinkPlatform`) |
+| 1.4 | Propagar el error a Electron en vez de tragarlo | Hecho para el unlink |
+| 6 | Tombstone de desvinculación | Hecho |
+| 7 | LWW de links + precedencia por plataforma | Hecho |
+| 8 | Outbox local (intención durable) | **Sin empezar** |
+| 9 | Outbox central (reparación de escrituras parciales) | **Sin empezar** |
+| 2 | Reconciliador / canary | Sin empezar |
+| 3 | Relojes por hecho (resto) | Parcial: existe `platform_state_changed_at` |
+| 4 | Fallos secundarios | Sin empezar |
+| 5 | Consolidación de colecciones | Sin empezar |
 
-## Estado
+### Cobertura actual del harness (19 tests, 0 skips, todos verdes)
 
-| Entrega | Estado |
+| Caso | Qué garantiza |
 |---|---|
-| 1 | En curso — pasos 1 a 4 hechos, 5 a 11 pendientes (ver arriba) |
-| 2 a 5 | Sin empezar |
+| Unlink explícito · 3 ciclos | No se revierte en ninguna de las 6 representaciones |
+| Descarte explícito · 3 ciclos | Termina `discarded` en todas |
+| Segunda PC · ciclo completo | Recibe el tombstone pese a su propio push viejo |
+| Unlink tardío | No destruye una publicación posterior |
+| Re-vincular el mismo `platformId` | Limpia el tombstone; el pull no lo vuelve a soltar |
+| Unlink sin fila previa en el espejo | El tombstone se crea igual |
+| Transición atrasada | 409 con la revisión vigente, no 404 |
+| Snapshot automático | NO degrada un `confirmed` |
 
-**Nada de esto está en producción todavía**: vive en la rama
-`test/sync-convergence-red`, sin mergear. El fix del unlink no corre hasta que
-se mergee y se reinicie la central.
+### Gap conocido, abierto
 
-### Advertencia vigente
+El endpoint de unlink es un `DELETE` con la clave en el path: **no recibe
+`stateChangedAt` del cliente**, así que usa "ahora" y una operación
+genuinamente atrasada no puede declararse como tal. Que el cliente declare
+CUÁNDO ocurrió su acción llega con `POST /api/sync/platform-transition`, que es
+justamente lo que necesita la outbox local para reintentar sin mentir sobre la
+fecha.
 
-El escritor **todavía no es único**: solo `unlinkPlatform` rutea por él. Hasta
-completar el paso 10 hay 6 escritores más tocando las mismas representaciones
-por su cuenta.
+### Pendiente antes del merge
+
+- Rutear los 5 callers que faltan (1.3). Hoy hay 7 escritores, no 1.
+- El harness está excluido del `tsconfig` de backend (cruza a `local-backend` y
+  arrastraba sus ~47 errores, 22 → 55). Necesita chequeo propio.
+- Correr `npm run test:integration` en el pipeline, no `npm test`.

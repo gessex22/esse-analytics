@@ -216,6 +216,32 @@ export async function pushToCloud(req: Request, res: Response): Promise<void> {
 // POST /api/local/backup/pull
 // Fetches cloud records and merges metadata into matching local SQLite files.
 // Records in cloud that have no local match are reported as orphans (not created).
+/**
+ * Parsea un timestamp que salió de SQLite.
+ *
+ * BUG REAL, encontrado 2026-09-08 con el harness integral: las columnas que se
+ * escriben con `datetime('now')` guardan UTC SIN zona (`"2026-09-08 16:31:16"`),
+ * y `new Date(...)` de Node interpreta ese formato como hora LOCAL. En una
+ * máquina en America/Chicago eso da un valor 5 HORAS EN EL FUTURO.
+ *
+ * Consecuencia: en el LWW del pull, el timestamp local siempre parecía más
+ * nuevo que el de la nube, así que **ningún cambio de badge hecho en otro
+ * dispositivo entraba durante ~5 horas**. No era un retraso: quedaba
+ * directamente descartado, en silencio, y sin dejar rastro.
+ *
+ * Se acepta también ISO (con `T`/`Z`), porque otros caminos del repo escriben
+ * `new Date().toISOString()` en las mismas columnas -- conviven los dos
+ * formatos y hay que leer bien los dos.
+ */
+function parseSqliteDate(valor: string | Date | null | undefined): number | null {
+  if (!valor) return null;
+  if (valor instanceof Date) return valor.getTime();
+  // "YYYY-MM-DD HH:MM:SS" (sin T ni offset) = UTC naive de SQLite.
+  const naive = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(valor);
+  const t = new Date(naive ? valor.replace(' ', 'T') + 'Z' : valor).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
 export async function pullFromCloud(req: Request, res: Response): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader) { res.status(401).json({ error: 'Token requerido' }); return; }
@@ -300,8 +326,8 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
         } catch { /* índice único content_id -- se deja como estaba */ }
       }
 
-      const cloudTs = new Date(cf.local_updated_at).getTime();
-      const localTs = new Date(localFile.updated_at).getTime();
+      const cloudTs = parseSqliteDate(cf.local_updated_at) ?? 0;
+      const localTs = parseSqliteDate(localFile.updated_at) ?? 0;
 
       // Modo recuperación: si el local no tiene platforms pero la nube sí,
       // aplicamos sin importar el timestamp (máquina nueva / DB reescaneada).
@@ -327,8 +353,8 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
       // campo), no hay base confiable para comparar y se cae al criterio
       // histórico (la nube converge) -- no perder la garantía de
       // convergencia que esto reemplaza.
-      const cloudPlatformsTs = cf.platforms_updated_at ? new Date(cf.platforms_updated_at).getTime() : null;
-      const localPlatformsTs = localFile.platforms_updated_at ? new Date(localFile.platforms_updated_at).getTime() : null;
+      const cloudPlatformsTs = parseSqliteDate(cf.platforms_updated_at);
+      const localPlatformsTs = parseSqliteDate(localFile.platforms_updated_at);
       const localPlatformsWins = platformsChanged
         && cloudPlatformsTs != null && localPlatformsTs != null
         && localPlatformsTs > cloudPlatformsTs;

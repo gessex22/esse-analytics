@@ -47,6 +47,20 @@ export interface IFile extends Document {
   tipo_contenido?: string;          // categoría de guión/clip -- espejo de BackupFileModel.tipo_contenido.
   local_updated_at?: Date;          // última modificación general informada por el escritorio (push).
   platforms_updated_at?: Date;      // reloj dedicado de badges/descartes (SYNC-01 #3), igual que en BackupFileModel.
+
+  // Reloj de estado POR PLATAFORMA. `platforms_updated_at` es global del
+  // archivo, y usarlo para decidir precedencia hace que un cambio reciente en
+  // YouTube invalide por error una operación pendiente de Instagram: son
+  // hechos independientes y necesitan relojes independientes.
+  //
+  // Vive fuera de `platform_states` a propósito: un `unlink` deja la plataforma
+  // AUSENTE de ese array (decisión cerrada: "pending" es la ausencia, no un 4º
+  // valor del enum), así que si el reloj viviera adentro desaparecería justo
+  // cuando más se lo necesita -- para saber CUÁNDO se desvinculó.
+  //
+  // Solo lo escriben los dos caminos que cambian estado de plataforma:
+  // applyPlatformTransition y applyPlatformPublish.
+  platform_state_changed_at?: { platform: string; at: Date }[];
   backup_synced_at?: Date;          // cuándo la central aceptó el último push de backup para este archivo.
   backup_source_device_id?: string; // deviceId de la instalación que produjo ese último push aceptado.
 }
@@ -91,6 +105,10 @@ const FileSchema = new Schema<IFile>({
   tipo_contenido: { type: String },
   local_updated_at: { type: Date },
   platforms_updated_at: { type: Date },
+  platform_state_changed_at: {
+    type: [{ platform: { type: String, required: true }, at: { type: Date, required: true } }],
+    default: undefined,
+  },
   backup_synced_at: { type: Date },
   backup_source_device_id: { type: String },
 }, { timestamps: true });

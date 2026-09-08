@@ -443,3 +443,182 @@ test('INTEGRAL — un unlink viejo que llega tarde no destruye una publicación 
     'tarde. Hoy el servicio aplica la transición sin mirar el orden.',
   );
 });
+
+// ---------------------------------------------------------------------------
+// CASO 4 — el DESCARTE explícito, que es el camino que el snapshot ya no puede
+// hacer. Contraparte del test reescrito en sync-convergence.test.ts: allá se
+// exige que el push automático NO degrade un confirmed; acá se exige que la
+// transición explícita SÍ pueda, y que aguante los ciclos.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — un descarte explícito sobrevive 3 ciclos y queda discarded en todas las representaciones', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  const r = await applyPlatformTransition(USER_ID, {
+    contentId, platform: PLATFORM as any, action: 'discard',
+  });
+  assert.equal(r.ok, true, 'la transición de descarte debería aplicarse');
+
+  const router = routeToCentral();
+  try {
+    for (let i = 1; i <= 3; i++) {
+      await cicloSync();
+      await router.waitIdle();
+      const foto = await fotoDelEstado(contentId);
+
+      assert.deepEqual(foto.files.discarded, [PLATFORM], 'ciclo ' + i + ': files debe seguir descartada');
+      assert.deepEqual(foto.files.platforms, [], 'ciclo ' + i + ': sin badge de publicada');
+      assert.equal(
+        (foto.files.states as any[]).find(s => s.platform === PLATFORM)?.state, 'discarded',
+        'ciclo ' + i + ': el estado detallado debe decir discarded',
+      );
+      assert.deepEqual(foto.backupFiles.discarded, [PLATFORM], 'ciclo ' + i + ': backup_files igual');
+      assert.equal(foto.sqlite.link, null, 'ciclo ' + i + ': sin link local');
+      assert.deepEqual(foto.sqlite.discarded, [PLATFORM], 'ciclo ' + i + ': SQLite debe reflejar el descarte');
+      assert.deepEqual(foto.remote.discarded, [PLATFORM], 'ciclo ' + i + ': Nube igual');
+      assert.deepEqual(foto.remote.links, [], 'ciclo ' + i + ': Nube sin link');
+    }
+    assert.deepEqual(router.unknown, [], 'el harness no debe dejar rutas sin enrutar');
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CASO 5 (regresión) — re-vincular EXACTAMENTE la misma publicación después de
+// soltarla.
+//
+// `mirrorPlatformVideoToBackup` no tocaba `link_state`, así que la fila del
+// espejo se quedaba con el tombstone puesto y el siguiente pull volvía a
+// desvincular el video que el usuario acababa de re-vincular.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — re-vincular el mismo platformId limpia el tombstone y sobrevive al ciclo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    await unlinkDesdeElectron(local.id, router);
+    await cicloSync();
+    await router.waitIdle();
+
+    const trasUnlink = await fotoDelEstado(contentId);
+    assert.equal(trasUnlink.mirror?.link_state, 'unlinked', 'precondición: quedó el tombstone');
+
+    // El usuario vuelve a pegar el MISMO link.
+    await central.applyPlatformPublish(USER_ID, {
+      platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+      contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+    });
+
+    await cicloSync();
+    await router.waitIdle();
+
+    const foto = await fotoDelEstado(contentId);
+    assert.equal(
+      foto.mirror?.link_state, 'linked',
+      'Re-vincular tiene que resucitar el vínculo en el espejo. Si el tombstone sobrevive, el pull ' +
+      'vuelve a desvincular lo que el usuario acaba de vincular.',
+    );
+    assert.deepEqual(foto.files.platforms, [PLATFORM], 'y la plataforma vuelve a estar publicada');
+    assert.ok(foto.sqlite.link, 'y el link local vuelve a existir');
+    assert.deepEqual(router.unknown, [], 'el harness no debe dejar rutas sin enrutar');
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CASO 6 (regresión) — unlink cuando NO hay fila previa en el espejo.
+//
+// El tombstone se escribía con `updateMany` sin upsert: si la fila histórica
+// faltaba (nunca se mirroreó, o la borró la versión anterior de este mismo
+// servicio, que hacía deleteMany), no quedaba tombstone alguno y una PC vieja
+// con el vínculo lo recreaba en su próximo push como si nada.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — un unlink deja tombstone aunque el espejo no tuviera la fila', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+
+  // Se borra la fila del espejo: simula el estado que dejaba la versión previa
+  // del servicio, o un link que nunca llegó a mirrorearse.
+  await central.BackupPlatformVideoModel.deleteMany({ userId: USER_ID, platform: PLATFORM });
+  assert.equal(
+    await central.BackupPlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM }), 0,
+    'precondición: el espejo quedó sin la fila',
+  );
+
+  const router = routeToCentral();
+  try {
+    await unlinkDesdeElectron(local.id, router);
+
+    const tomb = await central.BackupPlatformVideoModel.findOne({
+      userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID,
+    }).lean();
+
+    assert.ok(tomb, 'El tombstone tiene que crearse aunque no hubiera fila previa: sin él, otra PC ' +
+      'con el vínculo lo recrea en su próximo push y el unlink no se propaga nunca.');
+    assert.equal(tomb.link_state, 'unlinked', 'y tiene que estar marcado como desvinculado');
+    assert.equal(tomb.content_id, contentId, 'con el content_id, que es lo que le dice a la otra PC qué soltar');
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CASO 7 (regresión) — una operación atrasada responde 409, no 404.
+//
+// El endpoint mapeaba cualquier `!ok` a "Archivo no encontrado", así que una
+// outbox leía "todavía no llegó" y reintentaba para siempre una operación que
+// nunca iba a aplicarse.
+//
+// GAP CONOCIDO que este test deja a la vista: el endpoint todavía NO recibe
+// `stateChangedAt` del cliente (es un DELETE con la clave en el path), así que
+// usa "ahora" y nunca puede considerarse atrasado por sí solo. Para provocar el
+// conflicto se adelanta el reloj de la plataforma -- escenario realista, es
+// exactamente lo que pasa con desfasaje de reloj entre dispositivos. Que el
+// cliente pueda declarar CUÁNDO ocurrió su acción llega con
+// `POST /api/sync/platform-transition`, que es lo que necesita la outbox.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — una transición atrasada responde 409 con la revisión vigente, no 404', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+
+  // El estado de ESTA plataforma cambió "después" de la operación que llega.
+  const enElFuturo = new Date(Date.now() + 60_000);
+  await central.FileModel.updateOne(
+    { userId: USER_ID, content_id: contentId },
+    { $set: { platform_state_changed_at: [{ platform: PLATFORM, at: enElFuturo }] } },
+  );
+
+  const { res, captured } = fakeRes();
+  await central.unlinkPlatform(
+    {
+      user: USER, headers: { authorization: AUTH }, query: {}, body: {},
+      params: { contentId, platform: PLATFORM },
+    } as any,
+    res as any,
+  );
+
+  assert.equal(captured.status, 409, 'una operación atrasada es un conflicto, no un "no encontrado": ' +
+    'con 404 la outbox reintenta eternamente algo que nunca va a aplicar');
+  assert.equal(captured.body?.reason, 'stale');
+  assert.ok(captured.body?.lastChangedAt, 'y devuelve la revisión vigente para que el cliente pueda rebasar');
+
+  // Y no tocó nada: una operación rechazada no puede dejar efectos.
+  const foto = await fotoDelEstado(contentId);
+  assert.deepEqual(foto.files.platforms, [PLATFORM], 'la plataforma sigue publicada');
+});

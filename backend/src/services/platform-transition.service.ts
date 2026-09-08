@@ -43,6 +43,8 @@ export interface PlatformTransitionResult {
   fileId?: string;
   platforms?: string[];
   platformsDiscarded?: string[];
+  /** Con `stale`: cuándo cambió por última vez el estado de ESA plataforma. */
+  lastChangedAt?: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,14 +138,32 @@ export async function applyPlatformTransition(
   const stateChangedAt = input.stateChangedAt ?? ahora;
   const operationId = input.operationId;
 
-  // Precedencia. `operationId` da idempotencia (repetir no duplica efectos)
-  // pero NO resuelve orden: una operación vieja que llega tarde seguiría
-  // aplicándose y destruiría un cambio posterior. Caso real que esto evita:
-  // se suelta la plataforma, después se re-publica con un link nuevo, y recién
-  // ahí llega el unlink rezagado -- sin este corte, mata la publicación nueva.
-  const ultimoCambio = file.platforms_updated_at ? new Date(file.platforms_updated_at) : null;
+  // Precedencia POR PLATAFORMA. `operationId` da idempotencia (repetir no
+  // duplica efectos) pero NO resuelve orden: una operación vieja que llega
+  // tarde seguiría aplicándose y destruiría un cambio posterior. Caso real que
+  // esto evita: se suelta la plataforma, después se re-publica con un link
+  // nuevo, y recién ahí llega el unlink rezagado -- sin este corte, mata la
+  // publicación nueva.
+  //
+  // Se compara contra el reloj de ESTA plataforma, no contra
+  // `platforms_updated_at` (que es global del archivo): con el global, un
+  // cambio reciente en YouTube invalidaría por error una operación pendiente
+  // de Instagram, que es un hecho independiente.
+  //
+  // Fallback para catálogo viejo: si esta plataforma todavía no tiene reloj
+  // propio se cae al global. Es peor (puede rechazar de más) pero es el único
+  // dato disponible, y rechazar de más falla RUIDOSO -- 409, el cliente
+  // reintenta con base fresca -- mientras que no comparar nada deja pasar en
+  // silencio la operación rezagada que este corte existe para frenar. En
+  // cuanto esa plataforma reciba un cambio, pasa a tener su reloj propio.
+  const relojes = (file.platform_state_changed_at ?? []) as { platform: string; at: Date }[];
+  const relojPlataforma = relojes.find(r => r.platform === platform)?.at;
+  const ultimoCambio = relojPlataforma
+    ? new Date(relojPlataforma)
+    : (file.platforms_updated_at ? new Date(file.platforms_updated_at) : null);
+
   if (ultimoCambio && stateChangedAt < ultimoCambio) {
-    return { ok: false, reason: 'stale', fileId: String(file._id) };
+    return { ok: false, reason: 'stale', fileId: String(file._id), lastChangedAt: ultimoCambio };
   }
 
   // 1) files — la representación canónica.
@@ -166,9 +186,17 @@ export async function applyPlatformTransition(
         platform_states: next.states,
         // El reloj dedicado ya existe y el pull lo usa para desempatar. Moverlo
         // acá es lo que hace que una acción explícita le gane a un push viejo
-        // que todavía no sabe de ella. No es un reloj nuevo (eso es Entrega 3),
-        // es usar bien el que hay.
+        // que todavía no sabe de ella.
         platforms_updated_at: ahora,
+        // Y el reloj de ESTA plataforma, que es contra el que se decide
+        // precedencia. Se guarda aunque la plataforma quede ausente de
+        // `platform_states` (caso `unlink`): saber cuándo se desvinculó es
+        // justamente lo que hace falta para rechazar una operación posterior
+        // que venga rezagada.
+        platform_state_changed_at: [
+          ...relojes.filter(r => r.platform !== platform),
+          { platform, at: ahora },
+        ],
       },
     },
   );
@@ -190,6 +218,14 @@ export async function applyPlatformTransition(
   // 3) platformvideos — se desvincula el link real, pero NO se borra el
   //    documento: conserva platformId/métricas/fecha por si el video se vuelve
   //    a emparejar. Mismo criterio que ya usaba `unlinkPlatform`.
+  // Se leen ANTES de soltarlos: después del updateMany ya no se los puede
+  // encontrar por linkedFileId, y se necesitan sus platformId para poder dejar
+  // un tombstone por cada uno (ver más abajo).
+  const pvsDesvinculados = await PlatformVideoModel
+    .find({ userId, linkedFileId: file._id, platform })
+    .select('platformId')
+    .lean();
+
   await PlatformVideoModel.updateMany(
     { userId, linkedFileId: file._id, platform },
     { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
@@ -207,6 +243,18 @@ export async function applyPlatformTransition(
   //
   //    Se conserva `content_id`: es lo que le dice a la otra PC de qué archivo
   //    despegar el vínculo (el platform_id solo no alcanza).
+  //    Se marcan DOS conjuntos, porque ninguno alcanza solo:
+  //      a) las filas del espejo que ya apuntaban a este content_id, y
+  //      b) una fila por cada platformId que la central conoce como vinculado
+  //         a este archivo (los PlatformVideoModel que se acaban de soltar).
+  //
+  //    (b) existe porque `updateMany` sin upsert no crea nada: si la fila
+  //    histórica del espejo falta -- nunca se mirroreó, o la borró la versión
+  //    anterior de este mismo servicio, que hacía deleteMany -- no quedaba
+  //    ningún tombstone, y una PC vieja con el vínculo lo recreaba en su
+  //    próximo push como si nada hubiera pasado.
+  const idsVinculados = pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
+
   await BackupPlatformVideoModel.updateMany(
     { userId, platform, content_id: contentId },
     {
@@ -218,6 +266,26 @@ export async function applyPlatformTransition(
       },
     },
   );
+
+  for (const platformId of idsVinculados) {
+    await BackupPlatformVideoModel.updateOne(
+      { userId, platform, platform_id: platformId },
+      {
+        $set: {
+          link_state: 'unlinked',
+          link_updated_at: ahora,
+          content_id: contentId,
+          ...(operationId ? { operation_id: operationId } : {}),
+        },
+        // El índice único es {userId, platform, platform_id}, así que el
+        // tombstone se crea por platformId. `local_updated_at` es requerido por
+        // el schema y solo se fija al insertar: si la fila ya existía, su valor
+        // real no se pisa.
+        $setOnInsert: { local_updated_at: ahora, match_status: 'sin_match' },
+      },
+      { upsert: true },
+    );
+  }
 
   // 5) remote_library_videos — la copia de Nube. Solo si el video vive ahí y
   //    solo para las 3 plataformas que ese modelo conoce.

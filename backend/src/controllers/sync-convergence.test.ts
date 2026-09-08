@@ -78,20 +78,25 @@ function fakeReqRes(user: any, body: unknown) {
 }
 
 // ---------------------------------------------------------------------------
-// BUG 2, tramo del medio — el push de catálogo revierte un descarte explícito.
+// El snapshot automático NO puede degradar un `confirmed`.
 //
-// Escenario exacto del informe: el usuario descarta Instagram en Electron sobre
-// una plataforma que la central tiene como `confirmed`. El push de catálogo
-// llega con el estado correcto (sin badge, en descartados), pero
-// `bulkUpsertBackupFiles` le aplica la protección de BUG-2026-09-06-04 --que
-// re-agrega toda plataforma `confirmed` y la saca de descartados-- porque NO
-// puede distinguir una acción explícita del usuario de un push automático
-// atrasado. Esa distinción es justo lo que introduce el punto 0 del plan.
+// Este test afirmaba lo contrario y estaba rojo. Se reescribió, no se "arregló
+// para que pase": la decisión de diseño cambió y el test estaba escribiendo la
+// regla vieja.
 //
-// Se pone en verde cuando el descarte explícito pase por el servicio central
-// como transición (y el push deje de poder reinterpretarlo).
+// El razonamiento: `bulkUpsertBackupFiles` recibe el push periódico de catálogo,
+// que es un SNAPSHOT del estado completo de una PC. Un snapshot no permite
+// distinguir "el usuario descartó esto" de "este cliente venía desactualizado",
+// así que dejarlo degradar un `confirmed` abriría exactamente la vía de daño que
+// el bug 2 tenía: una PC atrasada borrando publicaciones reales de una sola vez.
+//
+// Por eso el contrato quedó así: el snapshot COMPLETA información pero nunca
+// degrada; el descarte explícito viaja como transición
+// (applyPlatformTransition) y tiene su propia cobertura integral, que sí exige
+// que sobreviva los ciclos. Ver docs/sync-convergence-plan-2026-09-08.md,
+// "Propuesta rechazada: inferir la intención diffeando el snapshot".
 // ---------------------------------------------------------------------------
-test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un descarte explícito', async (t) => {
+test('el push de catálogo (snapshot automático) NO degrada una plataforma confirmed', async (t) => {
   if (!(await conectarOSaltear(t))) return;
 
   const { FileModel } = await import('../models/file.model');
@@ -119,8 +124,9 @@ test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un 
       platforms_updated_at: ANTES,
     });
 
-    // El push que manda Electron después de que el usuario descartó Instagram:
-    // más nuevo que lo que hay en la central, y explícito.
+    // El push de catálogo de una PC que cree que Instagram está descartada.
+    // Más NUEVO que lo que hay en la central -- y aun así no alcanza: ser
+    // reciente no lo vuelve intencional.
     const { req, res, captured } = fakeReqRes(
       // Usuario común: sin owner ni cloud storage, para que el bloque de
       // sincronización a Nube no entre y el test aísle el badge.
@@ -148,14 +154,18 @@ test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un 
     assert.ok(despues, 'el archivo debería seguir existiendo después del push');
 
     assert.deepEqual(
-      despues!.platforms_discarded, ['instagram'],
-      'El descarte explícito del usuario debe sobrevivir al push. Hoy no: la protección de ' +
-      'BUG-2026-09-06-04 re-agrega toda plataforma `confirmed` y la saca de descartados, sin poder ' +
-      'distinguir una acción explícita de un push automático atrasado.',
+      despues!.platforms, ['instagram'],
+      'Un snapshot no puede tirar un link real: no sabe si el usuario descartó o si la PC venía ' +
+      'atrasada. La plataforma confirmed se conserva (protección de BUG-2026-09-06-04).',
     );
     assert.deepEqual(
-      despues!.platforms, [],
-      'Instagram no debería volver a `platforms` después de un descarte explícito.',
+      despues!.platforms_discarded, [],
+      'Y tampoco puede meterla en descartados por su cuenta.',
+    );
+    assert.equal(
+      (despues!.platform_states ?? []).find((s: any) => s.platform === 'instagram')?.state,
+      'confirmed',
+      'El estado detallado tiene que seguir diciendo confirmed.',
     );
   } finally {
     // Base descartable: se limpia entera, no solo los documentos del test. Si

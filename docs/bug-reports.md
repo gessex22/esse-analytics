@@ -34,6 +34,78 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-08-01 — El pull descartaba en silencio los cambios de badge de otros dispositivos durante ~5 horas (SQLite naive vs. UTC)
+
+- Estado: `corregido` (local-backend), con test de regresión que lo cubre; pendiente el deploy de siempre.
+- Reportado: 2026-09-08
+- Plataformas: Web/Electron (local-backend). Afecta a toda instalación cuya zona horaria no sea UTC.
+- Severidad: alta -- pérdida silenciosa de propagación, sin error visible ni rastro en logs
+- Reportado por: agente (lo destapó el harness integral de convergencia, no se buscaba)
+
+### Síntoma
+
+Un cambio de badge/descarte hecho en OTRO dispositivo (celular, segunda PC, o
+directo en la central) no llegaba a esta PC. No es que tardara: quedaba
+descartado, en silencio, y el siguiente ciclo volvía a descartarlo igual.
+
+### Investigación
+
+`pullFromCloud` resuelve el LWW de badges comparando el `platforms_updated_at`
+local contra el de la nube. El problema está en cómo se lee el local:
+
+SQLite guarda las columnas escritas con `datetime('now')` como **UTC sin zona**
+(`"2026-09-08 16:31:16"`). `new Date(...)` de Node interpreta ese formato como
+hora **LOCAL**. Medido en la máquina de desarrollo (America/Chicago):
+
+```
+SQLite datetime(now)  = "2026-09-08 16:31:16"
+parseado por Node     = 2026-09-08T21:31:16.000Z
+ahora real (UTC)      = 2026-09-08T16:31:16.328Z
+DERIVA                = +300 minutos
+```
+
+O sea: el timestamp local se leía **5 horas en el futuro**. Como
+`localPlatformsWins` exige `localTs > cloudTs`, el lado local ganaba SIEMPRE
+para cualquier cambio remoto de las últimas ~5 horas (el tamaño de la ventana
+es el offset de la zona horaria).
+
+Complica el diagnóstico que en esas mismas columnas conviven dos formatos: otros
+caminos del repo escriben `new Date().toISOString()`, que sí trae `Z` y se
+parsea bien. Por eso el bug no era universal ni reproducible a voluntad.
+
+**Cómo apareció**: no se estaba buscando. Un caso del harness integral (un
+descarte explícito hecho en la central que debía bajar a SQLite) fallaba sin
+motivo aparente; el LWW parecía correcto leyendo el código, y la diferencia solo
+se vio midiendo los timestamps reales de los dos lados.
+
+### Corrección
+
+`local-backend/src/controllers/backup-sync.controller.ts`: helper
+`parseSqliteDate()`, que detecta el formato naive (`YYYY-MM-DD HH:MM:SS`, sin
+`T` ni offset) y lo interpreta como UTC, dejando pasar el ISO tal cual. Se usa
+en las dos comparaciones de LWW del pull (`local_updated_at` y
+`platforms_updated_at`).
+
+### Verificación y pendiente
+
+- Cubierto por `INTEGRAL — un descarte explícito sobrevive 3 ciclos...`
+  (`backend/src/controllers/sync-integral.test.ts`), que fallaba antes del fix y
+  pasa después. Corre con `npm run test:integration`.
+- `tsc`: backend 22 y local-backend 47, ambos en su baseline.
+- **Sospecha a confirmar, no verificada**: esto podría ser (parte de) la causa
+  real de BUG-2026-09-05-01, "el descarte desde el celular no llega a la PC",
+  que hasta ahora se venía atribuyendo al cooldown de `runSyncTick`. El cooldown
+  explica un retraso de minutos; esto explica un descarte total durante horas.
+  Vale revisar ese incidente con este dato antes de seguir buscando por el lado
+  del cooldown.
+- **Alcance no auditado**: se corrigieron las dos comparaciones del LWW del
+  pull. NO se auditó el resto del repo en busca de otros `new Date(...)` sobre
+  valores que vengan de SQLite -- el mismo error puede estar en otros lados.
+
+### Historial
+- 2026-09-08 — agente: encontrado al depurar un caso del harness integral,
+  confirmado midiendo la deriva real (+300 min), corregido y cubierto por test.
+
 ## BUG-2026-09-07-03 — Calendario iOS mostraba "linux gaming" como publicado hoy en TikTok (fecha mala en upload_history)
 
 - Estado: `corregido` -- dato de producción reparado, sin cambio de código (ver "no implementado a propósito" abajo).
