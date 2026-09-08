@@ -269,8 +269,21 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
       });
       return;
     }
-    if (baseVersion !== undefined && !Number.isInteger(baseVersion)) {
-      res.status(400).json({ message: 'baseVersion debe ser un entero (la revisión que devolvió la central).' });
+    // `operationId` y `baseVersion` son OBLIGATORIOS acá. Mientras fueron
+    // opcionales, la deduplicación y la precedencia existían pero no se
+    // ejercitaban: un cliente que no los mandara obtenía el comportamiento
+    // viejo sin enterarse. Este endpoint es el contrato nuevo -- el `DELETE`
+    // sigue disponible para quien todavía no pueda declararlos.
+    if (typeof operationId !== 'string' || operationId.trim().length === 0) {
+      res.status(400).json({
+        message: 'operationId es obligatorio: es lo que permite deduplicar reintentos y reanudar una operación cortada.',
+      });
+      return;
+    }
+    if (!Number.isInteger(baseVersion) || (baseVersion as number) < 0) {
+      res.status(400).json({
+        message: 'baseVersion es obligatorio y debe ser un entero >= 0 (la revisión que devolvió la central).',
+      });
       return;
     }
 
@@ -284,6 +297,16 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
 
     if (!result.ok && result.reason === 'not_found') {
       res.status(404).json({ message: 'Archivo no encontrado' }); return;
+    }
+    // 422, no 409: no es que la operación llegó tarde -- es que esta clave ya
+    // identifica OTRA operación. Reintentarla no la va a arreglar nunca, así
+    // que la outbox tiene que distinguirlo de un conflicto de versión.
+    if (!result.ok && result.reason === 'operation_mismatch') {
+      res.status(422).json({
+        message: 'Ese operationId ya identifica otra operación (distinto contentId, plataforma, acción o baseVersion).',
+        reason: 'operation_mismatch', contentId, platform,
+      });
+      return;
     }
     // 409, no 404: la operación llegó tarde. Con 404 una outbox leería "todavía
     // no llegó" y reintentaría para siempre algo que nunca va a aplicarse; con

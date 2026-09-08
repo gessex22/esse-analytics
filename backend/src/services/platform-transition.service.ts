@@ -40,7 +40,7 @@ export interface PlatformTransitionResult {
    * 'stale'     = la operación es anterior al último cambio de estado ya
    *               aplicado, así que se descarta (llegó tarde).
    */
-  reason?: 'not_found' | 'stale' | 'conflict';
+  reason?: 'not_found' | 'stale' | 'conflict' | 'operation_mismatch';
   fileId?: string;
   platforms?: string[];
   platformsDiscarded?: string[];
@@ -71,6 +71,12 @@ export interface PlatformTransitionResult {
  * `upload_history` y `audit_events` NO se tocan a propósito: son historial de
  * lo que pasó, no estado actual. Borrar de ahí falsearía la bitácora.
  */
+/** Revisión vigente de una plataforma, para poder informarla en un conflicto. */
+async function revisionVigente(fileId: any, platform: string): Promise<number> {
+  const f = await FileModel.findById(fileId).select('platform_rev').lean();
+  return ((f?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0;
+}
+
 export async function applyPlatformTransition(
   userId: string,
   // `platform` es SyncPlatform (incluye 'facebook'): el crosspost también se
@@ -120,6 +126,20 @@ export async function applyPlatformTransition(
   let opPrevia: any = null;
   if (operationId) {
     opPrevia = await PlatformTransitionOpModel.findOne({ userId, operationId }).lean();
+
+    // P0-3: la clave identifica UNA operación concreta, no un permiso para
+    // hacer cualquier cosa. Si llega la misma clave con otro payload, es un
+    // error del cliente -- y aceptarlo sería peor que rechazarlo: podría
+    // "reanudar" (o dar por completada) una operación que nunca se pidió.
+    if (opPrevia && (
+      opPrevia.contentId !== contentId ||
+      opPrevia.platform !== platform ||
+      opPrevia.action !== action ||
+      (opPrevia.baseVersion ?? null) !== (baseVersion ?? null)
+    )) {
+      return { ok: false, reason: 'operation_mismatch', fileId: String(file._id) };
+    }
+
     if (opPrevia?.status === 'completed') {
       return {
         ok: true,
@@ -134,7 +154,17 @@ export async function applyPlatformTransition(
 
   const revs = (file.platform_rev ?? {}) as Record<string, number>;
   const revActual: number | undefined = revs[platform];
-  const reanudando = opPrevia?.status === 'pending';
+
+  // P0-1: si el CAS ya se hizo o no NO se puede inferir de que la operación
+  // figure `pending`. Una caída entre el insert de `pending` y el CAS dejaba
+  // ese estado con el claim SIN hacer, y al reanudar se lo salteaba: la
+  // revisión no se incrementaba nunca y la precedencia dejaba de proteger.
+  //
+  // La señal real es `resultVersion`: se escribe EN el mismo momento del claim.
+  // Si está, el claim ya ocurrió; si no está, hay que hacerlo aunque la
+  // operación ya estuviera registrada.
+  const claimHecho = opPrevia?.resultVersion !== undefined && opPrevia?.resultVersion !== null;
+  const reanudando = opPrevia?.status === 'pending' && claimHecho;
 
   // ── Precedencia por revisión causal ─────────────────────────────────────
   // Solo se exige cuando el cliente declara sobre qué revisión trabajó. Al
@@ -194,8 +224,18 @@ export async function applyPlatformTransition(
       return { ok: false, reason: 'conflict', fileId: String(file._id) };
     }
     versionResultante = ((claimed as any).platform_rev ?? {})[platform] ?? (revActual ?? 0) + 1;
+
+    // Se deja constancia del claim JUNTO con su resultado. Es lo que permite
+    // distinguir "quedó pendiente antes de reclamar" de "quedó pendiente
+    // después de reclamar" en una reanudación.
+    if (operationId) {
+      await PlatformTransitionOpModel.updateOne(
+        { userId, operationId },
+        { $set: { resultVersion: versionResultante } },
+      );
+    }
   } else {
-    versionResultante = revActual ?? 0;
+    versionResultante = opPrevia?.resultVersion ?? revActual ?? 0;
   }
 
   // ── Escrituras ATÓMICAS POR PLATAFORMA ──────────────────────────────────
@@ -216,8 +256,16 @@ export async function applyPlatformTransition(
   const quitarDeFile: any = { platforms: platform, platform_states: { platform } };
   if (action === 'unlink') quitarDeFile.platforms_discarded = platform;
 
-  await FileModel.updateOne(
-    { _id: file._id },
+  // P0-2: TODAS las escrituras van condicionadas a que la revisión de esta
+  // plataforma siga siendo la que esta operación reclamó. El CAS por sí solo no
+  // alcanza: protege el claim y termina ahí, así que una publicación podía
+  // entrar entre el claim y el `$pull` y la transición vieja la destruía igual.
+  // Con el filtro, si alguien movió la revisión en el medio, estas escrituras
+  // simplemente no matchean y la operación no pisa nada.
+  const siSigueVigente = { _id: file._id, [`platform_rev.${platform}`]: versionResultante };
+
+  const aplicado = await FileModel.updateOne(
+    siSigueVigente,
     {
       $pull: quitarDeFile,
       // El reloj dedicado ya existe y el pull lo usa para desempatar. Moverlo
@@ -226,9 +274,17 @@ export async function applyPlatformTransition(
       $set: { platforms_updated_at: ahora },
     },
   );
+
+  // Nadie matcheó: la revisión se movió mientras esta operación estaba en
+  // curso. Se corta acá, sin aplicar el resto -- y sin marcar la operación como
+  // completada, para que quede visible que no llegó a aplicarse.
+  if ((aplicado.matchedCount ?? 0) === 0) {
+    return { ok: false, reason: 'conflict', fileId: String(file._id), version: await revisionVigente(file._id, platform) };
+  }
+
   if (action === 'discard') {
     await FileModel.updateOne(
-      { _id: file._id },
+      siSigueVigente,
       { $addToSet: { platforms_discarded: platform, platform_states: { platform, state: 'discarded' } } },
     );
   }

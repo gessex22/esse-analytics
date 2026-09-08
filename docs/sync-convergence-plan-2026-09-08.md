@@ -259,66 +259,35 @@ Rollback por flag durante una versión completa.
 - **El test del pull necesita rediseño** antes de poder usarse como criterio de
   aceptación (ver 1.1).
 
-## ⛔ P0 abiertos — NO empezar las outboxes hasta cerrarlos
+## P0 — CERRADOS (con sus 5 casos en verde)
 
-Señalados en review sobre `a80ca41`. La semántica causal **no está cerrada**:
-decir lo contrario fue prematuro. Los tres primeros son agujeros de corrección,
-no mejoras.
+Los tres huecos señalados sobre `a80ca41`, cada uno con su regresión:
 
-### 1. Caída entre el insert de `pending` y el CAS
+| P0 | Qué fallaba | Cómo se cerró |
+|---|---|---|
+| Caída entre `pending` y el CAS | `reanudando` daba por hecho que el CAS ya había corrido; si la caída ocurría en el medio, la revisión no se incrementaba nunca | La señal ya no se infiere: `resultVersion` se escribe **en el momento del claim**, y su presencia es lo que dice si el claim ocurrió |
+| El CAS no cubría las proyecciones | Protegía el claim y terminaba ahí; una publicación podía entrar antes del `$pull` y la transición vieja la destruía | **Todas** las escrituras van condicionadas a `platform_rev.<plataforma> === versión reclamada`. Si alguien la movió, no matchean y la operación corta con 409 |
+| `operationId` con otro payload | Podía reanudar o dar por completada una operación distinta | Se valida que `contentId`, plataforma, acción y `baseVersion` coincidan con el registro; si no, **422** (no 409: reintentar nunca lo va a arreglar) |
 
-`platform-transition.service.ts`: la operación se registra `pending` y recién
-después se hace el CAS que incrementa la revisión. Si el proceso se cae **entre
-esas dos líneas**, al reanudar la rama `reanudando` **saltea el CAS** y la
-revisión nunca se incrementa.
+Además: el `POST` ahora **exige** `operationId` y `baseVersion >= 0`, y
+`applyPlatformPublish` dejó de reemplazar `platform_states` desde una foto
+previa.
 
-El bug de fondo es la suposición: `reanudando` da por hecho que el CAS ya corrió,
-y nada lo garantiza. Hace falta registrar en la operación si el claim se hizo
-(por ejemplo, guardar `resultVersion` al momento del CAS y usar su presencia
-como la señal, en vez de inferirlo del estado `pending`).
+### Lección: un test de concurrencia que pasa no prueba nada
 
-### 2. El CAS no protege las proyecciones
+El caso "transición y publish concurrentes" pasaba con un `Promise.all` a
+secas -- pero solo porque la carrera no llegaba a darse. Al **forzar** el
+intercalado (stub que mete la transición justo entre la lectura y la escritura
+de `platform_states`), falló de inmediato y confirmó el lost update. Los tests
+de concurrencia de este harness fuerzan el intercalado; no lo esperan.
 
-El CAS excluye a otra transición mientras se **reclama la revisión**, y termina
-ahí. Las cinco escrituras quedan afuera de esa exclusión: una publicación nueva
-puede entrar después del CAS y antes del `$pull`, y la transición vieja la
-destruye igual.
+### Instancia restante del mismo patrón, sin cubrir
 
-Dos salidas posibles (decidir cuál):
-- cada proyección lleva `resultVersion` y rechaza escrituras de una versión
-  inferior; o
-- las proyecciones se reconstruyen desde `files` como fuente canónica, en vez de
-  escribirse en paralelo.
-
-### 3. `operationId` reutilizado con otro payload
-
-No se valida que la operación ya registrada tenga el **mismo** `contentId`,
-plataforma, acción y `baseVersion`. La misma clave con otro payload puede
-reanudar --o dar por completada-- una operación distinta.
-
-### Además (no P0, pero antes de la outbox)
-
-- El `POST /api/sync/platform-transition` acepta `operationId` y `baseVersion`
-  **opcionales**; debería exigirlos (`baseVersion >= 0`, `operationId` válido).
-  Mientras sean opcionales, la precedencia y la deduplicación no se ejercitan.
-- `applyPlatformPublish` **todavía** calcula y reemplaza `platform_states` desde
-  una foto previa: el mismo lost update que se sacó del servicio sigue ahí.
-- El caso "entrega invertida" del harness hoy prueba **primero en llegar gana**,
-  no orden causal: las dos operaciones parten de la misma revisión. La outbox
-  tiene que serializar/coalescer por `(contentId, platform)` y rebasar la
-  siguiente con la versión devuelta.
-
-### Casos que faltan en el harness (rojos primero)
-
-1. Caída después de crear `pending` pero **antes** del CAS.
-2. Pausa después del CAS → publicación nueva en el medio → reanudación de la
-   operación vieja.
-3. Mismo `operationId` con payload diferente.
-4. Dos entregas **simultáneas** de la misma operación.
-5. Transición concurrente con `applyPlatformPublish`.
-
-Con esos cinco en verde, recién ahí: **outbox local primero**, proyección y
-reintento central después.
+`applyPlatformPublish` sigue haciendo read-modify-write de `platformStates`
+sobre **`RemoteLibraryVideoModel`** (`backup.controller.ts`, el
+`upsertConfirmed` del mirror de Nube). Es el mismo bug que se acaba de corregir
+en `FileModel`, en la misma función, y **no tiene test todavía**. Red primero
+antes de tocarlo.
 
 ## Semántica de la transición (parcial — ver P0 arriba)
 

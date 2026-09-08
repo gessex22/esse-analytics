@@ -1224,14 +1224,24 @@ export async function applyPlatformPublish(userId: string, data: {
       // array plano, no el estado real detrás.
       const currentState = (file.platform_states ?? []).find((s) => s.platform === platform)?.state;
       if (!file.platforms.includes(platform) || currentState !== 'confirmed') {
-        const newStates = upsertConfirmed(file.platform_states ?? [], platform as any);
+        // ESCRITURA ATÓMICA, en dos pasos. Antes esto calculaba el array
+        // completo de `platform_states` con `upsertConfirmed` sobre una FOTO
+        // previa y lo escribía con `$set`: read-modify-write del documento
+        // entero. Si otra operación cambiaba el estado de OTRA plataforma en el
+        // medio, este `$set` la borraba. Lost update confirmado forzando el
+        // intercalado en el harness ("una transición y un publish concurrentes
+        // no se pisan el estado") -- con `Promise.all` a secas el test pasaba
+        // sin probar nada, porque la carrera no llegaba a darse.
+        //
+        // `$pull` + `$addToSet` en dos pasos porque no se puede hacer las dos
+        // cosas sobre el mismo campo en una sola actualización. Cada paso toca
+        // únicamente la entrada de ESTA plataforma.
         await FileModel.updateOne(
           { _id: file._id },
           {
             $addToSet: { platforms: platform },
-            $pull: { platforms_discarded: platform },
+            $pull: { platforms_discarded: platform, platform_states: { platform } },
             $set: {
-              platform_states: newStates,
               // Sella el reloj de ESTADO cuando el estado cambia de verdad.
               // Sin esto, la precedencia de applyPlatformTransition no tiene
               // contra qué comparar: un unlink rezagado veía un
@@ -1252,6 +1262,10 @@ export async function applyPlatformPublish(userId: string, data: {
             // atómico y no toca las otras plataformas.
             $inc: { [`platform_rev.${platform}`]: 1 },
           },
+        );
+        await FileModel.updateOne(
+          { _id: file._id },
+          { $addToSet: { platform_states: { platform, state: 'confirmed' } } },
         );
       }
       publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
