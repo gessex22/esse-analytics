@@ -91,7 +91,8 @@ test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un 
   const { FileModel } = await import('../models/file.model');
   const { bulkUpsertBackupFiles } = await import('./backup.controller');
 
-  const userId = new mongoose.Types.ObjectId();
+  // string, no ObjectId: FileModel.userId está tipado como string en el schema.
+  const userId = new mongoose.Types.ObjectId().toString();
   const CONTENT_ID = 'contenido-descarte-central-1';
   const FILE_NAME = 'video descartado en electron.mp4';
   const ANTES = new Date('2026-09-08T11:00:00.000Z');
@@ -117,7 +118,7 @@ test('BUG 2 / tramo central (rojo) — el push de catálogo no debe revertir un 
     const { req, res, captured } = fakeReqRes(
       // Usuario común: sin owner ni cloud storage, para que el bloque de
       // sincronización a Nube no entre y el test aísle el badge.
-      { id: String(userId), username: 'tester', role: 'editor', tier: 'free', hasCloudStorage: false },
+      { id: userId, username: 'tester', role: 'editor', tier: 'free', hasCloudStorage: false },
       {
         files: [{
           content_id: CONTENT_ID,
