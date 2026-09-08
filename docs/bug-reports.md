@@ -34,6 +34,69 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-07-02 — Un video con crosspost a Facebook nunca podía aparecer en "Emparejar entre plataformas"
+
+- Estado: `corregido` (backend, typecheck limpio contra baseline, verificado con datos reales de producción); pendiente el deploy de siempre (pull + restart en la central) para que tenga efecto.
+- Reportado: 2026-09-07
+- Plataformas: Central (afecta a los 3 clientes que consultan `/api/sync/cross-match/candidates`)
+- Severidad: media -- candidatos reales invisibles en la pantalla de matching, no pérdida de datos
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+El usuario: subió/publicó videos nuevos (ej. "FINAL - calidad netflix.mp4",
+recién publicado en Instagram y Facebook) y no aparecían en "Emparejar entre
+plataformas" para vincular el link de TikTok que le faltaba.
+
+### Investigación
+
+Verificado en vivo contra Mongo Atlas de producción con el caso real: el
+archivo tenía `platforms: ["tiktok", "youtube", "instagram", "facebook"]` --
+youtube e instagram con link real, tiktok como badge viejo sin link
+("badge_only"), facebook como crosspost (sin plataforma propia comparable).
+
+`getCrossMatchCandidates` (`backend/src/controllers/sync.controller.ts:413`)
+filtra candidatos con `decidedCount(f) === 3` (ver el rediseño del mismo día
+en `BUG-2026-09-06-0x`/commit `23a5e10`, "las 3 decididas, no menos"). El
+problema: `decidedCount`/`pendingLinkCount`/`linkedCount`
+(`sync.controller.ts:383-393`, antes del fix) sumaban CUALQUIER valor de
+`platforms`/`platforms_discarded`, sin filtrar a las 3 plataformas que esta
+pantalla realmente compara (`CROSS_MATCH_TARGET_PLATFORMS` = youtube/
+instagram/tiktok). Un archivo con badge de Facebook (crosspost, ver
+`applyPlatformPublish`) sumaba una 4ª "decidida" -- `decidedCount` daba 4,
+nunca podía ser exactamente 3, así que el archivo quedaba invisible en
+Cross-match para siempre sin importar el estado real de youtube/instagram/
+tiktok. Confirmado con un conteo real: 10 archivos del catálogo del owner
+tienen `facebook` en `platforms` o `platforms_discarded`, todos afectados
+por el mismo patrón.
+
+### Corrección
+
+Las 3 helpers ahora filtran a `CROSS_MATCH_TARGET_PLATFORMS` antes de
+contar (`isTargetPlatform`, `sync.controller.ts:383`). Con el archivo real
+de arriba: `decidedCount` pasó de 4 a 3, y la simulación completa de la
+regla de elegibilidad (`decided===3 && pending>=1 && linked>=1`) da `true`
+-- ya calificaría como candidato pendiente (le falta el link de TikTok).
+
+### Verificación y pendiente
+
+- `npx tsc --noEmit` en `backend/`: 24 errores, mismo baseline de sesión,
+  ninguno nuevo ni en el archivo tocado cerca de este cambio.
+- Verificado read-only contra Mongo de producción, antes y después del fix
+  (simulado en memoria, sin escribir nada): el archivo real pasa de excluido
+  a elegible.
+- **Pendiente crítico de siempre**: no corre en el proceso real detrás de
+  `api.esse-analytics.com` hasta que no se haga `git pull` + restart en la
+  Mac.
+- Pendiente: confirmar visualmente en "Emparejar entre plataformas" (los 3
+  clientes, mismo endpoint) que los 10 archivos con Facebook ya aparecen.
+
+### Historial
+- 2026-09-07 — agente: investigado a partir de un reporte del usuario
+  (videos nuevos no aparecían en Match), causa raíz confirmada con datos
+  reales de producción (10 archivos afectados), corregido y verificado por
+  simulación contra el mismo dato real. Sin desplegar todavía.
+
 ## BUG-2026-09-07-01 — Corregir un cross-match desde "Emparejar entre plataformas" no llegaba a la SQLite local (Comparadas seguía sin el video)
 
 - Estado: `corregido` a mano para el caso puntual (dato ya reparado en producción); la causa de fondo (push local puede volver a pisar una corrección futura) queda documentada, sin fix de código todavía -- a la espera de que el usuario decida si vale la pena la protección LWW.

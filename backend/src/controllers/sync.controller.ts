@@ -380,16 +380,28 @@ const hasRealPublish = { platforms: { $in: CROSS_MATCH_TARGET_PLATFORMS } };
 // descartadas, que no necesita link) -- antes un archivo con las 3 badges
 // pero 0 links reales cerraba acá como "Resuelto", exactamente al revés: es
 // el candidato perfecto para esta pantalla, no algo ya cerrado.
+// BUG-2026-09-07-02 (ver docs/bug-reports.md): las 3 helpers de acá abajo
+// contaban CUALQUIER valor de `platforms`/`platforms_discarded`, sin filtrar
+// a las 3 plataformas que esta pantalla realmente compara -- un archivo con
+// crosspost a Facebook (`platforms` incluye "facebook", ver
+// applyPlatformPublish) sumaba una 4ta "decidida" que nunca puede coexistir
+// con `decided === 3`, dejándolo afuera de Cross-match para siempre sin
+// importar el estado real de youtube/instagram/tiktok. Confirmado con datos
+// reales: 10 archivos del catálogo del owner tenían facebook en alguno de
+// los dos arrays.
+const isTargetPlatform = (p: string): boolean => (CROSS_MATCH_TARGET_PLATFORMS as readonly string[]).includes(p);
+
 function decidedCount(f: { platforms?: string[]; platforms_discarded?: string[] }): number {
-  return (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
+  return (f.platforms ?? []).filter(isTargetPlatform).length
+       + (f.platforms_discarded ?? []).filter(isTargetPlatform).length;
 }
 
 function pendingLinkCount(f: { _id: any; platforms?: string[] }, linkedSet: Set<string>): number {
-  return (f.platforms ?? []).filter((p) => !linkedSet.has(`${f._id}:${p}`)).length;
+  return (f.platforms ?? []).filter(isTargetPlatform).filter((p) => !linkedSet.has(`${f._id}:${p}`)).length;
 }
 
 function linkedCount(f: { platforms?: string[] }, pending: number): number {
-  return (f.platforms?.length ?? 0) - pending;
+  return (f.platforms ?? []).filter(isTargetPlatform).length - pending;
 }
 
 // GET /api/sync/cross-match/candidates?limit=20&page=1&minPlatforms=1|3 — en
