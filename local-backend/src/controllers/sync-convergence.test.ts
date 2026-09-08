@@ -1,8 +1,8 @@
 // Harness de convergencia de sincronización — Entrega 1 del plan de
 // docs/sync-reconciliation-map-2026-09-08.md.
 //
-// ESTOS DOS TESTS ESTÁN EN ROJO A PROPÓSITO. Documentan los bugs 1 y 2 del
-// informe contra el código de producción REAL (no una reimplementación de las
+// Tests de contrato por tramo. El del ciclo completo vive en backend/ (ver
+// sync-integral.test.ts). Acá se prueba contra el código de producción REAL
 // reglas: se importa y se ejecuta `setPlatformLink` y `pullFromCloud` tal como
 // corren en la app). Se ponen en verde con la Entrega 1, no antes.
 //
@@ -146,91 +146,9 @@ test('BUG 1 — al desvincular, Electron manda a la central un identificador que
 
 });
 
-// ---------------------------------------------------------------------------
-// BUG 2 — Un descarte hecho en Electron sobre una plataforma `confirmed` se
-// revierte solo en el siguiente ciclo.
-//
-// Este test cubre el ÚLTIMO tramo de la cadena, que es donde el daño se ve: el
-// pull. Estado de partida = el que deja el push (`bulkUpsertBackupFiles` re-agrega
-// la plataforma por la protección de BUG-2026-09-06-04, que no distingue una
-// acción explícita del usuario de un push automático atrasado).
-//
-// La clave está en el empate de timestamps: la nube devuelve el `platforms` de
-// `files` pero el `platforms_updated_at` que la propia PC acaba de pushear. Como
-// `localPlatformsWins` exige `>` estricto (backup-sync.controller.ts), el empate
-// se resuelve a favor de la nube y el descarte vuelve para atrás.
-//
-// Se pone en verde cuando la Entrega 1 haga que un descarte explícito sea una
-// transición del servicio central (y no un badge que el push pueda reinterpretar).
-// ---------------------------------------------------------------------------
-test('BUG 2 (rojo) — un descarte explícito local sobrevive al pull cuando los timestamps empatan', async () => {
-  const { db } = await import('../db/database');
-  const { fileRepo } = await import('../db/file.repo');
-  const { pullFromCloud } = await import('./backup-sync.controller');
-
-  const CONTENT_ID = 'contenido-descarte-1';
-  const FILE_NAME = 'video descartado a mano.mp4';
-
-  // Mismo instante en los dos lados: es exactamente lo que pasa en producción
-  // (la nube devuelve el timestamp que esta misma PC acaba de pushear). Se usa
-  // un ISO con Z en los dos para que el test aísle la regla de desempate y no
-  // dependa de la zona horaria de la máquina que lo corre.
-  const MISMO_INSTANTE = '2026-09-08T12:00:00.000Z';
-
-  const file = fileRepo.create({
-    file_name: FILE_NAME,
-    file_path: `C:/videos/${FILE_NAME}`,
-    content_id: CONTENT_ID,
-  } as any);
-
-  // El usuario descartó Instagram en Electron: sin badge y en descartados.
-  db.prepare(`
-    UPDATE files
-       SET platforms = '[]',
-           platforms_discarded = '["instagram"]',
-           platforms_updated_at = ?,
-           updated_at = ?
-     WHERE id = ?
-  `).run(MISMO_INSTANTE, MISMO_INSTANTE, file.id);
-
-  // Lo que la central devuelve DESPUÉS del push: Instagram volvió a `platforms`
-  // (la protección de `confirmed` la re-agregó) y el descarte se perdió.
-  const respuestaDeLaCentral = {
-    files: [{
-      content_id: CONTENT_ID,
-      file_name: FILE_NAME,
-      platforms: ['instagram'],
-      platforms_discarded: [],
-      platforms_updated_at: MISMO_INSTANTE,
-      local_updated_at: MISMO_INSTANTE,
-      content_status: 'borrador',
-      duracion_segundos: null,
-    }],
-  };
-
-  const stub = stubFetch({
-    '/api/backup/files': respuestaDeLaCentral,
-    '/api/backup/platform-videos': { videos: [] },
-    '/api/backup/config': { workflow_mode: null, platform_configs: [] },
-  });
-  try {
-    const { req, res } = fakeReqRes({});
-    await pullFromCloud(req, res);
-  } finally {
-    stub.restore();
-  }
-
-  const despues = fileRepo.findById(file.id)!;
-
-  assert.deepEqual(
-    despues.platforms_discarded, ['instagram'],
-    'El descarte explícito del usuario debe seguir en pie después del pull. Hoy no: la nube ' +
-    'devuelve el platforms_updated_at que esta misma PC pusheó, los timestamps empatan, y ' +
-    'localPlatformsWins exige ">" estricto -- así que gana la nube y el descarte se revierte.',
-  );
-  assert.deepEqual(
-    despues.platforms, [],
-    'Instagram no debería volver a aparecer como publicada después de un descarte explícito.',
-  );
-
-});
+// El test del pull que estaba acá se retiró a propósito: hardcodeaba la
+// respuesta DEFECTUOSA de la central, así que habría seguido rojo aunque el bug
+// se arreglara -- probaba la reproducción del incidente, no el contrato. Lo
+// reemplaza backend/src/controllers/sync-integral.test.ts, que corre el ciclo
+// push/pull real contra los controladores de la central. Ver el paso 5 de
+// docs/sync-convergence-plan-2026-09-08.md.

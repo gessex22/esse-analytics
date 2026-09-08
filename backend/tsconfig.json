@@ -28,5 +28,11 @@
   // no parte del servidor que corre de verdad -- se quedan afuera del
   // typecheck por ahora para no mezclar su deuda con la del código que sí
   // está siempre corriendo. Sacar esta exclusión cuando alguien las revise.
-  "exclude": ["src/scripts/**"]
+  // El harness integral importa a propósito de ../local-backend (corre el ciclo
+  // push/pull real de los dos lados en un mismo proceso). Eso mete el árbol
+  // entero del otro paquete en este programa de tsc y arrastra sus ~47 errores
+  // preexistentes acá, tapando la señal: el typecheck de backend pasaría de 22
+  // a 55 sin que nadie haya roto nada de backend. Se excluye del typecheck,
+  // no de la ejecución -- tsx lo corre igual con `npm test`.
+  "exclude": ["src/scripts/**", "src/controllers/sync-integral.test.ts"]
 }
