@@ -139,15 +139,34 @@ los handlers, no reimplementan las reglas):
 | Push de catálogo | `backend/src/controllers/sync-convergence.test.ts` | `platforms_discarded: ["instagram"]` → `[]` |
 | Pull | `local-backend/src/controllers/sync-convergence.test.ts` | `platforms_discarded: ["instagram"]` → `[]` |
 
-El del medio corre contra un Mongo local descartable (Docker). Si no hay
-ninguno escuchando **se saltea, no falla**: "no hay Mongo" nunca debe leerse
-igual que "el bug se arregló".
+**1.1b · Harness integral — HECHO** (`backend/src/controllers/sync-integral.test.ts`)
 
-**Pendiente de rediseño (ver "Riesgos" abajo): el test del pull** hardcodea la
-respuesta de la nube en su estado *buggy*. Cuando el escritor único aterrice,
-la nube ya no va a producir ese estado, así que el test seguiría rojo aunque el
-bug esté arreglado. Hay que reemplazarlo por un ciclo completo push→pull real
-usando el Mongo de Docker.
+El test del pull que hardcodeaba la respuesta *buggy* de la nube fue retirado:
+probaba la reproducción del incidente, no el contrato, y habría seguido rojo
+aunque el bug se arreglara. Lo reemplaza un harness que enruta el `fetch` de
+local-backend a los **controladores reales** de la central, en el mismo
+proceso: cero respuestas simuladas.
+
+Correcciones aplicadas tras review, todas por el mismo motivo — un harness que
+pueda ponerse verde sin garantizar el comportamiento es peor que no tenerlo:
+
+| Problema | Corrección |
+|---|---|
+| La "segunda PC" solo hacía pull | Ciclo completo push→pull. Una PC real pushea primero, y ese push viejo puede pisar el tombstone antes de leerlo — por eso **tombstone y LWW de links van juntos** |
+| Ruta desconocida devolvía `200 {}` | Devuelve **404** y se registra; cada test afirma que no quedó ninguna. Si no, una ruta nueva (`/api/sync/platform-transition`) se daría por entregada sin despacharse jamás |
+| Los casos 2 y 3 heredaban estado del 1 | Cada test limpia SQLite + Mongo y siembra lo suyo |
+| El push de fondo (`setImmediate`, sin handle) corría durante el ciclo siguiente | `waitIdle()` drena el macrotask y espera a que no queden fetch en vuelo |
+
+**Gate de merge.** Con el skip por defecto, no tener Mongo daba *3 skips y exit
+code 0*: un merge se veía verde sin haber probado nada. Ahora:
+
+- `npm test` — mantiene el skip, para desarrollo normal.
+- `npm run test:integration` — `ESSE_REQUIRE_MONGO=1`, **falla** si no hay
+  Mongo. Es lo que tiene que correr el pipeline antes de mergear.
+
+**Pendiente antes del merge:** el harness está excluido del `tsconfig` de
+backend (cruza a `local-backend` y arrastraba sus ~47 errores al typecheck de
+este paquete, 22 → 55, tapando la señal). Necesita un chequeo propio.
 
 **1.2 · Servicio central de transición**
 

@@ -49,6 +49,12 @@ async function conectarOSaltear(t: any): Promise<boolean> {
     await mongoose.connection.dropDatabase();
     return true;
   } catch {
+    // Mismo criterio que el harness integral: con ESSE_REQUIRE_MONGO=1 (lo que
+    // corre `npm run test:integration` y el pipeline) esto FALLA en vez de
+    // saltear. Un skip silencioso deja pasar un merge sin haber probado nada.
+    if (process.env.ESSE_REQUIRE_MONGO === '1') {
+      throw new Error('ESSE_REQUIRE_MONGO=1 pero no hay Mongo en ' + TEST_URI + '.');
+    }
     t.skip(
       `No hay un Mongo local escuchando en ${TEST_URI}. Levantá el contenedor de Docker ` +
       `(o pasá MONGO_TEST_URI) para correr este tramo del harness.`,

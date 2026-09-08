@@ -1,21 +1,21 @@
 // Harness INTEGRAL de convergencia — paso 5 de la Entrega 1
 // (docs/sync-convergence-plan-2026-09-08.md).
 //
-// A diferencia de sync-convergence.test.ts, que prueba tramos sueltos con la
-// respuesta de la central simulada, acá NO se hardcodea ninguna respuesta: el
-// `fetch` que sale de local-backend se enruta a los CONTROLADORES REALES de la
-// central, en el mismo proceso. Electron habla con la central de verdad; lo
-// único falso es el transporte HTTP.
+// No hardcodea NINGUNA respuesta de la central: el `fetch` que sale de
+// local-backend se enruta a los CONTROLADORES REALES, en el mismo proceso.
+// Electron habla con la central de verdad; lo único falso es el transporte.
 //
-// Esto lo convierte en el CONTRATO que la implementación debe cumplir, no en
-// una reproducción del incidente: los casos de abajo describen cómo tiene que
-// comportarse el sistema, y varios están ROJOS porque todavía no se implementó
-// (tombstone, outbox, precedencia por orden).
+// Es el CONTRATO que la implementación debe cumplir, no una reproducción del
+// incidente: varios casos están ROJOS porque el comportamiento todavía no
+// existe (tombstone, precedencia por orden).
 //
-// REQUIERE Mongo local descartable (Docker). Sin él, SKIP -- nunca falla por
-// infraestructura ausente.
+// MONGO. Por defecto SKIPea si no hay Mongo local (desarrollo normal). Con
+// ESSE_REQUIRE_MONGO=1 FALLA en vez de saltear -- eso es lo que corre
+// `npm run test:integration`, y es lo que tiene que correr el pipeline antes de
+// mergear: si no, tres skips dan exit code 0 y el merge se ve verde sin haber
+// probado nada.
 //
-// Correr:  cd backend && npx tsx --test src/controllers/sync-integral.test.ts
+// Correr:  cd backend && npm run test:integration
 
 import assert from 'node:assert/strict';
 import { test, after } from 'node:test';
@@ -30,12 +30,19 @@ process.env.SQLITE_PATH = path.join(tmpDir, 'integral.db');
 delete process.env.ESSE_SYNC_METRICS;
 
 const MONGO_URI = process.env.MONGO_TEST_URI ?? 'mongodb://127.0.0.1:27017/esse_sync_integral';
+const REQUIRE_MONGO = process.env.ESSE_REQUIRE_MONGO === '1';
 const USER_ID = new mongoose.Types.ObjectId().toString();
 const AUTH = 'Bearer token-de-prueba';
 const USER = { id: USER_ID, username: 'tester', role: 'editor', tier: 'free', hasCloudStorage: false };
 
+const PLATFORM = 'instagram';
+const PLATFORM_ID = '17999999999999999';
+const PLATFORM_URL = 'https://www.instagram.com/reel/AAAAAAAAAAA/';
+
+let central: any;
+
 // ---------------------------------------------------------------------------
-// Transporte: enruta el fetch de local-backend a los controladores reales.
+// Transporte hacia la central real
 // ---------------------------------------------------------------------------
 
 function fakeRes() {
@@ -48,7 +55,6 @@ function fakeRes() {
   return { res, captured };
 }
 
-/** Ejecuta un handler de la central y devuelve una Response HTTP real. */
 async function dispatch(
   handler: (req: any, res: any) => Promise<void> | void,
   req: Partial<{ params: any; query: any; body: any }>,
@@ -64,90 +70,144 @@ async function dispatch(
   });
 }
 
-let central: any;
+// Rutas que local-backend pega pero que NO son objeto de este harness. Se
+// responden vacías a propósito. Todo lo que no esté acá ni tenga handler es un
+// agujero del harness, no un éxito -- ver `unknown` abajo.
+const RUTAS_IGNORADAS = [
+  '/api/backup/transcripts',
+  '/api/backup/ideas',
+  '/api/sync/calendar-config',
+  '/api/remote-library',
+];
 
-/**
- * Reemplaza globalThis.fetch por un router hacia la central real. Devuelve el
- * log de llamadas, para poder afirmar sobre lo que Electron intentó hacer.
- */
-function routeToCentral(): { calls: string[]; restore: () => void } {
+interface Router {
+  calls: string[];
+  /** Rutas sin handler ni ignorar explícito. Debe quedar vacío. */
+  unknown: string[];
+  /** Espera a que no quede ningún fetch en vuelo (incluye los de setImmediate). */
+  waitIdle: () => Promise<void>;
+  restore: () => void;
+}
+
+function routeToCentral(): Router {
   const original = globalThis.fetch;
   const calls: string[] = [];
+  const unknown: string[] = [];
+  let pending = 0;
 
   globalThis.fetch = (async (input: any, init?: any) => {
-    const raw = typeof input === 'string' ? input : String(input?.url ?? input);
-    const url = new URL(raw);
-    const method = (init?.method ?? 'GET').toUpperCase();
-    const body = init?.body ? JSON.parse(init.body) : {};
-    calls.push(`${method} ${url.pathname}`);
+    pending++;
+    try {
+      const raw = typeof input === 'string' ? input : String(input?.url ?? input);
+      const url = new URL(raw);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : {};
+      const p = url.pathname;
+      const query = Object.fromEntries(url.searchParams.entries());
+      calls.push(method + ' ' + p);
 
-    const p = url.pathname;
-    const query = Object.fromEntries(url.searchParams.entries());
+      if (method === 'POST' && p === '/api/backup/files/bulk') return await dispatch(central.bulkUpsertBackupFiles, { body });
+      if (method === 'GET' && p === '/api/backup/files') return await dispatch(central.getBackupFiles, { query });
+      if (method === 'POST' && p === '/api/backup/platform-videos/bulk') return await dispatch(central.bulkUpsertBackupPlatformVideos, { body });
+      if (method === 'GET' && p === '/api/backup/platform-videos') return await dispatch(central.getBackupPlatformVideos, {});
+      if (method === 'GET' && p === '/api/backup/config') return await dispatch(central.getBackupConfig, {});
+      if (method === 'POST' && p === '/api/backup/config') return await dispatch(central.upsertBackupConfig, { body });
+      if (method === 'POST' && (p === '/api/sync/history' || p === '/api/sync/record-publish')) {
+        return await dispatch(central.recordUploadEvent, { body });
+      }
+      if (method === 'DELETE' && p.startsWith('/api/sync/platform-link/')) {
+        const parts = p.split('/');
+        return await dispatch(central.unlinkPlatform, {
+          params: { contentId: decodeURIComponent(parts[4]), platform: parts[5] },
+        });
+      }
 
-    if (method === 'POST' && p === '/api/backup/files/bulk') {
-      return dispatch(central.bulkUpsertBackupFiles, { body });
-    }
-    if (method === 'GET' && p === '/api/backup/files') {
-      return dispatch(central.getBackupFiles, { query });
-    }
-    if (method === 'POST' && p === '/api/backup/platform-videos/bulk') {
-      return dispatch(central.bulkUpsertBackupPlatformVideos, { body });
-    }
-    if (method === 'GET' && p === '/api/backup/platform-videos') {
-      return dispatch(central.getBackupPlatformVideos, {});
-    }
-    if (method === 'GET' && p === '/api/backup/config') {
-      return dispatch(central.getBackupConfig, {});
-    }
-    if (method === 'POST' && p === '/api/backup/config') {
-      return dispatch(central.upsertBackupConfig, { body });
-    }
-    if (method === 'DELETE' && p.startsWith('/api/sync/platform-link/')) {
-      const [, , , , contentId, platform] = p.split('/');
-      return dispatch(central.unlinkPlatform, {
-        params: { contentId: decodeURIComponent(contentId), platform },
+      if (RUTAS_IGNORADAS.some(r => p === r || p.startsWith(r + '/'))) {
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // 404 + registro. Antes esto devolvía 200 {} para CUALQUIER ruta
+      // desconocida, así que una ruta NUEVA (por ejemplo
+      // /api/sync/platform-transition) se habría dado por entregada sin que el
+      // harness la despachara jamás: verde falso. No se lanza excepción porque
+      // varios callers de local-backend hacen catch y se la tragarían; se
+      // registra, y cada test afirma que quedó vacío.
+      unknown.push(method + ' ' + p);
+      return new Response(JSON.stringify({ message: 'ruta no enrutada por el harness' }), {
+        status: 404, headers: { 'Content-Type': 'application/json' },
       });
+    } finally {
+      pending--;
     }
-    if (method === 'POST' && (p === '/api/sync/history' || p === '/api/sync/record-publish')) {
-      return dispatch(central.recordUploadEvent, { body });
-    }
-
-    // Rutas que no son objeto de este harness (transcripts, calendario, etc.):
-    // responden vacío para no romper el flujo, y quedan en `calls` por si hace
-    // falta afirmar sobre ellas.
-    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as typeof fetch;
 
-  return { calls, restore: () => { globalThis.fetch = original; } };
+  // `pushFilesToCloudInBackground` (video.controller.ts) dispara con
+  // setImmediate y no devuelve handle, así que sin esto el push de fondo corre
+  // MIENTRAS el test arranca el ciclo siguiente: carrera real, resultados no
+  // deterministas. Se drena el macrotask y se espera a que no quede ningún
+  // fetch en vuelo, repetido hasta estabilizar (un push puede encadenar otro).
+  const waitIdle = async () => {
+    for (let intento = 0; intento < 100; intento++) {
+      await new Promise(r => setImmediate(r));
+      if (pending === 0) {
+        await new Promise(r => setImmediate(r));
+        if (pending === 0) return;
+      }
+    }
+    throw new Error('el push de fondo no terminó nunca: sigue habiendo fetch en vuelo');
+  };
+
+  return { calls, unknown, waitIdle, restore: () => { globalThis.fetch = original; } };
 }
 
 // ---------------------------------------------------------------------------
-// Setup
+// Estado: cada test siembra y limpia el suyo
 // ---------------------------------------------------------------------------
 
 async function conectarOSaltear(t: any): Promise<boolean> {
   if (!/^mongodb:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(MONGO_URI) || MONGO_URI.includes('@')) {
     throw new Error('MONGO_TEST_URI debe ser un Mongo local descartable.');
   }
+  if (mongoose.connection.readyState === 1) return true;
   try {
     await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 2000, autoIndex: false });
-    await mongoose.connection.dropDatabase();
-    return true;
   } catch {
-    t.skip(`No hay Mongo local en ${MONGO_URI}. Levantá el contenedor para correr el harness integral.`);
+    if (REQUIRE_MONGO) {
+      throw new Error(
+        'ESSE_REQUIRE_MONGO=1 pero no hay Mongo en ' + MONGO_URI + '. Este harness es el que ' +
+        'valida la convergencia: saltearlo deja pasar un merge sin haber probado nada.',
+      );
+    }
+    t.skip('No hay Mongo local en ' + MONGO_URI + '. Corré `npm run test:integration` con el contenedor arriba.');
     return false;
   }
+  return true;
 }
 
-const PLATFORM = 'instagram';
-const PLATFORM_ID = '17999999999999999';
-const PLATFORM_URL = 'https://www.instagram.com/reel/AAAAAAAAAAA/';
+/** Deja los dos lados en cero. Cada test parte de acá: sin herencia entre tests. */
+async function limpiarEstado() {
+  const { db } = await import('../../../local-backend/src/db/database');
+  db.prepare('DELETE FROM platform_videos').run();
+  db.prepare('DELETE FROM files').run();
+  await mongoose.connection.dropDatabase();
+}
 
-/**
- * Siembra el MISMO video, publicado y confirmado, en las 6 representaciones:
- * SQLite (files + platform_videos) y Mongo (files, backup_files,
- * platformvideos, backup_platform_videos, remote_library_videos).
- */
+async function cargarCentral() {
+  if (central) return;
+  const backup = await import('./backup.controller');
+  const sync = await import('./sync.controller');
+  central = {
+    ...backup,
+    ...sync,
+    FileModel: (await import('../models/file.model')).FileModel,
+    BackupFileModel: (await import('../models/backup-file.model')).BackupFileModel,
+    PlatformVideoModel: (await import('../models/platform-video.model')).PlatformVideoModel,
+    BackupPlatformVideoModel: (await import('../models/backup-platform-video.model')).BackupPlatformVideoModel,
+    RemoteLibraryVideoModel: (await import('../models/remote-library-video.model')).RemoteLibraryVideoModel,
+  };
+}
+
+/** El MISMO video, publicado y confirmado, en las 6 representaciones. */
 async function sembrarConfirmado() {
   const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
   const { platformVideoRepo } = await import('../../../local-backend/src/db/platform-video.repo');
@@ -164,7 +224,6 @@ async function sembrarConfirmado() {
   });
 
   const publishedAt = new Date('2026-09-01T10:00:00.000Z');
-
   const centralFile = await central.FileModel.create({
     userId: USER_ID, file_name: local.file_name, file_path: local.file_name,
     content_id: contentId, status: 'PENDIENTE',
@@ -195,25 +254,24 @@ async function sembrarConfirmado() {
     platformLinks: [{ platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL, publishedAt }],
   });
 
-  return { local, contentId, centralFileId: centralFile._id };
+  return { local, contentId };
 }
 
-/** Un ciclo de sincronización completo, igual que runSyncTick: push y después pull. */
+/** Un ciclo igual que runSyncTick: push y después pull. */
 async function cicloSync() {
-  const { pushFilesToCloud, pullFromCloud } = await import('../../../local-backend/src/controllers/backup-sync.controller');
-  await pushFilesToCloud(AUTH);
+  const mod = await import('../../../local-backend/src/controllers/backup-sync.controller');
+  await mod.pushFilesToCloud(AUTH);
   const { res } = fakeRes();
-  await pullFromCloud({ headers: { authorization: AUTH } } as any, res as any);
+  await mod.pullFromCloud({ headers: { authorization: AUTH } } as any, res as any);
 }
 
-/** Foto del estado en las 6 representaciones, para afirmar de una. */
 async function fotoDelEstado(contentId: string) {
   const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
   const { db } = await import('../../../local-backend/src/db/database');
 
   const localFile = fileRepo.findByContentId(contentId)!;
   const localLink = db
-    .prepare(`SELECT platform, platform_id, linked_file_id FROM platform_videos WHERE platform = ? AND linked_file_id = ?`)
+    .prepare('SELECT platform, platform_id, linked_file_id FROM platform_videos WHERE platform = ? AND linked_file_id = ?')
     .get(PLATFORM, localFile.id) as any;
 
   const [file, backupFile, pv, mirror, remote] = await Promise.all([
@@ -234,6 +292,17 @@ async function fotoDelEstado(contentId: string) {
   };
 }
 
+/** El unlink tal como lo dispara Electron, esperando el push de fondo. */
+async function unlinkDesdeElectron(localId: number, router: Router) {
+  const { setPlatformLink } = await import('../../../local-backend/src/controllers/video.controller');
+  const { res } = fakeRes();
+  await setPlatformLink(
+    { params: { fileId: String(localId), platform: PLATFORM }, body: { url: '' }, headers: { authorization: AUTH } } as any,
+    res as any,
+  );
+  await router.waitIdle();
+}
+
 after(async () => {
   const { db } = await import('../../../local-backend/src/db/database');
   if (db.open) db.close();
@@ -244,144 +313,133 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// CASO 1 — Un descarte explícito sobrevive tres ciclos completos.
-// Reemplaza al test viejo, que hardcodeaba la respuesta defectuosa de la nube y
-// por lo tanto habría seguido rojo aunque el bug se arreglara.
+// CASO 1 — un unlink explícito sobrevive 3 ciclos completos.
 // ---------------------------------------------------------------------------
 test('INTEGRAL — un unlink explícito sobrevive 3 ciclos push/pull en las 6 representaciones', async (t) => {
   if (!(await conectarOSaltear(t))) return;
-  central = await import('./backup.controller').then(async (backup) => ({
-    ...backup,
-    ...(await import('./sync.controller')),
-    FileModel: (await import('../models/file.model')).FileModel,
-    BackupFileModel: (await import('../models/backup-file.model')).BackupFileModel,
-    PlatformVideoModel: (await import('../models/platform-video.model')).PlatformVideoModel,
-    BackupPlatformVideoModel: (await import('../models/backup-platform-video.model')).BackupPlatformVideoModel,
-    RemoteLibraryVideoModel: (await import('../models/remote-library-video.model')).RemoteLibraryVideoModel,
-  }));
+  await cargarCentral();
+  await limpiarEstado();
 
-  const { setPlatformLink } = await import('../../../local-backend/src/controllers/video.controller');
   const { local, contentId } = await sembrarConfirmado();
-
-  const t0 = await fotoDelEstado(contentId);
-  assert.deepEqual(t0.sqlite.platforms, [PLATFORM], 'precondición: arranca publicado');
-  assert.ok(t0.mirror, 'precondición: el espejo tiene la fila');
-
   const router = routeToCentral();
   try {
-    // El usuario borra el link en Electron.
-    const { res } = fakeRes();
-    await setPlatformLink(
-      { params: { fileId: String(local.id), platform: PLATFORM }, body: { url: '' }, headers: { authorization: AUTH } } as any,
-      res as any,
-    );
+    assert.deepEqual((await fotoDelEstado(contentId)).sqlite.platforms, [PLATFORM], 'precondición: arranca publicado');
+
+    await unlinkDesdeElectron(local.id, router);
 
     for (let i = 1; i <= 3; i++) {
       await cicloSync();
+      await router.waitIdle();
       const foto = await fotoDelEstado(contentId);
 
-      assert.deepEqual(foto.sqlite.platforms, [], `ciclo ${i}: SQLite no debe recuperar el badge`);
-      assert.equal(foto.sqlite.link, null, `ciclo ${i}: SQLite no debe recuperar el link`);
-      assert.deepEqual(foto.files.platforms, [], `ciclo ${i}: files no debe recuperar el badge`);
-      assert.deepEqual(foto.backupFiles.platforms, [], `ciclo ${i}: backup_files no debe recuperar el badge`);
-      assert.equal(foto.platformVideo.linkedFileId, null, `ciclo ${i}: el link real debe seguir desvinculado`);
-      assert.deepEqual(foto.remote.platforms, [], `ciclo ${i}: Nube no debe recuperar el badge`);
-      assert.deepEqual(foto.remote.links, [], `ciclo ${i}: Nube no debe recuperar el link`);
+      assert.deepEqual(foto.sqlite.platforms, [], 'ciclo ' + i + ': SQLite no debe recuperar el badge');
+      assert.equal(foto.sqlite.link, null, 'ciclo ' + i + ': SQLite no debe recuperar el link');
+      assert.deepEqual(foto.files.platforms, [], 'ciclo ' + i + ': files no debe recuperar el badge');
+      assert.deepEqual(foto.backupFiles.platforms, [], 'ciclo ' + i + ': backup_files no debe recuperar el badge');
+      assert.equal(foto.platformVideo.linkedFileId, null, 'ciclo ' + i + ': el link real debe seguir desvinculado');
+      assert.deepEqual(foto.remote.platforms, [], 'ciclo ' + i + ': Nube no debe recuperar el badge');
+      assert.deepEqual(foto.remote.links, [], 'ciclo ' + i + ': Nube no debe recuperar el link');
     }
+    assert.deepEqual(router.unknown, [], 'el harness no debe dejar rutas sin enrutar');
   } finally {
     router.restore();
   }
 });
 
 // ---------------------------------------------------------------------------
-// CASO 2 — Una segunda PC tiene que enterarse del unlink.
+// CASO 2 — una segunda PC tiene que enterarse del unlink.
 //
-// ROJO ESPERADO hasta implementar el tombstone: hoy el servicio BORRA la fila
-// de backup_platform_videos, y `pullPlatformVideosFromCloud` no elimina nunca
-// filas locales ausentes de la respuesta (verificado: cero eliminaciones). Una
-// segunda PC que ya tenía el link se lo queda para siempre.
-//
-// Se simula sobre la misma SQLite re-insertando la fila vieja, que es
-// exactamente el estado en que quedó esa otra PC, y corriendo SU pull.
+// ROJO ESPERADO hasta implementar tombstone + LWW de links. Corre el ciclo
+// COMPLETO (push y después pull), no solo el pull: una PC real pushea primero,
+// y ese push viejo puede pisar el tombstone antes de llegar a leerlo. Por eso
+// las dos piezas tienen que implementarse juntas.
 // ---------------------------------------------------------------------------
-test('INTEGRAL — una segunda PC con el vínculo viejo recibe el tombstone y lo borra', async (t) => {
-  if (mongoose.connection.readyState !== 1) { t.skip('sin Mongo'); return; }
+test('INTEGRAL — una segunda PC recibe el tombstone del unlink tras un ciclo push/pull completo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
 
-  const { platformVideoRepo } = await import('../../../local-backend/src/db/platform-video.repo');
-  const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
-  const { db } = await import('../../../local-backend/src/db/database');
-
-  const contentId = (db.prepare(`SELECT content_id FROM files LIMIT 1`).get() as any).content_id;
-  const localFile = fileRepo.findByContentId(contentId)!;
-
-  // Estado de la "segunda PC": todavía tiene el vínculo que la primera soltó.
-  platformVideoRepo.upsert({
-    platform: PLATFORM, platform_id: PLATFORM_ID, platform_url: PLATFORM_URL,
-    linked_file_id: localFile.id, match_status: 'manual',
-  });
-  fileRepo.addPlatform(localFile.id, PLATFORM as any);
-
+  const { local, contentId } = await sembrarConfirmado();
   const router = routeToCentral();
   try {
-    const { pullFromCloud } = await import('../../../local-backend/src/controllers/backup-sync.controller');
-    const { res } = fakeRes();
-    await pullFromCloud({ headers: { authorization: AUTH } } as any, res as any);
+    // PC #1 suelta la plataforma y sincroniza.
+    await unlinkDesdeElectron(local.id, router);
+    await cicloSync();
+    await router.waitIdle();
+
+    // PC #2: mismo video, todavía con el vínculo viejo. Se reconstruye sobre la
+    // misma SQLite porque `db` es un singleton por proceso; el estado resultante
+    // es idéntico al de esa otra máquina.
+    const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
+    const { platformVideoRepo } = await import('../../../local-backend/src/db/platform-video.repo');
+    platformVideoRepo.upsert({
+      platform: PLATFORM, platform_id: PLATFORM_ID, platform_url: PLATFORM_URL,
+      linked_file_id: local.id, match_status: 'manual',
+    });
+    fileRepo.addPlatform(local.id, PLATFORM as any);
+
+    // Ciclo COMPLETO de la segunda PC: push (con su estado viejo) y luego pull.
+    await cicloSync();
+    await router.waitIdle();
+
+    const foto = await fotoDelEstado(contentId);
+    assert.equal(
+      foto.sqlite.link, null,
+      'La segunda PC tiene que soltar el vínculo. Hoy no puede: el servicio BORRA la fila del ' +
+      'espejo en vez de dejar un tombstone, el pull no elimina jamás filas locales ausentes de la ' +
+      'respuesta, y encima su propio push la resucita antes de que llegue a leerla.',
+    );
+    assert.deepEqual(foto.sqlite.platforms, [], 'ni el badge');
+    assert.deepEqual(router.unknown, [], 'el harness no debe dejar rutas sin enrutar');
   } finally {
     router.restore();
   }
-
-  const linkTrasPull = db
-    .prepare(`SELECT platform FROM platform_videos WHERE platform = ? AND linked_file_id = ?`)
-    .get(PLATFORM, localFile.id);
-
-  assert.equal(
-    linkTrasPull, undefined,
-    'La segunda PC tiene que soltar el vínculo al hacer pull. Hoy no puede: el servicio BORRA la ' +
-    'fila del espejo y el pull no elimina nunca filas locales ausentes de la respuesta, así que ' +
-    'este dispositivo conserva un link que ya no existe. Hace falta un tombstone.',
-  );
 });
 
 // ---------------------------------------------------------------------------
-// CASO 3 — Una operación vieja que llega tarde no puede destruir una
-// publicación nueva.
+// CASO 3 — una operación vieja que llega tarde no destruye una publicación
+// posterior.
 //
-// ROJO ESPERADO: `operationId` da idempotencia, no precedencia. Hace falta una
-// regla de orden (base version, o comparar `occurredAt` contra el último cambio
-// registrado) para descartar la operación rezagada.
+// ROJO ESPERADO: `operationId` da idempotencia, no precedencia.
+//
+// La comparación NO puede ser contra `publishedAt`: alguien puede vincular HOY
+// una publicación de hace meses, y ahí `publishedAt` es viejo aunque la mutación
+// sea nueva. Lo que hay que comparar es cuándo cambió el ESTADO
+// (`stateChangedAt` / `baseVersion`). Por eso el seed de abajo usa a propósito
+// un publishedAt viejo con una mutación nueva.
 // ---------------------------------------------------------------------------
 test('INTEGRAL — un unlink viejo que llega tarde no destruye una publicación posterior', async (t) => {
-  if (mongoose.connection.readyState !== 1) { t.skip('sin Mongo'); return; }
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
 
+  const { contentId } = await sembrarConfirmado();
   const { applyPlatformTransition } = await import('../services/platform-transition.service');
-  const { db } = await import('../../../local-backend/src/db/database');
-  const contentId = (db.prepare(`SELECT content_id FROM files LIMIT 1`).get() as any).content_id;
 
-  const momentoDelUnlink = new Date('2026-09-02T10:00:00.000Z');
-
-  // Se vuelve a publicar DESPUÉS de ese momento, con link real.
+  // Se republica con un link nuevo. `publishedAt` a propósito VIEJO: es un video
+  // antiguo que recién ahora se vincula. Lo nuevo es la mutación, no el video.
   await central.applyPlatformPublish(USER_ID, {
     platform: PLATFORM, platformId: '18888888888888888',
     platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
     contentId, fileName: 'video integral.mp4',
-    publishedAt: new Date('2026-09-05T10:00:00.000Z'), matchStatus: 'manual',
+    publishedAt: new Date('2026-01-15T10:00:00.000Z'), matchStatus: 'manual',
   });
 
   const antes = await fotoDelEstado(contentId);
   assert.deepEqual(antes.files.platforms, [PLATFORM], 'precondición: la republicación quedó registrada');
 
-  // Ahora llega, con retraso, el unlink de ANTES de esa publicación.
+  // Llega tarde el unlink, cuyo CAMBIO DE ESTADO es anterior a la republicación.
   await applyPlatformTransition(USER_ID, {
     contentId, platform: PLATFORM as any, action: 'unlink',
-    // @ts-expect-error -- `occurredAt` es parte del contrato acordado, todavía
-    // sin implementar en la firma del servicio. El test lo exige.
-    occurredAt: momentoDelUnlink,
+    // @ts-expect-error -- `stateChangedAt` es parte del contrato acordado y
+    // todavía no existe en la firma. El test lo exige.
+    stateChangedAt: new Date('2026-09-02T10:00:00.000Z'),
   });
 
   const despues = await fotoDelEstado(contentId);
   assert.deepEqual(
     despues.files.platforms, [PLATFORM],
-    'Un unlink anterior a la publicación no debe borrarla al llegar tarde. Hoy el servicio aplica ' +
-    'la transición sin mirar el orden: operationId evita duplicados, pero no resuelve precedencia.',
+    'Un unlink cuyo cambio de estado es anterior a la republicación no debe borrarla al llegar ' +
+    'tarde. Hoy el servicio aplica la transición sin mirar el orden.',
   );
 });
