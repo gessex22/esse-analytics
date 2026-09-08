@@ -36,7 +36,7 @@ Usar el siguiente formato:
 
 ## BUG-2026-09-07-02 — Un video con crosspost a Facebook nunca podía aparecer en "Emparejar entre plataformas"
 
-- Estado: `corregido` (backend, typecheck limpio contra baseline, verificado con datos reales de producción); pendiente el deploy de siempre (pull + restart en la central) para que tenga efecto.
+- Estado: `verificado` -- desplegado en producción (pull + restart en la central) y confirmado por el usuario: "FINAL - calidad netflix.mp4" ya apareció en "Emparejar entre plataformas" y pudo vincular el TikTok que le faltaba.
 - Reportado: 2026-09-07
 - Plataformas: Central (afecta a los 3 clientes que consultan `/api/sync/cross-match/candidates`)
 - Severidad: media -- candidatos reales invisibles en la pantalla de matching, no pérdida de datos
@@ -85,11 +85,15 @@ regla de elegibilidad (`decided===3 && pending>=1 && linked>=1`) da `true`
 - Verificado read-only contra Mongo de producción, antes y después del fix
   (simulado en memoria, sin escribir nada): el archivo real pasa de excluido
   a elegible.
-- **Pendiente crítico de siempre**: no corre en el proceso real detrás de
-  `api.esse-analytics.com` hasta que no se haga `git pull` + restart en la
-  Mac.
-- Pendiente: confirmar visualmente en "Emparejar entre plataformas" (los 3
-  clientes, mismo endpoint) que los 10 archivos con Facebook ya aparecen.
+- **Desplegado** 2026-09-07: `git pull` + restart en `macgessemberg22`
+  (confirmado por SSH -- código con `isTargetPlatform` corriendo en el
+  proceso real). Confirmado con una segunda simulación read-only que
+  "FINAL - calidad netflix.mp4" cae en la posición 3 de la cola de
+  "Pendientes" (62 candidatos elegibles en total).
+- **Confirmado por el usuario**: apareció en la pantalla real y pudo
+  vincular el TikTok que le faltaba. Quedan los otros 9 archivos con
+  Facebook sin confirmación visual puntual, pero corren el mismo código --
+  no hay motivo para esperar que se comporten distinto.
 
 ### Historial
 - 2026-09-07 — agente: investigado a partir de un reporte del usuario
