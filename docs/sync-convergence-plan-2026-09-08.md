@@ -259,7 +259,68 @@ Rollback por flag durante una versión completa.
 - **El test del pull necesita rediseño** antes de poder usarse como criterio de
   aceptación (ver 1.1).
 
-## Semántica de la transición (cerrada)
+## ⛔ P0 abiertos — NO empezar las outboxes hasta cerrarlos
+
+Señalados en review sobre `a80ca41`. La semántica causal **no está cerrada**:
+decir lo contrario fue prematuro. Los tres primeros son agujeros de corrección,
+no mejoras.
+
+### 1. Caída entre el insert de `pending` y el CAS
+
+`platform-transition.service.ts`: la operación se registra `pending` y recién
+después se hace el CAS que incrementa la revisión. Si el proceso se cae **entre
+esas dos líneas**, al reanudar la rama `reanudando` **saltea el CAS** y la
+revisión nunca se incrementa.
+
+El bug de fondo es la suposición: `reanudando` da por hecho que el CAS ya corrió,
+y nada lo garantiza. Hace falta registrar en la operación si el claim se hizo
+(por ejemplo, guardar `resultVersion` al momento del CAS y usar su presencia
+como la señal, en vez de inferirlo del estado `pending`).
+
+### 2. El CAS no protege las proyecciones
+
+El CAS excluye a otra transición mientras se **reclama la revisión**, y termina
+ahí. Las cinco escrituras quedan afuera de esa exclusión: una publicación nueva
+puede entrar después del CAS y antes del `$pull`, y la transición vieja la
+destruye igual.
+
+Dos salidas posibles (decidir cuál):
+- cada proyección lleva `resultVersion` y rechaza escrituras de una versión
+  inferior; o
+- las proyecciones se reconstruyen desde `files` como fuente canónica, en vez de
+  escribirse en paralelo.
+
+### 3. `operationId` reutilizado con otro payload
+
+No se valida que la operación ya registrada tenga el **mismo** `contentId`,
+plataforma, acción y `baseVersion`. La misma clave con otro payload puede
+reanudar --o dar por completada-- una operación distinta.
+
+### Además (no P0, pero antes de la outbox)
+
+- El `POST /api/sync/platform-transition` acepta `operationId` y `baseVersion`
+  **opcionales**; debería exigirlos (`baseVersion >= 0`, `operationId` válido).
+  Mientras sean opcionales, la precedencia y la deduplicación no se ejercitan.
+- `applyPlatformPublish` **todavía** calcula y reemplaza `platform_states` desde
+  una foto previa: el mismo lost update que se sacó del servicio sigue ahí.
+- El caso "entrega invertida" del harness hoy prueba **primero en llegar gana**,
+  no orden causal: las dos operaciones parten de la misma revisión. La outbox
+  tiene que serializar/coalescer por `(contentId, platform)` y rebasar la
+  siguiente con la versión devuelta.
+
+### Casos que faltan en el harness (rojos primero)
+
+1. Caída después de crear `pending` pero **antes** del CAS.
+2. Pausa después del CAS → publicación nueva en el medio → reanudación de la
+   operación vieja.
+3. Mismo `operationId` con payload diferente.
+4. Dos entregas **simultáneas** de la misma operación.
+5. Transición concurrente con `applyPlatformPublish`.
+
+Con esos cinco en verde, recién ahí: **outbox local primero**, proyección y
+reintento central después.
+
+## Semántica de la transición (parcial — ver P0 arriba)
 
 `POST /api/sync/platform-transition` — `{ contentId, platform, action,
 operationId?, baseVersion? }`. Convive con el `DELETE` viejo, que se conserva
@@ -291,7 +352,7 @@ sin cubrir nada. Sus garantías se mudaron al harness, contra el camino real.
 | 1.4 | Propagar el error a Electron | Hecho para el unlink |
 | 6 | Tombstone de desvinculación | Hecho |
 | 7 | LWW de links + precedencia por plataforma | Hecho |
-| 7b | Semántica causal: dedup persistente, CAS, reanudación, endpoint POST | Hecho |
+| 7b | Semántica causal: dedup persistente, CAS, reanudación, endpoint POST | **Parcial** — 3 P0 abiertos |
 | 8 | Outbox local (intención durable) | **Sin empezar** |
 | 9 | Outbox central (reparación de escrituras parciales) | **Sin empezar** |
 | 2 a 5 | Reconciliador, relojes restantes, fallos secundarios, consolidación | Sin empezar |
