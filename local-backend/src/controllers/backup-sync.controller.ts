@@ -422,6 +422,26 @@ async function pullPlatformVideosFromCloud(authHeader: string): Promise<{ recove
     const file = cv.content_id
       ? fileRepo.findByContentId(cv.content_id) ?? (cv.file_name ? fileRepo.findByName(cv.file_name) : undefined)
       : (cv.file_name ? fileRepo.findByName(cv.file_name) : undefined);
+
+    // TOMBSTONE: otro dispositivo soltó este vínculo. Hay que procesarlo
+    // EXPLÍCITAMENTE -- el `upsert` de abajo no puede limpiar nada, porque
+    // conserva los valores previos por fallback (`?? existing.linked_file_id`),
+    // así que un vínculo que ya no existe se quedaba acá para siempre. Este
+    // era el agujero por el que una segunda PC nunca se enteraba del unlink.
+    //
+    // Se usa el `content_id` que viaja EN el tombstone: es lo que dice de qué
+    // archivo despegar el vínculo (el platform_id solo no alcanza).
+    if (cv.link_state === 'unlinked') {
+      if (file) {
+        platformVideoRepo.unlinkFromFile(file.id, cv.platform);
+        fileRepo.removePlatform(file.id, cv.platform);
+        recovered++;
+      } else {
+        skipped++;
+      }
+      continue;
+    }
+
     if (cv.file_name && !file) { orphans++; continue; }
 
     platformVideoRepo.upsert({

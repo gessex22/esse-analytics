@@ -34,8 +34,12 @@ export type PlatformTransitionAction = 'unlink' | 'discard';
 
 export interface PlatformTransitionResult {
   ok: boolean;
-  /** 'not_found' = no hay archivo con ese content_id para este usuario. */
-  reason?: 'not_found';
+  /**
+   * 'not_found' = no hay archivo con ese content_id para este usuario.
+   * 'stale'     = la operación es anterior al último cambio de estado ya
+   *               aplicado, así que se descarta (llegó tarde).
+   */
+  reason?: 'not_found' | 'stale';
   fileId?: string;
   platforms?: string[];
   platformsDiscarded?: string[];
@@ -101,7 +105,23 @@ export async function applyPlatformTransition(
   // puede desvincular, igual que hoy lo permite `unlinkPlatform`. Lo que
   // 'facebook' NO tiene es representación propia en Nube -- ver el guard de
   // TRANSITION_PLATFORMS más abajo.
-  input: { contentId: string; platform: SyncPlatform; action: PlatformTransitionAction },
+  input: {
+    contentId: string;
+    platform: SyncPlatform;
+    action: PlatformTransitionAction;
+    /**
+     * Cuándo cambió el ESTADO en el cliente que originó la acción. Es lo que
+     * decide precedencia cuando una operación llega tarde.
+     *
+     * NO es `publishedAt`: alguien puede vincular HOY una publicación de hace
+     * meses, y ahí `publishedAt` es viejo aunque la mutación sea nueva.
+     * Comparar contra la fecha del video daría exactamente la respuesta
+     * equivocada en ese caso.
+     */
+    stateChangedAt?: Date;
+    /** Idempotencia y reanudación de una operación que quedó a medias. */
+    operationId?: string;
+  },
 ): Promise<PlatformTransitionResult> {
   const { contentId, platform, action } = input;
 
@@ -113,6 +133,18 @@ export async function applyPlatformTransition(
   if (!file) return { ok: false, reason: 'not_found' };
 
   const ahora = new Date();
+  const stateChangedAt = input.stateChangedAt ?? ahora;
+  const operationId = input.operationId;
+
+  // Precedencia. `operationId` da idempotencia (repetir no duplica efectos)
+  // pero NO resuelve orden: una operación vieja que llega tarde seguiría
+  // aplicándose y destruiría un cambio posterior. Caso real que esto evita:
+  // se suelta la plataforma, después se re-publica con un link nuevo, y recién
+  // ahí llega el unlink rezagado -- sin este corte, mata la publicación nueva.
+  const ultimoCambio = file.platforms_updated_at ? new Date(file.platforms_updated_at) : null;
+  if (ultimoCambio && stateChangedAt < ultimoCambio) {
+    return { ok: false, reason: 'stale', fileId: String(file._id) };
+  }
 
   // 1) files — la representación canónica.
   const next = applyExplicitTransition(
@@ -163,11 +195,29 @@ export async function applyPlatformTransition(
     { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
   );
 
-  // 4) backup_platform_videos — el espejo desde el que el escritorio
-  //    RECONSTRUYE sus links locales al hacer pull. Acá sí se borra la fila: un
-  //    link que ya no existe no debe reconstruirse. Sin este paso el pull
-  //    resucita el vínculo y el unlink se deshace solo (BUG-2026-09-07-01).
-  await BackupPlatformVideoModel.deleteMany({ userId, platform, content_id: contentId });
+  // 4) backup_platform_videos — el espejo desde el que CADA escritorio
+  //    reconstruye sus links locales al hacer pull.
+  //
+  //    TOMBSTONE, no borrado. Borrar la fila arreglaba a la PC que hizo el
+  //    unlink (deja de resucitarse el vínculo) pero dejaba a las demás sin
+  //    enterarse jamás: `pullPlatformVideosFromCloud` no elimina nunca filas
+  //    locales que falten en la respuesta, así que un segundo dispositivo se
+  //    quedaba el link para siempre. Marcada `unlinked`, ese pull tiene algo
+  //    concreto que procesar.
+  //
+  //    Se conserva `content_id`: es lo que le dice a la otra PC de qué archivo
+  //    despegar el vínculo (el platform_id solo no alcanza).
+  await BackupPlatformVideoModel.updateMany(
+    { userId, platform, content_id: contentId },
+    {
+      $set: {
+        link_state: 'unlinked',
+        link_updated_at: ahora,
+        content_id: contentId,
+        ...(operationId ? { operation_id: operationId } : {}),
+      },
+    },
+  );
 
   // 5) remote_library_videos — la copia de Nube. Solo si el video vive ahí y
   //    solo para las 3 plataformas que ese modelo conoce.

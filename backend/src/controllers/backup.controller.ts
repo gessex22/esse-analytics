@@ -806,35 +806,79 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
       return;
     }
 
-    await BackupPlatformVideoModel.bulkWrite(
-      incoming
-        .filter(v => v && v.platform && v.platform_id)
-        .map(v => ({
-          updateOne: {
-            filter: { userId, platform: v.platform, platform_id: v.platform_id },
-            update: {
-              $set: {
-                userId,
-                platform:         v.platform,
-                platform_id:      v.platform_id,
-                platform_url:     v.platform_url    ?? null,
-                device_id:        v.device_id       ?? null,
-                source:           v.source           ?? null,
-                published_at:     v.published_at    ?? null,
-                file_name:        v.file_name       ?? null,
-                content_id:       v.content_id      ?? null,
-                match_status:     v.match_status    ?? 'sin_match',
-                title:            v.title           ?? null,
-                description:      v.description     ?? null,
-                local_updated_at: new Date(v.local_updated_at),
-              },
-            },
-            upsert: true,
-          },
-        })),
+    const validos = incoming.filter(v => v && v.platform && v.platform_id);
+
+    // Guard de tombstone. Este endpoint recibe el push periódico de CADA
+    // escritorio, con su copia local -- que puede estar atrasada. Si una PC
+    // soltó la plataforma y otra todavía tiene el vínculo viejo, el push de la
+    // segunda llegaba y RESUCITABA el link, pisando el tombstone antes de que
+    // esa misma PC alcanzara a leerlo en su pull. El ciclo se cerraba solo y el
+    // unlink no se propagaba nunca.
+    //
+    // Regla: un push cuyo `local_updated_at` es ANTERIOR al `link_updated_at`
+    // del tombstone no puede tocar el vínculo. Se compara contra el reloj
+    // propio del link, no contra `local_updated_at` guardado (que se mueve con
+    // cualquier campo de la fila y no sirve para decidir esto).
+    //
+    // Se leen los existentes primero en vez de meter la condición en el filtro
+    // del bulkWrite: con `upsert: true`, un filtro que no matchea INSERTA, y
+    // acá eso violaría el índice único {userId, platform, platform_id}.
+    const claves = validos.map(v => ({ platform: v.platform, platform_id: v.platform_id }));
+    const existentes = claves.length
+      ? await BackupPlatformVideoModel.find(
+          { userId, $or: claves },
+          { platform: 1, platform_id: 1, link_state: 1, link_updated_at: 1 },
+        ).lean()
+      : [];
+    const tombstonePorClave = new Map(
+      existentes
+        .filter((e: any) => e.link_state === 'unlinked')
+        .map((e: any) => [`${e.platform}:${e.platform_id}`, e.link_updated_at ? new Date(e.link_updated_at).getTime() : 0]),
     );
 
-    res.json({ ok: true, updated: incoming.length });
+    let ignoradosPorTombstone = 0;
+    const ops = validos
+      .filter(v => {
+        const tomb = tombstonePorClave.get(`${v.platform}:${v.platform_id}`);
+        if (tomb === undefined) return true;
+        const empuje = v.local_updated_at ? new Date(v.local_updated_at).getTime() : 0;
+        // Empate incluido: ante la duda gana el tombstone. Un link se puede
+        // volver a crear con una acción explícita nueva; un unlink perdido en
+        // un empate vuelve a dejar el dato zombi que veníamos persiguiendo.
+        if (empuje <= tomb) { ignoradosPorTombstone++; return false; }
+        return true;
+      })
+      .map(v => ({
+        updateOne: {
+          filter: { userId, platform: v.platform, platform_id: v.platform_id },
+          update: {
+            $set: {
+              userId,
+              platform:         v.platform,
+              platform_id:      v.platform_id,
+              platform_url:     v.platform_url    ?? null,
+              device_id:        v.device_id       ?? null,
+              source:           v.source           ?? null,
+              published_at:     v.published_at    ?? null,
+              file_name:        v.file_name       ?? null,
+              content_id:       v.content_id      ?? null,
+              match_status:     v.match_status    ?? 'sin_match',
+              title:            v.title           ?? null,
+              description:      v.description     ?? null,
+              local_updated_at: new Date(v.local_updated_at),
+              // Un push que SÍ gana vuelve a dejar el vínculo vivo.
+              // `as const`: sin esto TS ensancha el literal a `string` y no
+              // cierra contra el enum del schema.
+              link_state:       'linked' as const,
+            },
+          },
+          upsert: true,
+        },
+      }));
+
+    if (ops.length > 0) await BackupPlatformVideoModel.bulkWrite(ops);
+
+    res.json({ ok: true, updated: ops.length, ignoradosPorTombstone });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1174,7 +1218,25 @@ export async function applyPlatformPublish(userId: string, data: {
         const newStates = upsertConfirmed(file.platform_states ?? [], platform as any);
         await FileModel.updateOne(
           { _id: file._id },
-          { $addToSet: { platforms: platform }, $pull: { platforms_discarded: platform }, $set: { platform_states: newStates } },
+          {
+            $addToSet: { platforms: platform },
+            $pull: { platforms_discarded: platform },
+            $set: {
+              platform_states: newStates,
+              // Sella el reloj de ESTADO cuando el estado cambia de verdad.
+              // Sin esto, la precedencia de applyPlatformTransition no tiene
+              // contra qué comparar: un unlink rezagado veía un
+              // platforms_updated_at viejo, se creía más nuevo que la
+              // republicación, y la borraba.
+              //
+              // Ojo con la diferencia: `new Date()` (AHORA, cuando cambió el
+              // estado) y no `publishedAtDate` -- vincular hoy un video de hace
+              // meses es un cambio de estado NUEVO aunque la publicación sea
+              // vieja. Confundir las dos fechas es exactamente el error que el
+              // caso 3 del harness integral vigila.
+              platforms_updated_at: new Date(),
+            },
+          },
         );
       }
       publishedFile = { _id: file._id, file_name: file.file_name, fecha_creacion: file.fecha_creacion };
@@ -1210,10 +1272,22 @@ export async function applyPlatformPublish(userId: string, data: {
     // resolveCrossMatchSlot para el cross-match manual -- acá faltaba para el
     // resto de los callers (recordUploadEvent, uploaders directos).
     if (linkedFileId) {
-      await PlatformVideoModel.updateMany(
+      const desvinculados = await PlatformVideoModel.updateMany(
         { userId, platform, linkedFileId, platformId: { $ne: platformId } },
         { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
       );
+      // Cambiar CUÁL link respalda la plataforma es un cambio de estado, aunque
+      // el badge no se mueva (ya estaba `confirmed`). Sin sellar el reloj acá,
+      // una republicación con un link nuevo dejaba `platforms_updated_at` en su
+      // valor viejo, y un unlink rezagado se creía más nuevo que ella y la
+      // borraba -- justo el caso 3 del harness integral.
+      //
+      // Se condiciona a que algo haya cambiado de verdad (modifiedCount > 0):
+      // un reintento del MISMO platformId no debe mover el reloj, porque eso
+      // haría parecer rezagada a una operación posterior legítima.
+      if ((desvinculados.modifiedCount ?? 0) > 0) {
+        await FileModel.updateOne({ _id: linkedFileId }, { $set: { platforms_updated_at: new Date() } });
+      }
     }
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
     // platform+platformId no debe volver a pisarse por una llamada repetida

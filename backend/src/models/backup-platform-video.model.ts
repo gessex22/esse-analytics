@@ -18,6 +18,26 @@ export interface IBackupPlatformVideo extends Document {
   title?: string;
   description?: string;
   local_updated_at: Date;
+
+  // ── Tombstone de desvinculación ───────────────────────────────────────────
+  // Esta colección es de donde CADA escritorio reconstruye sus links locales al
+  // hacer pull. Si al desvincular se BORRABA la fila, un segundo dispositivo que
+  // ya tenía el link no se enteraba nunca: `pullPlatformVideosFromCloud` no
+  // elimina jamás filas locales ausentes de la respuesta, así que se lo quedaba
+  // para siempre. La fila se conserva marcada como `unlinked` para que ese pull
+  // tenga algo que procesar.
+  //
+  // `content_id` se conserva a propósito en el tombstone: es lo que le dice a la
+  // otra PC QUÉ asociación retirar (el platform_id solo no alcanza, hay que
+  // saber de qué archivo se despega).
+  link_state?: 'linked' | 'unlinked';
+  // Reloj propio del vínculo, separado de `local_updated_at` (que se mueve con
+  // cualquier campo). Es contra este timestamp que se decide si el push de una
+  // PC atrasada puede pisar un tombstone más nuevo.
+  link_updated_at?: Date;
+  // Idempotencia: repetir la misma operación no cambia el resultado, y permite
+  // reanudar una que quedó a medias sin duplicar efectos.
+  operation_id?: string;
 }
 
 const BackupPlatformVideoSchema = new Schema<IBackupPlatformVideo>({
@@ -34,6 +54,9 @@ const BackupPlatformVideoSchema = new Schema<IBackupPlatformVideo>({
   title:            { type: String },
   description:      { type: String },
   local_updated_at: { type: Date, required: true },
+  link_state:       { type: String, enum: ['linked', 'unlinked'], default: 'linked' },
+  link_updated_at:  { type: Date },
+  operation_id:     { type: String },
 }, { timestamps: true });
 
 BackupPlatformVideoSchema.index({ userId: 1, platform: 1, platform_id: 1 }, { unique: true });
