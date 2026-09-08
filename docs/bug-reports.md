@@ -34,6 +34,73 @@ Usar el siguiente formato:
 
 ## Incidentes
 
+## BUG-2026-09-07-03 — Calendario iOS mostraba "linux gaming" como publicado hoy en TikTok (fecha mala en upload_history)
+
+- Estado: `corregido` -- dato de producción reparado, sin cambio de código (ver "no implementado a propósito" abajo).
+- Reportado: 2026-09-07
+- Plataformas: Central (dato compartido), síntoma visible en iOS Calendario
+- Severidad: baja -- cosmético (un video viejo aparece en la sección "Hoy"), no pérdida de datos
+- Reportado por: usuario
+
+### Síntoma y pasos para reproducir
+
+Efecto secundario directo de reparar BUG-2026-09-07-01 (arriba, en el
+tiempo): tras usar `setPlatformLink` para re-vincular el TikTok de
+"final - linux gaming.mp4", el Calendario de iOS lo mostró bajo "Hoy" con
+el check verde de TikTok, como si se hubiera publicado recién, pese a que
+la publicación real fue el 2026-06-02.
+
+### Investigación
+
+`CalendarView.swift`'s `publishedToday(kind)` arma la lista de "Hoy"
+filtrando `/api/sync/history` por `publishedAt` dentro de la fecha
+actual. `setPlatformLink` (`local-backend/src/controllers/video.controller.ts:312`)
+manda `publishedAt: undefined` a `reportUploadEvent` cuando no hay un
+`previousPublication` LOCAL para ese platform+file (a propósito, para que
+`applyPlatformPublish` intente resolver la fecha real vía API en vez de
+heredar una mala) -- pero como este `platform+platformId` de TikTok NUNCA
+había pasado por `recordUploadEvent`/`upload_history` antes (el publish
+original de junio se cargó por un backfill directo a `PlatformVideoModel`,
+sin pasar por Historial), el `$setOnInsert` de `upload_history` insertó un
+documento NUEVO. El best-effort de `applyPlatformPublish` para resolver la
+fecha real vía la API de TikTok falló (o no estaba disponible en ese
+momento) y cayó al último fallback: `new Date()` -- hoy. `PlatformVideoModel.publishedAt`
+NO se vio afectado (ya existía, protegido por su propio `$setOnInsert`) --
+solo el registro de Historial quedó con la fecha mala.
+
+### Corrección
+
+Dato puntual reparado a mano (autorizado explícitamente por el usuario,
+tras dos intentos bloqueados por el clasificador de seguridad de la sesión
+de Claude Code -- se requirió confirmación explícita): `upload_history`
+→ `{platform: 'tiktok', platformId: '7646592511003135263'}` →
+`publishedAt` de `2026-09-07T06:52:40Z` a `2026-06-02T02:00:00Z` (mismo
+valor que `PlatformVideoModel.publishedAt`, ya correcto). Script guardado
+en `backend/src/scripts/fix-linux-gaming-history-date.ts` para trazabilidad.
+
+**No implementado a propósito (fix de fondo)**: `recordUploadEvent`/
+`applyPlatformPublish` podrían distinguir "primera vez que este
+platform+platformId toca Historial" de "video genuinamente nuevo" (ej.
+exigiendo un `publishedAt` explícito o abortar el insert best-effort si el
+propio `PlatformVideoModel` YA tenía una fecha distinta a la resuelta) --
+pero el gatillo exacto (relinkear a mano un platform+platformId que nunca
+pasó por Historial Y que la API de la plataforma no responda bien en ese
+instante) es específico y poco frecuente. Sin implementar; anotado por si
+vuelve a repetirse.
+
+### Verificación y pendiente
+
+- Verificado con lectura antes/después del `updateOne`: `matchedCount: 1,
+  modifiedCount: 1`, valor final `2026-06-02T02:00:00.000Z`.
+- Pendiente: confirmar visualmente en el Calendario de iOS (pull-to-refresh
+  o reabrir la vista) que "linux gaming" ya no aparece bajo "Hoy".
+
+### Historial
+- 2026-09-07 — agente: causa raíz confirmada leyendo `setPlatformLink`/
+  `recordUploadEvent`/`applyPlatformPublish` y el código de iOS
+  (`CalendarView.swift::publishedToday`), dato reparado con autorización
+  explícita del usuario.
+
 ## BUG-2026-09-07-02 — Un video con crosspost a Facebook nunca podía aparecer en "Emparejar entre plataformas"
 
 - Estado: `verificado` -- desplegado en producción (pull + restart en la central) y confirmado por el usuario: "FINAL - calidad netflix.mp4" ya apareció en "Emparejar entre plataformas" y pudo vincular el TikTok que le faltaba.
