@@ -25,6 +25,55 @@ determinista**.
 | Relojes por hecho | **Después** de centralizar escritores, nunca antes. | Un reloj solo sirve si *todos* los escritores lo actualizan. Es exactamente lo que ya falló: hoy solo `bulkUpsertBackupFiles` escribe `platforms_updated_at`, así que no había con qué comparar. |
 | Reparación histórica y canary | **El mismo mecanismo.** | El reconciliador que repara es el mismo reporte que mide divergencia para la consolidación. |
 | Orden push/pull | **No invertirlo todavía.** | Es barato pero no es el arreglo: arrastra los tres criterios del pull (escritos asumiendo el orden actual) y no elimina el ciclo, porque el push post-publicación se dispara fuera del orquestador desde 6+ callers. |
+| Intención del usuario | **Contrato de transición explícito**, nunca inferida de un snapshot. | Ver "Propuesta rechazada" abajo. |
+| `unlink` en el espejo | **Tombstone**, no borrar la fila. | `pullPlatformVideosFromCloud` no borra NUNCA filas locales ausentes de la respuesta (verificado: cero eliminaciones en esa función). Si la fila del espejo simplemente desaparece, un segundo dispositivo que ya tenía el link local no se entera jamás y lo conserva para siempre. |
+| Atomicidad | **Outbox + idempotencia**, no transacciones de Mongo. | Ver "Transacciones vs outbox" abajo. |
+
+### Propuesta rechazada: inferir la intención diffeando el snapshot
+
+Se propuso que `updateFilePlatforms` comparara el estado recibido contra el
+actual y tratara cada diferencia como acción explícita. **Rechazado**: un
+snapshot completo no permite distinguir "el usuario tocó esto" de "este cliente
+venía desactualizado". Una PC o un móvil atrasado degradaría varios `confirmed`
+de una sola vez, accidentalmente — o sea, arreglaríamos el bug 2 abriendo una
+vía nueva para exactamente el mismo daño.
+
+La solución es cambiar el contrato, no adivinar mejor:
+
+```
+POST /api/sync/platform-transition
+{ contentId, platform, action, operationId, occurredAt }
+```
+
+Acciones: `mark_badge_only`, `discard`, `clear_resolution`, `unlink`.
+`confirm` con link real **sigue entrando por `applyPlatformPublish`**. Para
+ediciones múltiples, `operations[]`.
+
+`updateFilePlatforms` se mantiene para clientes viejos como **snapshot
+automático conservador**: puede completar información, nunca degradar un
+`confirmed`. Los clientes nuevos mandan la acción puntual que el usuario hizo.
+
+### Transacciones vs outbox
+
+Las 5 escrituras del servicio son secuenciales y sin atomicidad. Medido: el
+Mongo local de desarrollo (Docker, `mongo:8.0`) es **standalone**, así que no
+soporta transacciones multi-documento — se podrían usar en producción (Atlas es
+replica set) pero **el harness no podría verificarlas**, que es justo lo que no
+queremos.
+
+Se elige **outbox + idempotencia**:
+
+- El fallo que realmente nos mordió (el unlink que nunca llegaba) es de
+  contrato/red **entre Electron y la central**, fuera del alcance de cualquier
+  transacción de Mongo. Una transacción resolvería un riesgo más chico que el
+  que tenemos.
+- `operationId` ya está en el contrato propuesto, y el repo ya tiene el patrón
+  hecho (`history_outbox`, SQLite local durable) para copiar.
+- Las 5 escrituras ya son "poner en este valor" (no incrementos), así que un
+  reintento las repara sin necesidad de rollback.
+
+Si más adelante se quieren transacciones igual, convertir el contenedor a
+replica set de un solo nodo es un cambio chico.
 
 ### Evidencia: por qué `content_id` y no `remote_file_id`
 
@@ -193,10 +242,38 @@ Rollback por flag durante una versión completa.
 
 ## Estado
 
+### Orden corregido de la Entrega 1 (tras la review del 2026-09-08)
+
+Rutear los callers restantes **se posterga** hasta tener las bases. El orden
+que sigue reemplaza al anterior:
+
+| # | Paso | Estado |
+|---|---|---|
+| 1 | Tests rojos que demuestren los bugs | Hecho |
+| 2 | Escritor único (`unlink`/`discard`) | Hecho (núcleo + 5 escrituras) |
+| 3 | `unlink` por `content_id` + dejar de tragarse el error | Hecho (bug 1 cerrado, test en verde) |
+| 4 | Corregir el harness: no cerrar la SQLite compartida | Hecho |
+| 5 | **Rediseñar el test integral**: ciclo push→pull real contra Mongo, en vez de la respuesta de la nube hardcodeada | Pendiente |
+| 6 | **Tombstone** para `unlink` en `backup_platform_videos` | Pendiente |
+| 7 | **Outbox + idempotencia** (`operationId`) en el servicio | Pendiente |
+| 8 | **Acción local durable** en Electron (reintento que sobreviva a un cierre) | Pendiente |
+| 9 | Endpoint `POST /api/sync/platform-transition` con las 4 acciones | Pendiente |
+| 10 | Rutear el resto: remote-library, cross-match, push | Pendiente |
+| 11 | Delegación de `confirm` (último, es el más delicado) | Pendiente |
+
+## Estado
+
 | Entrega | Estado |
 |---|---|
-| 1.1 tests rojos | Hecho (3 rojos, rama `test/sync-convergence-red`) |
-| 1.2 servicio central | En curso |
-| 1.3 rutear escritores | Sin empezar |
-| 1.4 propagar el error | Sin empezar |
+| 1 | En curso — pasos 1 a 4 hechos, 5 a 11 pendientes (ver arriba) |
 | 2 a 5 | Sin empezar |
+
+**Nada de esto está en producción todavía**: vive en la rama
+`test/sync-convergence-red`, sin mergear. El fix del unlink no corre hasta que
+se mergee y se reinicie la central.
+
+### Advertencia vigente
+
+El escritor **todavía no es único**: solo `unlinkPlatform` rutea por él. Hasta
+completar el paso 10 hay 6 escritores más tocando las mismas representaciones
+por su cuenta.
