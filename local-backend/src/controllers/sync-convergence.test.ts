@@ -17,7 +17,7 @@
 // Correr:  cd local-backend && npx tsx --test src/controllers/sync-convergence.test.ts
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +32,18 @@ process.env.SQLITE_PATH = path.join(tmpDir, 'convergencia.db');
 delete process.env.ESSE_SYNC_METRICS;
 
 const AUTH = 'Bearer token-de-prueba';
+
+// `db` es un singleton del módulo, compartido por todos los tests del archivo.
+// Cerrarlo dentro de un test rompe a los siguientes -- y peor: rompe con
+// "The database connection is not open", que se lee igual que un fallo del
+// código bajo prueba. Pasó de verdad: mientras el primer test estaba rojo
+// fallaba ANTES de su `db.close()`, así que el segundo corría bien; al arreglar
+// el bug 1, el primero empezó a llegar al close y el segundo pasó a fallar por
+// infraestructura disfrazada de bug. Se cierra una sola vez, al final.
+after(async () => {
+  const { db } = await import('../db/database');
+  if (db.open) db.close();
+});
 
 /** Respuesta JSON mínima, del shape que devuelve la central. */
 function jsonResponse(body: unknown): Response {
@@ -132,7 +144,6 @@ test('BUG 1 — al desvincular, Electron manda a la central un identificador que
   );
   assert.equal(sentId, CONTENT_ID, 'y tiene que ser el content_id de ESE archivo, no otro');
 
-  db.close();
 });
 
 // ---------------------------------------------------------------------------
@@ -222,5 +233,4 @@ test('BUG 2 (rojo) — un descarte explícito local sobrevive al pull cuando los
     'Instagram no debería volver a aparecer como publicada después de un descarte explícito.',
   );
 
-  db.close();
 });
