@@ -397,54 +397,6 @@ test('INTEGRAL — una segunda PC recibe el tombstone del unlink tras un ciclo p
 });
 
 // ---------------------------------------------------------------------------
-// CASO 3 — una operación vieja que llega tarde no destruye una publicación
-// posterior.
-//
-// ROJO ESPERADO: `operationId` da idempotencia, no precedencia.
-//
-// La comparación NO puede ser contra `publishedAt`: alguien puede vincular HOY
-// una publicación de hace meses, y ahí `publishedAt` es viejo aunque la mutación
-// sea nueva. Lo que hay que comparar es cuándo cambió el ESTADO
-// (`stateChangedAt` / `baseVersion`). Por eso el seed de abajo usa a propósito
-// un publishedAt viejo con una mutación nueva.
-// ---------------------------------------------------------------------------
-test('INTEGRAL — un unlink viejo que llega tarde no destruye una publicación posterior', async (t) => {
-  if (!(await conectarOSaltear(t))) return;
-  await cargarCentral();
-  await limpiarEstado();
-
-  const { contentId } = await sembrarConfirmado();
-  const { applyPlatformTransition } = await import('../services/platform-transition.service');
-
-  // Se republica con un link nuevo. `publishedAt` a propósito VIEJO: es un video
-  // antiguo que recién ahora se vincula. Lo nuevo es la mutación, no el video.
-  await central.applyPlatformPublish(USER_ID, {
-    platform: PLATFORM, platformId: '18888888888888888',
-    platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
-    contentId, fileName: 'video integral.mp4',
-    publishedAt: new Date('2026-01-15T10:00:00.000Z'), matchStatus: 'manual',
-  });
-
-  const antes = await fotoDelEstado(contentId);
-  assert.deepEqual(antes.files.platforms, [PLATFORM], 'precondición: la republicación quedó registrada');
-
-  // Llega tarde el unlink, cuyo CAMBIO DE ESTADO es anterior a la republicación.
-  await applyPlatformTransition(USER_ID, {
-    contentId, platform: PLATFORM as any, action: 'unlink',
-    // @ts-expect-error -- `stateChangedAt` es parte del contrato acordado y
-    // todavía no existe en la firma. El test lo exige.
-    stateChangedAt: new Date('2026-09-02T10:00:00.000Z'),
-  });
-
-  const despues = await fotoDelEstado(contentId);
-  assert.deepEqual(
-    despues.files.platforms, [PLATFORM],
-    'Un unlink cuyo cambio de estado es anterior a la republicación no debe borrarla al llegar ' +
-    'tarde. Hoy el servicio aplica la transición sin mirar el orden.',
-  );
-});
-
-// ---------------------------------------------------------------------------
 // CASO 4 — el DESCARTE explícito, que es el camino que el snapshot ya no puede
 // hacer. Contraparte del test reescrito en sync-convergence.test.ts: allá se
 // exige que el push automático NO degrade un confirmed; acá se exige que la
@@ -576,19 +528,67 @@ test('INTEGRAL — un unlink deja tombstone aunque el espejo no tuviera la fila'
 });
 
 // ---------------------------------------------------------------------------
-// CASO 7 (regresión) — una operación atrasada responde 409, no 404.
+// Helpers de semántica causal
+// ---------------------------------------------------------------------------
+
+/** Revisión vigente de una plataforma, tal como la publica la central. */
+async function revisionDe(contentId: string, platform = PLATFORM): Promise<number> {
+  const f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  return ((f?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0;
+}
+
+/** Llama al endpoint real POST /api/sync/platform-transition. */
+async function postTransicion(body: any) {
+  const { res, captured } = fakeRes();
+  await central.applyPlatformTransitionEndpoint(
+    { user: USER, headers: { authorization: AUTH }, params: {}, query: {}, body } as any,
+    res as any,
+  );
+  return captured;
+}
+
+// ---------------------------------------------------------------------------
+// CASO 4 (reescrito) — una operación basada en una revisión vieja no destruye
+// un cambio posterior.
 //
-// El endpoint mapeaba cualquier `!ok` a "Archivo no encontrado", así que una
-// outbox leía "todavía no llegó" y reintentaba para siempre una operación que
-// nunca iba a aplicarse.
-//
-// GAP CONOCIDO que este test deja a la vista: el endpoint todavía NO recibe
-// `stateChangedAt` del cliente (es un DELETE con la clave en el path), así que
-// usa "ahora" y nunca puede considerarse atrasado por sí solo. Para provocar el
-// conflicto se adelanta el reloj de la plataforma -- escenario realista, es
-// exactamente lo que pasa con desfasaje de reloj entre dispositivos. Que el
-// cliente pueda declarar CUÁNDO ocurrió su acción llega con
-// `POST /api/sync/platform-transition`, que es lo que necesita la outbox.
+// Antes este caso comparaba `stateChangedAt`, o sea el reloj del CLIENTE. Se
+// cambió a `baseVersion` por decisión de diseño: un reloj de cliente no puede
+// ser autoridad -- se desfasa (en este mismo repo se midió una deriva de 5 h
+// por un bug de zona horaria), y una máquina adelantada podría declararse "más
+// nueva" y pisar un cambio que en realidad ocurrió después. La revisión la
+// emite el servidor.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — una transición basada en una revisión vieja no destruye una publicación posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const revVieja = await revisionDe(contentId);
+
+  // Entremedio se republica con un link nuevo: eso mueve la revisión.
+  await central.applyPlatformPublish(USER_ID, {
+    platform: PLATFORM, platformId: '18888888888888888',
+    platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
+    contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+    // publishedAt VIEJO a propósito: vincular hoy un video de hace meses es un
+    // cambio de estado nuevo. Si la precedencia mirara la fecha del video en
+    // vez de la revisión, daría exactamente la respuesta equivocada.
+    publishedAt: new Date('2026-01-15T10:00:00.000Z'),
+  });
+  assert.notEqual(await revisionDe(contentId), revVieja, 'republicar debe mover la revisión');
+
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', baseVersion: revVieja,
+  });
+
+  assert.equal(r.status, 409, 'una operación basada en una revisión superada es conflicto');
+  const foto = await fotoDelEstado(contentId);
+  assert.deepEqual(foto.files.platforms, [PLATFORM], 'y la publicación posterior sigue en pie');
+});
+
+// ---------------------------------------------------------------------------
+// CASO 8 (reescrito) — 409 con la revisión vigente, vía el endpoint real.
 // ---------------------------------------------------------------------------
 test('INTEGRAL — una transición atrasada responde 409 con la revisión vigente, no 404', async (t) => {
   if (!(await conectarOSaltear(t))) return;
@@ -596,29 +596,235 @@ test('INTEGRAL — una transición atrasada responde 409 con la revisión vigent
   await limpiarEstado();
 
   const { contentId } = await sembrarConfirmado();
+  const revVieja = await revisionDe(contentId);
 
-  // El estado de ESTA plataforma cambió "después" de la operación que llega.
-  const enElFuturo = new Date(Date.now() + 60_000);
-  await central.FileModel.updateOne(
-    { userId: USER_ID, content_id: contentId },
-    { $set: { platform_state_changed_at: [{ platform: PLATFORM, at: enElFuturo }] } },
-  );
+  await central.applyPlatformPublish(USER_ID, {
+    platform: PLATFORM, platformId: '18888888888888888',
+    platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
+    contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+    publishedAt: new Date('2026-01-15T10:00:00.000Z'),
+  });
 
-  const { res, captured } = fakeRes();
-  await central.unlinkPlatform(
-    {
-      user: USER, headers: { authorization: AUTH }, query: {}, body: {},
-      params: { contentId, platform: PLATFORM },
-    } as any,
-    res as any,
-  );
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', baseVersion: revVieja,
+  });
 
-  assert.equal(captured.status, 409, 'una operación atrasada es un conflicto, no un "no encontrado": ' +
-    'con 404 la outbox reintenta eternamente algo que nunca va a aplicar');
-  assert.equal(captured.body?.reason, 'stale');
-  assert.ok(captured.body?.lastChangedAt, 'y devuelve la revisión vigente para que el cliente pueda rebasar');
+  assert.equal(r.status, 409, 'con 404 la outbox reintentaría eternamente algo que nunca va a aplicar');
+  assert.equal(r.body?.version, await revisionDe(contentId),
+    'y devuelve la revisión VIGENTE, para que el cliente pueda rebasar en vez de adivinar');
+});
 
-  // Y no tocó nada: una operación rechazada no puede dejar efectos.
+// ---------------------------------------------------------------------------
+// CASO 9 — reintento idéntico: misma operationId dos veces.
+//
+// Sin registro persistente, `operationId` no deduplica nada: el segundo intento
+// vuelve a aplicar los efectos. Con una outbox reintentando, eso pasa siempre.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — reintentar la MISMA operationId no vuelve a aplicar efectos', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'op-reintento-identico-1';
+
+  const r1 = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.body?.deduplicated, false, 'la primera entrega sí aplica');
+  const revTrasPrimera = await revisionDe(contentId);
+
+  // Segunda entrega: mismo operationId. Se manda el MISMO baseVersion viejo a
+  // propósito -- así reintenta una outbox que nunca vio la respuesta.
+  const r2 = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+
+  assert.equal(r2.status, 200, 'un reintento de una operación ya aplicada no es un conflicto');
+  assert.equal(r2.body?.deduplicated, true, 'y tiene que decir que no volvió a aplicar nada');
+  assert.equal(await revisionDe(contentId), revTrasPrimera,
+    'la revisión NO puede volver a moverse: si se mueve, se aplicó dos veces');
+
   const foto = await fotoDelEstado(contentId);
-  assert.deepEqual(foto.files.platforms, [PLATFORM], 'la plataforma sigue publicada');
+  assert.deepEqual(foto.files.discarded, [PLATFORM], 'y el estado final es el mismo');
+});
+
+// ---------------------------------------------------------------------------
+// CASO 10 — entrega invertida: dos operaciones distintas que llegan al revés.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — con entrega invertida gana la operación causalmente posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+
+  // Las dos se preparan sobre la MISMA revisión (el cliente las encoló sin
+  // haber visto la respuesta de la primera).
+  const opA = { contentId, platform: PLATFORM, action: 'discard', operationId: 'op-A', baseVersion: rev0 };
+  const opB = { contentId, platform: PLATFORM, action: 'unlink', operationId: 'op-B', baseVersion: rev0 };
+
+  // Llegan al revés: primero B.
+  const rB = await postTransicion(opB);
+  assert.equal(rB.status, 200, 'la primera en llegar se aplica');
+
+  const rA = await postTransicion(opA);
+  assert.equal(rA.status, 409,
+    'la segunda venía basada en una revisión ya superada: tiene que rechazarse, no aplicarse encima');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.deepEqual(foto.files.platforms, [], 'gana B (unlink): sin badge');
+  assert.deepEqual(foto.files.discarded, [], 'y sin descarte, que es lo que habría dejado A');
+});
+
+// ---------------------------------------------------------------------------
+// CASO 11 — plataformas concurrentes: no se pisan entre sí.
+//
+// El reloj por plataforma era un ARRAY que se leía, modificaba en JS y
+// reescribía entero. Dos transiciones sobre plataformas distintas se pisaban
+// (lost update). Con un mapa, `$inc` toca solo su propia clave.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — transiciones concurrentes en dos plataformas no se pisan', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+
+  // Se agrega YouTube al mismo archivo, para tener dos plataformas vivas.
+  await central.applyPlatformPublish(USER_ID, {
+    platform: 'youtube', platformId: 'YTAAAAAAAAA',
+    platformUrl: 'https://www.youtube.com/shorts/YTAAAAAAAAA',
+    contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+    publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+  });
+
+  const revIg = await revisionDe(contentId, PLATFORM);
+  const revYt = await revisionDe(contentId, 'youtube');
+
+  // En paralelo, a propósito.
+  const [rIg, rYt] = await Promise.all([
+    postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: 'op-ig', baseVersion: revIg }),
+    postTransicion({ contentId, platform: 'youtube', action: 'unlink', operationId: 'op-yt', baseVersion: revYt }),
+  ]);
+
+  assert.equal(rIg.status, 200, 'Instagram debe aplicarse');
+  assert.equal(rYt.status, 200, 'y YouTube también: son hechos independientes');
+
+  const f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(f.platforms_discarded, [PLATFORM], 'quedó el descarte de Instagram');
+  assert.ok(!(f.platforms ?? []).includes('youtube'), 'y YouTube quedó desvinculada');
+  const revs = (f.platform_rev ?? {}) as Record<string, number>;
+  assert.equal(revs[PLATFORM], revIg + 1, 'cada plataforma movió SU propia revisión');
+  assert.equal(revs['youtube'], revYt + 1, 'sin pisar la de la otra');
+});
+
+// ---------------------------------------------------------------------------
+// CASO 12 — recuperación de fallo parcial.
+//
+// Las 5 proyecciones son secuenciales y sin transacción: si el proceso se cae
+// en el medio, el sistema queda a mitad de camino. La operación tiene que
+// quedar registrada como `pending` y la próxima entrega tiene que REANUDARLA
+// hasta que todas converjan, en vez de darla por hecha o por nueva.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — una operación cortada a la mitad se reanuda hasta converger', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'op-fallo-parcial-1';
+
+  // Se rompe la ÚLTIMA proyección (Nube) para cortar la operación por la mitad.
+  const originalUpdateOne = central.RemoteLibraryVideoModel.updateOne.bind(central.RemoteLibraryVideoModel);
+  central.RemoteLibraryVideoModel.updateOne = () => { throw new Error('caída simulada a mitad de la operación'); };
+
+  let fallo: any = null;
+  try {
+    await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  } catch (err) {
+    fallo = err;
+  } finally {
+    central.RemoteLibraryVideoModel.updateOne = originalUpdateOne;
+  }
+
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+  const registro = await PlatformTransitionOpModel.findOne({ userId: USER_ID, operationId: op }).lean();
+  assert.ok(registro, 'la operación tiene que haber quedado registrada ANTES de aplicar');
+  assert.equal(registro.status, 'pending',
+    'y NO puede figurar como completada: si se marca antes de terminar, nadie la reanuda');
+
+  const parcial = await fotoDelEstado(contentId);
+  assert.deepEqual(parcial.files.discarded, [PLATFORM], 'lo que sí alcanzó a aplicarse quedó aplicado');
+  assert.deepEqual(parcial.remote.discarded, [], 'y lo que no, no (Nube quedó atrás)');
+
+  // Reentrega de la MISMA operación: tiene que completar lo que faltaba.
+  const r = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  assert.equal(r.status, 200, 'reanudar no es conflicto');
+
+  const final = await fotoDelEstado(contentId);
+  assert.deepEqual(final.files.discarded, [PLATFORM], 'files sigue descartada');
+  assert.deepEqual(final.remote.discarded, [PLATFORM], 'y Nube ya convergió');
+  assert.deepEqual(final.remote.links, [], 'sin link en Nube');
+
+  const cerrado = await PlatformTransitionOpModel.findOne({ userId: USER_ID, operationId: op }).lean();
+  assert.equal(cerrado.status, 'completed', 'recién ahora la operación está completa');
+});
+
+// ---------------------------------------------------------------------------
+// CASO 13 — semántica de las transiciones, contra el camino REAL.
+//
+// Estas garantías vivían en tests unitarios de `applyExplicitTransition`, una
+// función pura que calculaba los arrays en JS. Esa función se eliminó al pasar
+// a operadores atómicos de Mongo ($pull/$addToSet acotados a la plataforma):
+// quedó sin usar en producción, así que sus 7 tests pasaban sin cubrir nada.
+// Las mismas afirmaciones se mudaron acá, donde sí ejercitan lo que corre.
+// ---------------------------------------------------------------------------
+test('INTEGRAL — semántica: unlink deja la plataforma AUSENTE, discard la marca, y ninguna toca a las demás', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+
+  // Una segunda plataforma, para poder afirmar que no se la toca.
+  await central.applyPlatformPublish(USER_ID, {
+    platform: 'youtube', platformId: 'YTBBBBBBBBB',
+    platformUrl: 'https://www.youtube.com/shorts/YTBBBBBBBBB',
+    contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+    publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+  });
+
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  // discard: sin badge, en descartados, y `discarded` en el estado detallado.
+  await applyPlatformTransition(USER_ID, { contentId, platform: PLATFORM as any, action: 'discard' });
+  let f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(f.platforms_discarded, [PLATFORM]);
+  assert.ok(!(f.platforms ?? []).includes(PLATFORM), 'sin badge de publicada');
+  assert.equal((f.platform_states ?? []).find((s: any) => s.platform === PLATFORM)?.state, 'discarded');
+  assert.ok((f.platforms ?? []).includes('youtube'), 'la otra plataforma queda intacta');
+
+  // unlink después de discard: no debe quedar rastro de esa plataforma.
+  await applyPlatformTransition(USER_ID, { contentId, platform: PLATFORM as any, action: 'unlink' });
+  f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(!(f.platforms ?? []).includes(PLATFORM), 'ni publicada');
+  assert.ok(!(f.platforms_discarded ?? []).includes(PLATFORM), 'ni descartada');
+  assert.equal(
+    (f.platform_states ?? []).find((s: any) => s.platform === PLATFORM), undefined,
+    '"pending" es la AUSENCIA en platform_states, no un 4º valor del enum',
+  );
+  assert.ok((f.platforms ?? []).includes('youtube'), 'y YouTube sigue sin enterarse');
+
+  // Repetir el unlink es inocuo.
+  const antes = JSON.stringify((await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean()).platforms);
+  await applyPlatformTransition(USER_ID, { contentId, platform: PLATFORM as any, action: 'unlink' });
+  const despues = JSON.stringify((await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean()).platforms);
+  assert.equal(despues, antes, 'repetir una transición no cambia el resultado');
+
+  // Una plataforma que nunca estuvo tampoco aparece de la nada.
+  await applyPlatformTransition(USER_ID, { contentId, platform: 'tiktok' as any, action: 'unlink' });
+  f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(!(f.platforms ?? []).includes('tiktok'), 'tiktok no se inventa');
+  assert.ok(!(f.platforms_discarded ?? []).includes('tiktok'), 'ni en descartados');
 });

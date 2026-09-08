@@ -1244,15 +1244,13 @@ export async function applyPlatformPublish(userId: string, data: {
               // vieja. Confundir las dos fechas es exactamente el error que el
               // caso 3 del harness integral vigila.
               platforms_updated_at: new Date(),
-              // Reloj de ESTA plataforma: es contra el que applyPlatformTransition
-              // decide precedencia. El global (`platforms_updated_at`) no sirve
-              // para eso -- un cambio en YouTube invalidaría una operación de
-              // Instagram.
-              platform_state_changed_at: [
-                ...((file.platform_state_changed_at ?? []) as any[]).filter((r: any) => r.platform !== platform),
-                { platform, at: new Date() },
-              ],
+              [`platform_state_changed_at.${platform}`]: new Date(),
             },
+            // Un publish también mueve la revisión causal de esa plataforma:
+            // si no, una transición basada en la revisión ANTERIOR se aplicaría
+            // encima de esta publicación creyéndose al día. `$inc` por path es
+            // atómico y no toca las otras plataformas.
+            $inc: { [`platform_rev.${platform}`]: 1 },
           },
         );
       }
@@ -1303,17 +1301,14 @@ export async function applyPlatformPublish(userId: string, data: {
       // un reintento del MISMO platformId no debe mover el reloj, porque eso
       // haría parecer rezagada a una operación posterior legítima.
       if ((desvinculados.modifiedCount ?? 0) > 0) {
-        const relojes = ((publishedFile as any)?.platform_state_changed_at ?? []) as any[];
         await FileModel.updateOne(
           { _id: linkedFileId },
           {
             $set: {
               platforms_updated_at: new Date(),
-              platform_state_changed_at: [
-                ...relojes.filter((r: any) => r.platform !== platform),
-                { platform, at: new Date() },
-              ],
+              [`platform_state_changed_at.${platform}`]: new Date(),
             },
+            $inc: { [`platform_rev.${platform}`]: 1 },
           },
         );
       }

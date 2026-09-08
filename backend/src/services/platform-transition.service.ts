@@ -24,7 +24,8 @@ import { BackupFileModel } from '../models/backup-file.model';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
-import { IPlatformState } from '../utils/platform-state.util';
+import { PlatformTransitionOpModel } from '../models/platform-transition-op.model';
+
 
 /** Las 3 plataformas con estado propio comparable. 'facebook' es crosspost. */
 export const TRANSITION_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const;
@@ -39,54 +40,23 @@ export interface PlatformTransitionResult {
    * 'stale'     = la operación es anterior al último cambio de estado ya
    *               aplicado, así que se descarta (llegó tarde).
    */
-  reason?: 'not_found' | 'stale';
+  reason?: 'not_found' | 'stale' | 'conflict';
   fileId?: string;
   platforms?: string[];
   platformsDiscarded?: string[];
-  /** Con `stale`: cuándo cambió por última vez el estado de ESA plataforma. */
-  lastChangedAt?: Date;
+  /** Revisión de esa plataforma: la vigente si hubo conflicto, la nueva si se aplicó. */
+  version?: number;
+  /** true = ya se había aplicado antes con este mismo operationId. */
+  deduplicated?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Núcleo puro — sin Mongo, testeable solo. Toda la semántica de la transición
-// vive acá; la parte de abajo solo la aplica a cada representación.
-// ---------------------------------------------------------------------------
-
-export interface ResolutionState {
-  platforms: string[];
-  platformsDiscarded: string[];
-  states: IPlatformState[];
-}
-
-/**
- * Aplica una acción EXPLÍCITA del usuario sobre una plataforma.
- *
- * - `unlink`:  queda sin badge, sin descarte y AUSENTE de `platform_states`.
- *              "Pending" no es un estado guardado, es la ausencia (decisión
- *              cerrada del plan: no se agrega un 4º valor al enum).
- * - `discard`: queda sin badge y marcada `discarded`.
- *
- * A diferencia de `upsertDiscarded` en platform-state.util.ts, acá un
- * `confirmed` SÍ se degrada: esa protección existe para que un toggle que
- * re-manda el estado completo no pise un link real, no para bloquear al
- * usuario cuando decide explícitamente soltar la plataforma.
- */
-export function applyExplicitTransition(
-  current: ResolutionState,
-  platform: string,
-  action: PlatformTransitionAction,
-): ResolutionState {
-  const platforms = current.platforms.filter(p => p !== platform);
-  const platformsDiscarded = current.platformsDiscarded.filter(p => p !== platform);
-  const states = current.states.filter(s => s.platform !== platform);
-
-  if (action === 'discard') {
-    platformsDiscarded.push(platform);
-    states.push({ platform, state: 'discarded' });
-  }
-
-  return { platforms, platformsDiscarded, states };
-}
+// Nota: acá vivía `applyExplicitTransition`, un núcleo puro que calculaba los
+// arrays resultantes en JS. Se eliminó al pasar a operadores atómicos de Mongo:
+// calcular en JS y escribir con `$set` es read-modify-write del documento
+// entero, y dos transiciones concurrentes sobre plataformas distintas se
+// pisaban. La semántica ahora la expresan los propios `$pull`/`$addToSet`
+// acotados por plataforma, y está cubierta contra el camino real en
+// sync-integral.test.ts ("semántica: unlink deja la plataforma AUSENTE...").
 
 // ---------------------------------------------------------------------------
 // Orquestación — aplica la transición a TODAS las representaciones.
@@ -112,20 +82,30 @@ export async function applyPlatformTransition(
     platform: SyncPlatform;
     action: PlatformTransitionAction;
     /**
-     * Cuándo cambió el ESTADO en el cliente que originó la acción. Es lo que
-     * decide precedencia cuando una operación llega tarde.
+     * Revisión de ESA plataforma sobre la que el cliente basó su decisión.
+     * Es la autoridad de precedencia: si ya no coincide con la del servidor,
+     * alguien cambió el estado en el medio y esta operación quedó vieja.
      *
-     * NO es `publishedAt`: alguien puede vincular HOY una publicación de hace
-     * meses, y ahí `publishedAt` es viejo aunque la mutación sea nueva.
-     * Comparar contra la fecha del video daría exactamente la respuesta
-     * equivocada en ese caso.
+     * NO se usa el reloj del cliente para esto. Los relojes de los dispositivos
+     * se desfasan (medido en este mismo repo: 5 h de deriva por un bug de zona
+     * horaria), así que un cliente adelantado podría declararse "más nuevo" y
+     * pisar un cambio que en realidad ocurrió después.
+     *
+     * Opcional por compatibilidad: sin `baseVersion` la operación se aplica
+     * igual (comportamiento previo). La outbox SÍ debe mandarlo -- es lo que
+     * la protege de aplicar fuera de orden.
      */
-    stateChangedAt?: Date;
-    /** Idempotencia y reanudación de una operación que quedó a medias. */
+    baseVersion?: number;
+    /**
+     * Identidad de la operación. Con esto la entrega es idempotente de verdad
+     * y una operación cortada a la mitad se puede reanudar.
+     */
     operationId?: string;
+    /** Informativo (diagnóstico). No decide precedencia. */
+    stateChangedAt?: Date;
   },
 ): Promise<PlatformTransitionResult> {
-  const { contentId, platform, action } = input;
+  const { contentId, platform, action, operationId, baseVersion } = input;
 
   // Resolución SOLO por content_id: si no está, se falla ruidosamente en vez
   // de caer a `file_name` (que ya causó daño real -- `final -` vs `FINAL -`
@@ -134,86 +114,140 @@ export async function applyPlatformTransition(
   const file = await FileModel.findOne({ userId, content_id: contentId });
   if (!file) return { ok: false, reason: 'not_found' };
 
-  const ahora = new Date();
-  const stateChangedAt = input.stateChangedAt ?? ahora;
-  const operationId = input.operationId;
-
-  // Precedencia POR PLATAFORMA. `operationId` da idempotencia (repetir no
-  // duplica efectos) pero NO resuelve orden: una operación vieja que llega
-  // tarde seguiría aplicándose y destruiría un cambio posterior. Caso real que
-  // esto evita: se suelta la plataforma, después se re-publica con un link
-  // nuevo, y recién ahí llega el unlink rezagado -- sin este corte, mata la
-  // publicación nueva.
-  //
-  // Se compara contra el reloj de ESTA plataforma, no contra
-  // `platforms_updated_at` (que es global del archivo): con el global, un
-  // cambio reciente en YouTube invalidaría por error una operación pendiente
-  // de Instagram, que es un hecho independiente.
-  //
-  // Fallback para catálogo viejo: si esta plataforma todavía no tiene reloj
-  // propio se cae al global. Es peor (puede rechazar de más) pero es el único
-  // dato disponible, y rechazar de más falla RUIDOSO -- 409, el cliente
-  // reintenta con base fresca -- mientras que no comparar nada deja pasar en
-  // silencio la operación rezagada que este corte existe para frenar. En
-  // cuanto esa plataforma reciba un cambio, pasa a tener su reloj propio.
-  const relojes = (file.platform_state_changed_at ?? []) as { platform: string; at: Date }[];
-  const relojPlataforma = relojes.find(r => r.platform === platform)?.at;
-  const ultimoCambio = relojPlataforma
-    ? new Date(relojPlataforma)
-    : (file.platforms_updated_at ? new Date(file.platforms_updated_at) : null);
-
-  if (ultimoCambio && stateChangedAt < ultimoCambio) {
-    return { ok: false, reason: 'stale', fileId: String(file._id), lastChangedAt: ultimoCambio };
+  // ── Deduplicación persistente ───────────────────────────────────────────
+  // Ya aplicada: se devuelve el resultado guardado sin volver a tocar nada.
+  // Registrada pero incompleta: se REANUDA (las 5 escrituras son idempotentes).
+  let opPrevia: any = null;
+  if (operationId) {
+    opPrevia = await PlatformTransitionOpModel.findOne({ userId, operationId }).lean();
+    if (opPrevia?.status === 'completed') {
+      return {
+        ok: true,
+        deduplicated: true,
+        fileId: String(file._id),
+        version: opPrevia.resultVersion,
+        platforms: file.platforms ?? [],
+        platformsDiscarded: file.platforms_discarded ?? [],
+      };
+    }
   }
 
-  // 1) files — la representación canónica.
-  const next = applyExplicitTransition(
-    {
-      platforms: file.platforms ?? [],
-      platformsDiscarded: file.platforms_discarded ?? [],
-      states: (file.platform_states ?? []) as IPlatformState[],
-    },
-    platform,
-    action,
-  );
+  const revs = (file.platform_rev ?? {}) as Record<string, number>;
+  const revActual: number | undefined = revs[platform];
+  const reanudando = opPrevia?.status === 'pending';
+
+  // ── Precedencia por revisión causal ─────────────────────────────────────
+  // Solo se exige cuando el cliente declara sobre qué revisión trabajó. Al
+  // reanudar NO se vuelve a exigir: esa operación ya ganó su lugar cuando se
+  // registró, y su propio $inc movió (o va a mover) la revisión.
+  if (baseVersion !== undefined && !reanudando && (revActual ?? 0) !== baseVersion) {
+    return {
+      ok: false,
+      reason: 'stale',
+      fileId: String(file._id),
+      version: revActual ?? 0,
+    };
+  }
+
+  const ahora = new Date();
+
+  // Reserva la operación ANTES de tocar nada. Si el proceso se cae en el medio,
+  // queda como `pending` y la próxima entrega la reanuda en vez de darla por
+  // hecha o por nueva.
+  if (operationId && !reanudando) {
+    try {
+      await PlatformTransitionOpModel.create({
+        userId, operationId, contentId, platform, action,
+        baseVersion, status: 'pending',
+      });
+    } catch (err: any) {
+      // Índice único: otra entrega de la MISMA operación se nos adelantó. No es
+      // un error -- es exactamente lo que el índice tiene que impedir.
+      if (err?.code !== 11000) throw err;
+    }
+  }
+
+  // ── Claim atómico de la revisión (compare-and-swap) ─────────────────────
+  // Dos transiciones concurrentes sobre la misma plataforma no pueden ambas
+  // "ganar": la segunda no matchea la revisión que leyó y se va como conflicto.
+  // Sobre plataformas DISTINTAS no se estorban, porque `$inc` toca solo su
+  // propia clave del mapa (por eso el mapa y no el array de antes, que se
+  // reescribía entero y perdía el cambio del otro).
+  //
+  // Al reanudar se salta el CAS: la revisión ya se movió en el intento previo.
+  let versionResultante = revActual ?? 0;
+  if (!reanudando) {
+    const filtroCas = revActual === undefined
+      ? { _id: file._id, [`platform_rev.${platform}`]: { $exists: false } }
+      : { _id: file._id, [`platform_rev.${platform}`]: revActual };
+
+    const claimed = await FileModel.findOneAndUpdate(
+      filtroCas,
+      {
+        $inc: { [`platform_rev.${platform}`]: 1 },
+        $set: { [`platform_state_changed_at.${platform}`]: ahora },
+      },
+      { new: true },
+    ).lean();
+
+    if (!claimed) {
+      return { ok: false, reason: 'conflict', fileId: String(file._id) };
+    }
+    versionResultante = ((claimed as any).platform_rev ?? {})[platform] ?? (revActual ?? 0) + 1;
+  } else {
+    versionResultante = revActual ?? 0;
+  }
+
+  // ── Escrituras ATÓMICAS POR PLATAFORMA ──────────────────────────────────
+  // Antes esto calculaba los arrays completos en JS (con
+  // `applyExplicitTransition`) y los escribía con `$set`. Eso es
+  // read-modify-write del documento entero: dos transiciones concurrentes sobre
+  // plataformas DISTINTAS leían la misma foto y la última en escribir borraba
+  // el cambio de la otra. Lost update medido, no teórico -- el caso
+  // "transiciones concurrentes en dos plataformas" lo reproduce.
+  //
+  // Con `$pull`/`$addToSet` acotados a esta plataforma, cada operación toca
+  // solo lo suyo. Dos transiciones sobre la MISMA plataforma no compiten acá:
+  // ya quedaron serializadas por el CAS de la revisión, más arriba.
+  //
+  // `platform_states` necesita dos pasos (no se puede `$pull` y `$addToSet` el
+  // mismo campo en una sola actualización), y está bien: el CAS garantiza que
+  // nadie más está tocando esta plataforma en el medio.
+  const quitarDeFile: any = { platforms: platform, platform_states: { platform } };
+  if (action === 'unlink') quitarDeFile.platforms_discarded = platform;
 
   await FileModel.updateOne(
     { _id: file._id },
     {
-      $set: {
-        platforms: next.platforms,
-        platforms_discarded: next.platformsDiscarded,
-        platform_states: next.states,
-        // El reloj dedicado ya existe y el pull lo usa para desempatar. Moverlo
-        // acá es lo que hace que una acción explícita le gane a un push viejo
-        // que todavía no sabe de ella.
-        platforms_updated_at: ahora,
-        // Y el reloj de ESTA plataforma, que es contra el que se decide
-        // precedencia. Se guarda aunque la plataforma quede ausente de
-        // `platform_states` (caso `unlink`): saber cuándo se desvinculó es
-        // justamente lo que hace falta para rechazar una operación posterior
-        // que venga rezagada.
-        platform_state_changed_at: [
-          ...relojes.filter(r => r.platform !== platform),
-          { platform, at: ahora },
-        ],
-      },
+      $pull: quitarDeFile,
+      // El reloj dedicado ya existe y el pull lo usa para desempatar. Moverlo
+      // acá es lo que hace que una acción explícita le gane a un push viejo
+      // que todavía no sabe de ella.
+      $set: { platforms_updated_at: ahora },
     },
   );
+  if (action === 'discard') {
+    await FileModel.updateOne(
+      { _id: file._id },
+      { $addToSet: { platforms_discarded: platform, platform_states: { platform, state: 'discarded' } } },
+    );
+  }
 
   // 2) backup_files — la otra copia del mismo catálogo, mientras exista
   //    (se retira en la Entrega 5). Sin esto, el próximo `getBackupFiles`
   //    puede servir el estado viejo desde la colección equivocada.
+  const quitarDeBackup: any = { platforms: platform };
+  if (action === 'unlink') quitarDeBackup.platforms_discarded = platform;
   await BackupFileModel.updateOne(
     { userId, content_id: contentId },
-    {
-      $set: {
-        platforms: next.platforms,
-        platforms_discarded: next.platformsDiscarded,
-        platforms_updated_at: ahora,
-      },
-    },
+    { $pull: quitarDeBackup, $set: { platforms_updated_at: ahora } },
   );
+  if (action === 'discard') {
+    await BackupFileModel.updateOne(
+      { userId, content_id: contentId },
+      { $addToSet: { platforms_discarded: platform } },
+    );
+  }
 
   // 3) platformvideos — se desvincula el link real, pero NO se borra el
   //    documento: conserva platformId/métricas/fecha por si el video se vuelve
@@ -290,37 +324,46 @@ export async function applyPlatformTransition(
   // 5) remote_library_videos — la copia de Nube. Solo si el video vive ahí y
   //    solo para las 3 plataformas que ese modelo conoce.
   if ((TRANSITION_PLATFORMS as readonly string[]).includes(platform)) {
-    const remote = await RemoteLibraryVideoModel.findOne({ userId, contentId });
-    if (remote) {
-      const remoteNext = applyExplicitTransition(
-        {
-          platforms: (remote.platforms ?? []) as string[],
-          platformsDiscarded: (remote.platformsDiscarded ?? []) as string[],
-          states: (remote.platformStates ?? []) as IPlatformState[],
-        },
-        platform,
-        action,
-      );
+    // Mismo criterio atómico que arriba: operadores acotados a esta plataforma,
+    // nunca reescribir los arrays enteros.
+    const quitarDeNube: any = {
+      platforms: platform,
+      platformStates: { platform },
+      // El link real también se va: es lo que distingue esta acción de un
+      // simple cambio de badge.
+      platformLinks: { platform },
+    };
+    if (action === 'unlink') quitarDeNube.platformsDiscarded = platform;
+
+    await RemoteLibraryVideoModel.updateOne({ userId, contentId }, { $pull: quitarDeNube });
+    if (action === 'discard') {
       await RemoteLibraryVideoModel.updateOne(
-        { _id: remote._id },
-        {
-          $set: {
-            platforms: remoteNext.platforms,
-            platformsDiscarded: remoteNext.platformsDiscarded,
-            platformStates: remoteNext.states,
-            // El link real también se va: es lo que distingue esta acción de
-            // un simple cambio de badge.
-            platformLinks: (remote.platformLinks ?? []).filter((l: any) => l.platform !== platform),
-          },
-        },
+        { userId, contentId },
+        { $addToSet: { platformsDiscarded: platform, platformStates: { platform, state: 'discarded' } } },
       );
     }
   }
 
+  // Recién ahora la operación está completa en TODAS las proyecciones. Marcarla
+  // antes sería mentir: una caída en el medio la dejaría como hecha y nadie la
+  // reanudaría.
+  if (operationId) {
+    await PlatformTransitionOpModel.updateOne(
+      { userId, operationId },
+      { $set: { status: 'completed', completedAt: new Date(), resultVersion: versionResultante } },
+    );
+  }
+
+  // Se relee en vez de devolver lo calculado: con escrituras atómicas, el
+  // estado final puede incluir cambios de otra plataforma aplicados en paralelo.
+  // Devolver la foto vieja sería mentirle al cliente.
+  const final = await FileModel.findById(file._id).select('platforms platforms_discarded').lean();
+
   return {
     ok: true,
     fileId: String(file._id),
-    platforms: next.platforms,
-    platformsDiscarded: next.platformsDiscarded,
+    version: versionResultante,
+    platforms: final?.platforms ?? [],
+    platformsDiscarded: final?.platforms_discarded ?? [],
   };
 }

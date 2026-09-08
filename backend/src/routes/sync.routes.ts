@@ -4,6 +4,7 @@ import {
   getReviewList, confirmLink, markOrphan,
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
+  applyPlatformTransitionEndpoint,
   getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -40,6 +41,10 @@ router.post('/api/sync/history',                    verifyToken, recordUploadEve
 router.post('/api/sync/record-publish',             verifyToken, recordUploadEvent);
 // :contentId (UUID), no el id local -- ver el comentario de unlinkPlatform.
 router.delete('/api/sync/platform-link/:contentId/:platform', verifyToken, unlinkPlatform);
+// Contrato explícito de transición: permite declarar operationId (dedup real y
+// reanudación) y baseVersion (precedencia causal), cosas que el DELETE de arriba
+// no puede expresar. Ver applyPlatformTransitionEndpoint.
+router.post('/api/sync/platform-transition', verifyToken, applyPlatformTransitionEndpoint);
 // "Descartar" desde iOS/Android era 100% local -- ver comentario completo en
 // updateFilePlatforms (backup.controller.ts).
 router.post('/api/sync/file-platforms',             verifyToken, updateFilePlatforms);

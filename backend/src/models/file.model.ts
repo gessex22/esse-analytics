@@ -48,19 +48,29 @@ export interface IFile extends Document {
   local_updated_at?: Date;          // última modificación general informada por el escritorio (push).
   platforms_updated_at?: Date;      // reloj dedicado de badges/descartes (SYNC-01 #3), igual que en BackupFileModel.
 
-  // Reloj de estado POR PLATAFORMA. `platforms_updated_at` es global del
-  // archivo, y usarlo para decidir precedencia hace que un cambio reciente en
-  // YouTube invalide por error una operación pendiente de Instagram: son
-  // hechos independientes y necesitan relojes independientes.
+  // Revisión causal POR PLATAFORMA -- la AUTORIDAD para decidir precedencia.
+  //
+  // Es un contador del servidor, no un reloj del cliente. Un timestamp que
+  // manda el cliente no sirve como autoridad: los relojes de los dispositivos
+  // se desfasan, y una PC adelantada podría declarar "mi operación es más
+  // nueva" y pisar un cambio que en realidad ocurrió después.
+  //
+  // MAPA, no array: `{ instagram: 3, youtube: 1 }`. El array anterior se leía,
+  // se modificaba en JS y se reescribía entero -- dos transiciones concurrentes
+  // sobre plataformas distintas se pisaban una a la otra (lost update). Con un
+  // mapa, `$inc` sobre `platform_rev.instagram` es atómico y no toca las demás
+  // claves. Las plataformas son nombres seguros (sin puntos) como clave.
   //
   // Vive fuera de `platform_states` a propósito: un `unlink` deja la plataforma
   // AUSENTE de ese array (decisión cerrada: "pending" es la ausencia, no un 4º
-  // valor del enum), así que si el reloj viviera adentro desaparecería justo
-  // cuando más se lo necesita -- para saber CUÁNDO se desvinculó.
-  //
-  // Solo lo escriben los dos caminos que cambian estado de plataforma:
-  // applyPlatformTransition y applyPlatformPublish.
-  platform_state_changed_at?: { platform: string; at: Date }[];
+  // valor del enum), así que si la revisión viviera adentro desaparecería justo
+  // cuando más se la necesita.
+  platform_rev?: Record<string, number>;
+
+  // Cuándo cambió el estado de cada plataforma. INFORMATIVO -- para diagnóstico
+  // y para que el cliente pueda mostrar algo; la precedencia la decide
+  // `platform_rev`. También mapa, por el mismo motivo de atomicidad.
+  platform_state_changed_at?: Record<string, Date>;
   backup_synced_at?: Date;          // cuándo la central aceptó el último push de backup para este archivo.
   backup_source_device_id?: string; // deviceId de la instalación que produjo ese último push aceptado.
 }
@@ -105,10 +115,10 @@ const FileSchema = new Schema<IFile>({
   tipo_contenido: { type: String },
   local_updated_at: { type: Date },
   platforms_updated_at: { type: Date },
-  platform_state_changed_at: {
-    type: [{ platform: { type: String, required: true }, at: { type: Date, required: true } }],
-    default: undefined,
-  },
+  // Mixed: son mapas plataforma -> valor, escritos con $inc/$set por path
+  // (atómico). Un subdocumento tipado obligaría a reescribir el array entero.
+  platform_rev:              { type: Schema.Types.Mixed, default: undefined },
+  platform_state_changed_at: { type: Schema.Types.Mixed, default: undefined },
   backup_synced_at: { type: Date },
   backup_source_device_id: { type: String },
 }, { timestamps: true });

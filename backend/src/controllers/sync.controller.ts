@@ -207,11 +207,13 @@ export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<v
     // en realidad su operación quedó vieja y nunca va a aplicarse. 409 + la
     // revisión vigente le permite decidir (descartarla o rebasar sobre el
     // estado nuevo) en vez de girar en el vacío.
-    if (!result.ok && result.reason === 'stale') {
+    if (!result.ok && (result.reason === 'stale' || result.reason === 'conflict')) {
       res.status(409).json({
         message: 'La operación quedó atrasada: el estado de esa plataforma cambió después.',
-        reason: 'stale',
-        lastChangedAt: result.lastChangedAt,
+        reason: result.reason,
+        // Revisión vigente: con esto el cliente puede rebasar su operación
+        // sobre el estado nuevo en vez de reintentar a ciegas.
+        version: result.version,
         contentId, platform,
       });
       return;
@@ -219,6 +221,92 @@ export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<v
     if (!result.ok) { res.status(404).json({ message: 'Archivo no encontrado' }); return; }
 
     res.json({ ok: true, fileId: result.fileId, contentId, platform });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/platform-transition
+// { contentId, platform, action, operationId?, baseVersion?, occurredAt? }
+//
+// El contrato explícito que reemplaza a inferir la intención de un snapshot.
+// Un snapshot completo no distingue "el usuario tocó esto" de "este cliente
+// venía desactualizado", así que dejarlo degradar un `confirmed` abriría la
+// misma vía de daño que el bug 2. Acá la acción viene declarada.
+//
+// Qué aporta sobre el DELETE de `unlinkPlatform` (que se conserva para clientes
+// viejos): `operationId` (deduplicación real y reanudación de una operación
+// cortada a la mitad) y `baseVersion` (precedencia causal, para que una entrega
+// fuera de orden no pise un cambio posterior). El DELETE no puede declarar
+// ninguna de las dos cosas -- lleva la clave en el path y nada más.
+//
+// `confirm` con link real NO entra por acá: sigue por applyPlatformPublish, que
+// tiene toda la lógica de resolución de ids y fechas reales de cada plataforma.
+const TRANSITION_ACTIONS = ['unlink', 'discard'] as const;
+
+export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { contentId, platform, action, operationId, baseVersion } = (req.body ?? {}) as {
+      contentId?: string; platform?: string; action?: string;
+      operationId?: string; baseVersion?: number;
+    };
+
+    if (!contentId || !CONTENT_ID_RE.test(contentId)) {
+      res.status(400).json({
+        message: 'Se espera el content_id del archivo (UUID), no un id local.',
+        received: contentId ?? null,
+      });
+      return;
+    }
+    if (!platform || !['youtube', 'instagram', 'tiktok', 'facebook'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' }); return;
+    }
+    if (!action || !(TRANSITION_ACTIONS as readonly string[]).includes(action)) {
+      res.status(400).json({
+        message: `Acción no válida. Soportadas: ${TRANSITION_ACTIONS.join(', ')}.`,
+        received: action ?? null,
+      });
+      return;
+    }
+    if (baseVersion !== undefined && !Number.isInteger(baseVersion)) {
+      res.status(400).json({ message: 'baseVersion debe ser un entero (la revisión que devolvió la central).' });
+      return;
+    }
+
+    const result = await applyPlatformTransition(userId, {
+      contentId,
+      platform: platform as SyncPlatform,
+      action: action as 'unlink' | 'discard',
+      operationId,
+      baseVersion,
+    });
+
+    if (!result.ok && result.reason === 'not_found') {
+      res.status(404).json({ message: 'Archivo no encontrado' }); return;
+    }
+    // 409, no 404: la operación llegó tarde. Con 404 una outbox leería "todavía
+    // no llegó" y reintentaría para siempre algo que nunca va a aplicarse; con
+    // 409 + la revisión vigente puede descartarla o rebasar sobre el estado
+    // nuevo.
+    if (!result.ok) {
+      res.status(409).json({
+        message: 'La operación quedó atrasada: el estado de esa plataforma cambió después.',
+        reason: result.reason, version: result.version, contentId, platform,
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      fileId: result.fileId,
+      version: result.version,
+      // Le dice al cliente que su reintento no volvió a aplicar nada. Sin esto
+      // no puede distinguir "se aplicó ahora" de "ya estaba aplicada".
+      deduplicated: result.deduplicated ?? false,
+      platforms: result.platforms,
+      platformsDiscarded: result.platformsDiscarded,
+    });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }

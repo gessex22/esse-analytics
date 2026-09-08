@@ -259,49 +259,53 @@ Rollback por flag durante una versión completa.
 - **El test del pull necesita rediseño** antes de poder usarse como criterio de
   aceptación (ver 1.1).
 
-## Estado
+## Semántica de la transición (cerrada)
 
-Numeración corregida: `4136aec` + `(este commit)` cerraron **tombstone + LWW de
-links**, que en el borrador figuraba como "paso 7 / outbox". La outbox NO está
-hecha; es lo que sigue.
+`POST /api/sync/platform-transition` — `{ contentId, platform, action,
+operationId?, baseVersion? }`. Convive con el `DELETE` viejo, que se conserva
+para clientes que todavía no lo usan pero **no puede declarar ni `operationId`
+ni `baseVersion`** (lleva la clave en el path y nada más).
+
+| Pieza | Decisión | Por qué |
+|---|---|---|
+| Autoridad de precedencia | **`baseVersion`**, revisión causal que emite el servidor | El reloj del cliente no sirve: se desfasa. En este mismo repo se midió una deriva de 5 h por zona horaria (BUG-2026-09-08-01). Una máquina adelantada podría declararse "más nueva" y pisar un cambio posterior. |
+| Dónde vive la revisión | `FileModel.platform_rev`, **mapa** `{instagram: 3}` | `$inc` por path es atómico y no toca las otras claves. El array anterior se leía, modificaba en JS y reescribía entero: dos plataformas concurrentes se pisaban. |
+| Exclusión entre operaciones | **CAS** sobre la revisión de esa plataforma | Dos transiciones sobre la MISMA plataforma no pueden ganar las dos: la segunda no matchea la revisión que leyó y sale por 409. |
+| Deduplicación | Colección `platform_transition_ops`, único por `(userId, operationId)` | `operationId` sin registro no deduplica nada: cada reintento reaplica efectos. Con una outbox reintentando, eso pasa siempre. |
+| Operación a medias | Se registra `pending` **antes** de aplicar; se marca `completed` **después** de las 5 proyecciones | Marcarla antes sería mentir: una caída en el medio la dejaría como hecha y nadie la reanudaría. Las escrituras son idempotentes, así que reanudar converge sin rollback. |
+| Escritura de proyecciones | `$pull`/`$addToSet` **acotados a la plataforma** | Calcular los arrays en JS y escribir con `$set` es read-modify-write del documento entero: lost update medido entre plataformas distintas. |
+| `stateChangedAt` | Informativo, no decide nada | Queda para diagnóstico. |
+| Respuesta a operación vieja | **409** + `version` vigente | Con 404 una outbox reintenta eternamente algo que nunca va a aplicarse. |
+
+Se eliminó `applyExplicitTransition` (núcleo puro que calculaba arrays en JS):
+quedó sin uso al pasar a operadores atómicos, y sus 7 tests unitarios pasaban
+sin cubrir nada. Sus garantías se mudaron al harness, contra el camino real.
+
+## Estado
 
 | Paso | Qué | Estado |
 |---|---|---|
-| 1.1 | Tests rojos por tramo | Hecho |
-| 1.1b | Harness integral (ciclo real, sin fixtures) + gate `test:integration` | Hecho |
+| 1.1 / 1.1b | Tests por tramo + harness integral + gate `test:integration` | Hecho |
 | 1.2 | Escritor único (`applyPlatformTransition`) | Hecho |
 | 1.3 | Rutear los 6 escritores | **1 de 6** (`unlinkPlatform`) |
-| 1.4 | Propagar el error a Electron en vez de tragarlo | Hecho para el unlink |
+| 1.4 | Propagar el error a Electron | Hecho para el unlink |
 | 6 | Tombstone de desvinculación | Hecho |
 | 7 | LWW de links + precedencia por plataforma | Hecho |
+| 7b | Semántica causal: dedup persistente, CAS, reanudación, endpoint POST | Hecho |
 | 8 | Outbox local (intención durable) | **Sin empezar** |
 | 9 | Outbox central (reparación de escrituras parciales) | **Sin empezar** |
-| 2 | Reconciliador / canary | Sin empezar |
-| 3 | Relojes por hecho (resto) | Parcial: existe `platform_state_changed_at` |
-| 4 | Fallos secundarios | Sin empezar |
-| 5 | Consolidación de colecciones | Sin empezar |
+| 2 a 5 | Reconciliador, relojes restantes, fallos secundarios, consolidación | Sin empezar |
 
-### Cobertura actual del harness (19 tests, 0 skips, todos verdes)
+### Harness: 17 tests, 0 skips, todos verdes
 
-| Caso | Qué garantiza |
-|---|---|
-| Unlink explícito · 3 ciclos | No se revierte en ninguna de las 6 representaciones |
-| Descarte explícito · 3 ciclos | Termina `discarded` en todas |
-| Segunda PC · ciclo completo | Recibe el tombstone pese a su propio push viejo |
-| Unlink tardío | No destruye una publicación posterior |
-| Re-vincular el mismo `platformId` | Limpia el tombstone; el pull no lo vuelve a soltar |
-| Unlink sin fila previa en el espejo | El tombstone se crea igual |
-| Transición atrasada | 409 con la revisión vigente, no 404 |
-| Snapshot automático | NO degrada un `confirmed` |
-
-### Gap conocido, abierto
-
-El endpoint de unlink es un `DELETE` con la clave en el path: **no recibe
-`stateChangedAt` del cliente**, así que usa "ahora" y una operación
-genuinamente atrasada no puede declararse como tal. Que el cliente declare
-CUÁNDO ocurrió su acción llega con `POST /api/sync/platform-transition`, que es
-justamente lo que necesita la outbox local para reintentar sin mentir sobre la
-fecha.
+Unlink y descarte explícitos sobreviven 3 ciclos en las 6 representaciones ·
+segunda PC recibe el tombstone pese a su propio push viejo · re-vincular el
+mismo `platformId` limpia el tombstone · el tombstone se crea aunque no hubiera
+fila previa · transición sobre revisión vieja → 409 con la revisión vigente ·
+reintento idéntico no reaplica · entrega invertida: gana la causalmente
+posterior · plataformas concurrentes no se pisan · operación cortada a la mitad
+se reanuda hasta converger · semántica de unlink/discard · el snapshot
+automático NO degrada un `confirmed`.
 
 ### Pendiente antes del merge
 
@@ -309,3 +313,6 @@ fecha.
 - El harness está excluido del `tsconfig` de backend (cruza a `local-backend` y
   arrastraba sus ~47 errores, 22 → 55). Necesita chequeo propio.
 - Correr `npm run test:integration` en el pipeline, no `npm test`.
+- Los clientes todavía no mandan `baseVersion`/`operationId`: sin eso la
+  precedencia y la deduplicación no se ejercitan en producción. Es lo que
+  aporta la outbox local.
