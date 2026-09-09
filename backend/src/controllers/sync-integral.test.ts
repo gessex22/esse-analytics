@@ -2156,3 +2156,291 @@ test('P4 — un 200 sin revisión tampoco cuenta como entregado', async (t) => {
     router.restore();
   }
 });
+
+
+// ===========================================================================
+// P5 — tres ventanas que sobrevivieron a la ronda anterior.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// P5-1 — la reserva del operationId tiene que ser atómica Y validada.
+//
+// El registro se crea con un `create` dentro de un try/catch que IGNORA el
+// 11000. Ese catch da por hecho que un duplicado solo puede venir de otra
+// entrega de la misma operación -- y no lo verifica.
+//
+// Con dos requests simultáneos, los dos leen "no existe" (así que ninguno pasa
+// por la validación de payload, que solo corre si ya había registro), uno
+// inserta y el otro se traga el 11000 y sigue como si hubiera reservado. La
+// clave termina identificando una operación mientras OTRA, distinta, se aplica
+// bajo su nombre.
+//
+// La reserva tiene que devolver siempre el registro canónico, y lo que siga
+// tiene que comparar contra ÉL, no contra lo que se leyó antes.
+// ---------------------------------------------------------------------------
+test('P5 — dos payloads distintos con el mismo operationId no pueden aplicarse los dos', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p5-misma-clave-otro-payload';
+
+  // Misma clave, acciones distintas. Solo una puede ser "la" operación.
+  const [a, b] = await Promise.all([
+    postTransicion({ contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0 }),
+    postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 }),
+  ]);
+
+  const rechazadas = [a, b].filter(r => r.status === 422);
+  assert.equal(
+    rechazadas.length, 1,
+    'Exactamente una tiene que rechazarse por reusar la clave con otro payload. Las dos leyeron ' +
+    '"no existe" antes de insertar, así que ninguna pasó por la validación, y la que perdió el ' +
+    'índice único se tragó el 11000 y siguió igual: la clave identifica una operación y se aplicó otra.',
+  );
+  assert.equal(rechazadas[0].body?.reason, 'operation_mismatch');
+
+  // Y el registro que quedó tiene que describir la que efectivamente se aplicó.
+  const registro = await registroDe(op);
+  const ganadora = [a, b].find(r => r.status !== 422)!;
+  assert.ok(registro, 'la ganadora tiene que haber dejado su registro');
+  const f = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  if (registro!.action === 'discard') {
+    assert.ok((f!.platforms_discarded ?? []).includes(PLATFORM),
+      'si la que reservó fue el descarte, es el descarte lo que tiene que quedar aplicado');
+  } else {
+    assert.ok(!(f!.platforms_discarded ?? []).includes(PLATFORM),
+      'y si fue la desvinculación, no puede quedar aplicado un descarte que nunca reservó');
+  }
+  assert.equal(ganadora.status, 200);
+});
+
+// ---------------------------------------------------------------------------
+// P5-2 — re-vincular el MISMO platformId mientras la transición está en curso.
+//
+// El alcance congelado protege de que una publicación NUEVA entre en la lista.
+// No protege del caso contrario: que el mismo platformId que sí estaba en el
+// alcance vuelva a vincularse mientras la transición avanza. Ese id sigue en la
+// lista, así que la transición lo suelta igual -- y suelta una publicación
+// posterior a ella.
+//
+// `platformvideos` no tiene versión: se desvincula directo, sin comparar nada.
+// Y el mirror del publish tampoco sella `link_version` en
+// `backup_platform_videos`, así que el guard del tombstone compara contra un
+// valor ausente y también deja pasar la lápida.
+// ---------------------------------------------------------------------------
+test('P5 — re-publicar el mismo platformId a mitad de la transición no puede perderse', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  // La re-publicación entra justo después de que la transición tocó `files`.
+  const originalBackup = central.BackupFileModel.updateOne.bind(central.BackupFileModel);
+  let intercalado = false;
+  (central.BackupFileModel as any).updateOne = async (...args: any[]) => {
+    if (!intercalado) {
+      intercalado = true;
+      (central.BackupFileModel as any).updateOne = originalBackup;
+      await central.applyPlatformPublish(USER_ID, {
+        contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+        platformUrl: PLATFORM_URL, fileName: 'video integral.mp4', matchStatus: 'manual',
+        publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+      });
+    }
+    return originalBackup(...args);
+  };
+
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink',
+      operationId: 'p5-revinculo-mismo-id', baseVersion: rev0,
+    });
+  } finally {
+    (central.BackupFileModel as any).updateOne = originalBackup;
+  }
+  assert.ok(intercalado, 'precondición: la re-publicación se intercaló de verdad');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.ok(foto.files.platforms.includes(PLATFORM), 'files conserva la publicación nueva');
+  assert.ok(foto.backupFiles.platforms.includes(PLATFORM), 'backup_files también');
+  assert.ok(
+    foto.platformVideo.linkedFileId,
+    'platformvideos conserva el vínculo. No tiene versión: la transición lo suelta directo, y el ' +
+    'alcance congelado no ayuda porque ese platformId SÍ estaba en el alcance -- lo que cambió es ' +
+    'que volvió a vincularse después.',
+  );
+  assert.equal(
+    foto.mirror?.link_state, 'linked',
+    'y el espejo no puede quedar con la lápida: el publish tampoco sella link_version, así que el ' +
+    'guard del tombstone compara contra un valor ausente y deja pasar.',
+  );
+  assert.ok(foto.remote.platforms.includes(PLATFORM), 'Nube conserva la publicación');
+  assert.ok((foto.remote.links as any[]).some(l => l.platform === PLATFORM), 'con su link');
+});
+
+// ---------------------------------------------------------------------------
+// P5-3 — la revisión no puede viajar bajo la identidad equivocada.
+//
+// `getBackupFiles` mergea `backup_files` con `files` por `file_name`. Dos
+// documentos distintos pueden compartir nombre y tener `content_id` distintos
+// -- pasa con reimportaciones y con archivos renombrados a un nombre ya usado.
+//
+// Mientras el merge solo servía badges eso era un problema conocido de ese
+// endpoint. Ahora además adjunta `platform_rev`, y la revisión es la identidad
+// del estado: entregar la de un content_id bajo el nombre de otro deja al
+// cliente declarando `baseVersion` de un archivo que no es el suyo.
+//
+// El nombre puede seguir sirviendo de fallback para el resto del merge; para la
+// revisión, no.
+// ---------------------------------------------------------------------------
+test('P5 — la revisión se adjunta por content_id, nunca por nombre de archivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+
+  // OTRO archivo, mismo nombre, content_id distinto y una revisión muy
+  // avanzada. `centralByName` se queda con el último que ve.
+  const OTRO_CONTENT_ID = '11111111-2222-3333-4444-555555555555';
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'video integral.mp4', file_path: 'D:/otra copia/video integral.mp4',
+    content_id: OTRO_CONTENT_ID, status: 'PENDIENTE',
+    platforms: [PLATFORM], platforms_discarded: [],
+    platform_states: [{ platform: PLATFORM, state: 'confirmed' }],
+    platform_rev: { [PLATFORM]: 7 },
+  });
+
+  const router = routeToCentral();
+  try {
+    await cicloSync();
+    await router.waitIdle();
+  } finally {
+    router.restore();
+  }
+
+  const { platformRevisionRepo } = await import('../../../local-backend/src/db/platform-revision.repo');
+  const revReal = await revisionDe(contentId);
+  assert.notEqual(
+    platformRevisionRepo.get(contentId, PLATFORM), 7,
+    'La PC guardó bajo ESTE content_id la revisión de OTRO archivo que solo comparte el nombre. ' +
+    'La revisión es la identidad del estado: con la equivocada, la próxima transición declara la ' +
+    'baseVersion de un archivo que no es el suyo.',
+  );
+  assert.ok(
+    platformRevisionRepo.get(contentId, PLATFORM) <= revReal,
+    'y nunca puede ser MÁS NUEVA que la real: informar de menos degrada a un 409, que se recupera; ' +
+    'informar de más hace que la central acepte una decisión tomada sobre otra cosa',
+  );
+});
+
+
+// ---------------------------------------------------------------------------
+// P5-2 (bis) — la misma re-publicación, pero intercalada MÁS ADENTRO.
+//
+// El caso anterior la mete durante la escritura de `backup_files`, y ahí lo que
+// salva es el chequeo de vigencia entre proyecciones: la transición se corta
+// antes de llegar a las demás. Eso deja sin ejercitar justamente los guards por
+// documento de esas otras representaciones -- lo confirmó una mutación: sacar
+// el guard de `linkVersion` no rompía nada.
+//
+// Estos dos casos meten la re-publicación DENTRO de cada una de esas
+// escrituras, cuando el chequeo de vigencia ya pasó. Ahí lo único que queda
+// entre la transición vieja y la publicación nueva es el sello del documento.
+// ---------------------------------------------------------------------------
+
+/** Corre `intercalar` la primera vez que se llame a `modelo[metodo]`. */
+async function conIntercaladoEn(modelo: any, metodo: string, intercalar: () => Promise<void>) {
+  const original = modelo[metodo].bind(modelo);
+  let hecho = false;
+  modelo[metodo] = async (...args: any[]) => {
+    if (!hecho) {
+      hecho = true;
+      modelo[metodo] = original;   // el intercalado usa el método de verdad
+      await intercalar();
+      modelo[metodo] = async (...a: any[]) => original(...a);
+    }
+    return original(...args);
+  };
+  return {
+    restore: () => { modelo[metodo] = original; },
+    get hecho() { return hecho; },
+  };
+}
+
+test('P5 — re-publicar durante la escritura de platformvideos no puede soltar el vínculo nuevo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  const espia = await conIntercaladoEn(central.PlatformVideoModel, 'updateMany', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-09T11:00:00.000Z'),
+    });
+  });
+
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink',
+      operationId: 'p5-revinculo-en-platformvideos', baseVersion: rev0,
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la re-publicación se intercaló de verdad');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.ok(
+    foto.platformVideo.linkedFileId,
+    'El vínculo nuevo se soltó. Acá el chequeo de vigencia ya había pasado, así que lo único que ' +
+    'podía salvarlo era el sello `linkVersion` del propio documento.',
+  );
+  assert.notEqual(foto.platformVideo.matchStatus, 'sin_match');
+});
+
+test('P5 — re-publicar durante el tombstone no puede dejar la lápida puesta', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateMany', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-09T12:00:00.000Z'),
+    });
+  });
+
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink',
+      operationId: 'p5-revinculo-en-tombstone', baseVersion: rev0,
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la re-publicación se intercaló de verdad');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.equal(
+    foto.mirror?.link_state, 'linked',
+    'La lápida tapó un re-vínculo posterior. El chequeo de vigencia ya había pasado: lo único que ' +
+    'podía salvarlo era que el publish sellara `link_version` en el espejo.',
+  );
+});

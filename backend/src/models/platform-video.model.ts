@@ -20,6 +20,18 @@ export interface IPlatformVideo extends Document {
   comments: number;
   status: PlatformVideoStatus;
   linkedFileId?: Types.ObjectId; // referencia al archivo local — null hasta que se vincule
+  /**
+   * Revisión de plataforma vigente cuando este vínculo se estableció.
+   *
+   * El alcance congelado de una transición protege de que una publicación
+   * NUEVA entre en la lista. No protege del caso contrario: que el MISMO
+   * platformId, que sí estaba en el alcance, vuelva a vincularse mientras la
+   * transición avanza. Ese id sigue en la lista y la transición lo suelta
+   * igual -- soltando una publicación posterior a ella. Sin un número acá no
+   * hay forma de distinguir "el vínculo que esta operación vio" de "otro
+   * vínculo que ocupa el mismo lugar".
+   */
+  linkVersion?: number;
   matchStatus?: 'auto_duration' | 'auto_text' | 'auto_code' | 'manual' | 'revisar_manual' | 'sin_match' | 'remote';
   matchScore?: number;
   matchCandidates?: string[];  // IDs de archivos locales candidatos (guardados por el script Python)
@@ -62,6 +74,7 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   comments:       { type: Number, default: 0 },
   status:         { type: String, enum: ['public', 'private', 'unlisted', 'deleted'], default: 'public' },
   linkedFileId:   { type: Schema.Types.ObjectId, ref: 'File', default: null },
+  linkVersion:    { type: Number },
   matchStatus:      { type: String, enum: ['auto_duration','auto_text','auto_code','manual','revisar_manual','sin_match','remote'] },
   matchScore:       { type: Number },
   matchCandidates:  { type: [String], default: undefined },

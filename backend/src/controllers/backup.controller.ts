@@ -83,6 +83,26 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
     ]);
 
     const centralByName = new Map(centralFiles.map(f => [f.file_name, f]));
+    // Índice APARTE, por content_id, y solo para la revisión.
+    //
+    // El merge por `file_name` es histórico y sigue sirviendo para los badges,
+    // pero dos documentos distintos pueden compartir nombre con `content_id`
+    // distintos (reimportaciones, un archivo renombrado a un nombre ya usado) y
+    // `centralByName` se queda con el último que ve. Mientras eso solo movía
+    // badges era un problema conocido de este endpoint; con la revisión adentro
+    // es otra cosa, porque la revisión ES la identidad del estado: entregar la
+    // de un content_id bajo el nombre de otro deja al cliente declarando la
+    // `baseVersion` de un archivo que no es el suyo.
+    //
+    // El nombre puede seguir siendo fallback para el resto del merge. Para la
+    // revisión, no: si no hay match por content_id, no va revisión.
+    const centralById = new Map(
+      centralFiles.filter(f => f.content_id).map(f => [String(f.content_id), f]),
+    );
+    const revisionDe = (contentId: unknown): Record<string, number> | undefined =>
+      (typeof contentId === 'string' && centralById.has(contentId))
+        ? (centralById.get(contentId) as any).platform_rev
+        : undefined;
     const backupNames = new Set(allFiles.map(f => f.file_name));
     const enriched = allFiles.map(f => {
       const current = (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
@@ -110,7 +130,7 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) {
         // Coinciden, así que lo que se sirve describe también al documento
         // central: su revisión es la que corresponde a este estado.
-        return { ...f, platform_states, platform_rev: (central as any).platform_rev };
+        return { ...f, platform_states, platform_rev: revisionDe(f.content_id) };
       }
       // El pull del cliente compara local_updated_at antes de aplicar el
       // badge. Si devolvemos la marca vieja de BackupFileModel, Electron
@@ -120,8 +140,9 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         platforms: central.platforms ?? f.platforms,
         platforms_discarded: central.platforms_discarded ?? f.platforms_discarded,
         platform_states,
-        // El estado servido es el del documento central: su revisión también.
-        platform_rev: (central as any).platform_rev,
+        // El estado servido es el del documento central: su revisión también,
+        // pero solo si ese documento es el de ESTE content_id (ver centralById).
+        platform_rev: revisionDe(f.content_id),
         local_updated_at: (central as any).updatedAt ?? f.local_updated_at,
       };
     });
@@ -924,6 +945,8 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   contentId?: string | null;
   matchStatus?: string;
   title?: string | null;
+  /** Revisión de plataforma que respalda este vínculo. Ver el $set de abajo. */
+  linkVersion?: number;
 }): Promise<void> {
   if (!data.platformId) return;
   await BackupPlatformVideoModel.updateOne(
@@ -949,6 +972,10 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
         // bulkUpsertBackupPlatformVideos sigue comparando contra el instante
         // del unlink y descarta pushes legítimos posteriores.
         link_updated_at:  new Date(),
+        // Y la revisión, que es lo que compara el guard del tombstone en
+        // applyPlatformTransition. Sin ella, ese guard mira un campo ausente y
+        // una transición vieja tapa un re-vínculo nuevo.
+        ...(typeof data.linkVersion === 'number' ? { link_version: data.linkVersion } : {}),
       },
     },
     { upsert: true },
@@ -1356,6 +1383,13 @@ export async function applyPlatformPublish(userId: string, data: {
     // siguiente llamada la vuelva a pisar con `new Date()`. Bug real: BUG-2026-08-15-06,
     // "clip - enemigos tiene.mp4" corregido a mano y vuelto a aparecer como
     // "recién publicado" horas después por un reintento con el mismo platformId.
+    // La revisión vigente DESPUÉS de los incrementos de arriba. Es lo que sella
+    // este vínculo: una transición que reclamó una revisión anterior tiene que
+    // poder ver que el vínculo que encuentra ya no es el que ella vio.
+    const revDelVinculo = linkedFileId
+      ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
+      : undefined;
+
     await PlatformVideoModel.updateOne(
       { userId, platform, platformId },
       {
@@ -1366,6 +1400,7 @@ export async function applyPlatformPublish(userId: string, data: {
           linkedFileId,
           matchStatus,
           lastSyncedAt: new Date(),
+          ...(revDelVinculo !== undefined ? { linkVersion: revDelVinculo } : {}),
         },
         $setOnInsert: { publishedAt: publishedAtDate },
       },
@@ -1373,11 +1408,41 @@ export async function applyPlatformPublish(userId: string, data: {
     );
   }
 
+  const revParaEspejoBackup = linkedFileId
+    ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
+    : undefined;
+
+  // Y la misma revisión en `backup_files`. Es la proyección que el publish
+  // NUNCA tocó -- su badge lo mantiene el push del escritorio -- y por eso su
+  // guard de revisión comparaba contra un campo que nadie escribía y dejaba
+  // pasar cualquier transición vieja.
+  //
+  // Sellar acá no dice "este documento ya refleja la publicación": dice "nada
+  // anterior a esta revisión se aplica más sobre esta plataforma", que es
+  // verdad en TODAS las representaciones apenas la revisión se mueve.
+  if (contentId && revParaEspejoBackup !== undefined) {
+    await BackupFileModel.updateOne(
+      {
+        userId, content_id: contentId,
+        $or: [
+          { ['platform_rev.' + platform]: { $exists: false } },
+          { ['platform_rev.' + platform]: { $lte: revParaEspejoBackup } },
+        ],
+      },
+      { $set: { ['platform_rev.' + platform]: revParaEspejoBackup } },
+    );
+  }
+
+  // Misma revisión para el espejo: sin sellarla, el guard del tombstone
+  // (`link_version <= versionResultante`) compara contra un valor AUSENTE y
+  // deja pasar la lápida sobre un re-vínculo posterior.
+
   await mirrorPlatformVideoToBackup(userId, {
     platform, platformId, platformUrl, fileName, contentId, title,
     remoteLibraryVideoId: data.remoteLibraryVideoId,
     deviceId: data.deviceId, source: data.source,
     publishedAt: publishedAtDate, matchStatus,
+    linkVersion: revParaEspejoBackup,
   });
 
   await syncCalendarAfterPublish(userId, platform, publishedFile, publishedAtDate);

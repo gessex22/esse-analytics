@@ -196,7 +196,7 @@ export async function applyPlatformTransition(
   // recalcular al reanudar, y se llevaba puesto cualquier vínculo aparecido
   // mientras tanto -- incluidos los que entran por los callers que todavía no
   // pasan por acá y por eso ni siquiera mueven la revisión.
-  const idsVinculados: string[] = Array.isArray(opPrevia?.platformIds)
+  let idsVinculados: string[] = Array.isArray(opPrevia?.platformIds)
     ? opPrevia.platformIds
     : pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
 
@@ -239,22 +239,61 @@ export async function applyPlatformTransition(
   // Reserva la operación ANTES de tocar nada. Si el proceso se cae en el medio,
   // queda como `pending` y la próxima entrega la reanuda en vez de darla por
   // hecha o por nueva.
-  if (operationId && !reanudando) {
+  // ── Reserva ATÓMICA de la operación ─────────────────────────────────────
+  // Un `create` dentro de un try/catch que ignora el 11000 da por hecho que un
+  // duplicado solo puede venir de otra entrega de la MISMA operación, y no lo
+  // verifica. Con dos requests simultáneos los dos leen "no existe" -- así que
+  // ninguno pasa por la validación de payload de más arriba, que solo corre si
+  // ya había registro -- uno inserta y el otro se traga el 11000 y sigue como
+  // si hubiera reservado. La clave terminaba identificando una operación
+  // mientras OTRA, distinta, se aplicaba bajo su nombre.
+  //
+  // El upsert devuelve siempre el registro CANÓNICO: el que quedó, sea nuestro
+  // o del que llegó primero. Todo lo que sigue se compara contra ese.
+  if (operationId) {
+    let canonico: any = null;
     try {
-      await PlatformTransitionOpModel.create({
-        userId, operationId, contentId, platform, action,
-        baseVersion, status: 'pending',
-        // El alcance se congela acá, con la operación: ver el comentario del
-        // campo en el modelo. Se guarda aunque esté vacío -- es la diferencia
-        // entre "esta operación no abarca ningún vínculo" y "todavía no se
-        // sabe", y confundirlas es lo que la hacía recalcular al reanudar.
-        platformIds: idsVinculados ?? [],
-      });
+      canonico = await PlatformTransitionOpModel.findOneAndUpdate(
+        { userId, operationId },
+        {
+          $setOnInsert: {
+            userId, operationId, contentId, platform, action,
+            baseVersion, status: 'pending',
+            // El alcance se congela acá, con la operación: ver el comentario del
+            // campo en el modelo. Se guarda aunque esté vacío -- es la diferencia
+            // entre "esta operación no abarca ningún vínculo" y "todavía no se
+            // sabe", y confundirlas es lo que la hacía recalcular al reanudar.
+            platformIds: idsVinculados ?? [],
+          },
+        },
+        { upsert: true, new: true },
+      ).lean();
     } catch (err: any) {
-      // Índice único: otra entrega de la MISMA operación se nos adelantó. No es
-      // un error -- es exactamente lo que el índice tiene que impedir.
+      // Dos upserts simultáneos pueden chocar igual contra el índice único:
+      // uno insertó entre el match y el insert del otro. El que pierde relee
+      // -- no asume nada sobre lo que quedó.
       if (err?.code !== 11000) throw err;
+      canonico = await PlatformTransitionOpModel.findOne({ userId, operationId }).lean();
     }
+
+    if (!canonico) return { ok: false, reason: 'conflict', fileId: String(file._id) };
+
+    // La clave identifica UNA operación concreta. Si lo que quedó reservado no
+    // es lo que estamos pidiendo, es la otra la que vale -- y esta se rechaza
+    // ANTES de tocar nada.
+    if (
+      canonico.contentId !== contentId ||
+      canonico.platform !== platform ||
+      canonico.action !== action ||
+      (canonico.baseVersion ?? null) !== (baseVersion ?? null)
+    ) {
+      return { ok: false, reason: 'operation_mismatch', fileId: String(file._id) };
+    }
+
+    // Y el alcance que manda es el del registro canónico, no el que calculamos
+    // recién: si otra entrega reservó primero, congeló SU foto, y esa es la que
+    // define qué abarca la operación.
+    if (Array.isArray(canonico.platformIds)) idsVinculados = canonico.platformIds;
   }
 
   // ── Claim atómico de la revisión (compare-and-swap) ─────────────────────
@@ -395,6 +434,30 @@ export async function applyPlatformTransition(
     );
   }
 
+  // ¿La revisión que esta operación reclamó SIGUE siendo la vigente?
+  //
+  // Los sellos por documento (más abajo) protegen de que una escritura vieja
+  // llegue tarde y pise una nueva. No protegen del caso inverso: que el mundo
+  // cambie MIENTRAS esta operación avanza por sus proyecciones. Y ahí el sello
+  // no puede ayudar, porque los otros escritores no sellan todo: un publish
+  // mueve `files.platform_rev` pero nunca tocó `backup_files`, así que el guard
+  // de esa proyección comparaba contra un valor que nadie había escrito y
+  // dejaba pasar la escritura vieja.
+  //
+  // La autoridad es `files.platform_rev`. Se consulta entre proyecciones: si se
+  // movió, esta operación perdió y se corta ANTES de tocar la siguiente
+  // representación. Lo ya escrito queda a cargo de la reparación central (paso
+  // 9); lo importante acá es no seguir destruyendo.
+  const sigueVigente = async (): Promise<boolean> =>
+    (await revisionVigente(file._id, platform)) === versionResultante;
+
+  const cortadaPorConflicto = async (): Promise<PlatformTransitionResult> => ({
+    ok: false,
+    reason: 'conflict',
+    fileId: String(file._id),
+    version: await revisionVigente(file._id, platform),
+  });
+
   // De acá en adelante cada proyección se SELLA con la versión de esta
   // operación y solo acepta escrituras cuya versión sea >= a la que ya tiene.
   // Sin esto el guard cubría únicamente el primer update de `files`: una
@@ -410,6 +473,8 @@ export async function applyPlatformTransition(
   // 2) backup_files — la otra copia del mismo catálogo, mientras exista
   //    (se retira en la Entrega 5). Sin esto, el próximo `getBackupFiles`
   //    puede servir el estado viejo desde la colección equivocada.
+  if (!(await sigueVigente())) return cortadaPorConflicto();
+
   const quitarDeBackup: any = { platforms: platform };
   if (action === 'unlink') quitarDeBackup.platforms_discarded = platform;
   await BackupFileModel.updateOne(
@@ -436,9 +501,19 @@ export async function applyPlatformTransition(
   // Acotado a los ids que existían cuando esta operación reclamó: una
   // publicación que entre después NO puede ser desvinculada por una transición
   // que nunca supo de ella.
+  if (!(await sigueVigente())) return cortadaPorConflicto();
+
+  // El guard de revisión va TAMBIÉN acá. El alcance dice QUÉ ids abarca la
+  // operación; `linkVersion` dice si el vínculo que hay ahora es el mismo que
+  // esta operación vio. Re-publicar el MISMO platformId a mitad de la
+  // transición deja un vínculo nuevo bajo un id que sigue estando en el
+  // alcance, y sin esta comparación la transición lo soltaba igual.
   await PlatformVideoModel.updateMany(
-    { userId, linkedFileId: file._id, platform, platformId: { $in: idsVinculados } },
-    { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
+    {
+      userId, linkedFileId: file._id, platform, platformId: { $in: idsVinculados },
+      $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: versionResultante } }],
+    },
+    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: versionResultante } },
   );
 
   // 4) backup_platform_videos — el espejo desde el que CADA escritorio
@@ -463,6 +538,8 @@ export async function applyPlatformTransition(
   //    anterior de este mismo servicio, que hacía deleteMany -- no quedaba
   //    ningún tombstone, y una PC vieja con el vínculo lo recreaba en su
   //    próximo push como si nada hubiera pasado.
+
+  if (!(await sigueVigente())) return cortadaPorConflicto();
 
   await BackupPlatformVideoModel.updateMany(
     {
@@ -522,6 +599,8 @@ export async function applyPlatformTransition(
 
   // 5) remote_library_videos — la copia de Nube. Solo si el video vive ahí y
   //    solo para las 3 plataformas que ese modelo conoce.
+  if (!(await sigueVigente())) return cortadaPorConflicto();
+
   if ((TRANSITION_PLATFORMS as readonly string[]).includes(platform)) {
     // Mismo criterio atómico que arriba: operadores acotados a esta plataforma,
     // nunca reescribir los arrays enteros.

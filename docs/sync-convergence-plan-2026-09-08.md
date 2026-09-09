@@ -494,6 +494,76 @@ cada una su caso. `tsc` backend 22 / local-backend 46 (bajó de 47: la llamada
 vieja a `reportUnlinkPlatform` arrastraba un error de tipos que ya no existe).
 local-backend 2/2.
 
+---
+
+## Entrega 2c — tres ventanas más (5 casos nuevos)
+
+### 1. La reserva del `operationId` no era atómica
+
+El registro se creaba con un `create` dentro de un try/catch que ignoraba el
+`11000`. Ese catch daba por hecho que un duplicado solo puede venir de otra
+entrega de la MISMA operación, y no lo verificaba: con dos requests
+simultáneos los dos leen "no existe" -- así que ninguno pasa por la validación
+de payload, que solo corre si ya había registro -- uno inserta y el otro se
+traga el `11000` y sigue como si hubiera reservado. **La clave identificaba una
+operación mientras otra, distinta, se aplicaba bajo su nombre.**
+
+Ahora la reserva es un `findOneAndUpdate(..., $setOnInsert, upsert, new)` que
+devuelve siempre el registro canónico, y lo que sigue se compara contra ÉL. El
+alcance congelado también sale de ahí: si otra entrega reservó primero, congeló
+SU foto, y esa es la que define qué abarca la operación.
+
+### 2. Re-vincular el MISMO `platformId` a mitad de la transición
+
+El alcance congelado protege de que una publicación NUEVA entre en la lista. No
+protegía del caso inverso: que el mismo `platformId`, que sí estaba en el
+alcance, volviera a vincularse mientras la transición avanzaba. Ese id sigue en
+la lista y la transición lo soltaba igual.
+
+Se cerró en tres capas, y las tres hicieron falta:
+
+- **`platformvideos` gana `linkVersion`**, sellada por el publish y comparada
+  por la transición. El alcance dice *qué ids* abarca la operación; la versión
+  dice si el vínculo que hay ahora es *el mismo que esa operación vio*.
+- **El publish sella la revisión donde antes no llegaba**: `link_version` en
+  `backup_platform_videos` y `platform_rev` en `backup_files`. Esa última es la
+  proyección que el publish nunca tocó -- su badge lo mantiene el push del
+  escritorio -- así que su guard comparaba contra un campo que nadie escribía.
+- **Chequeo de vigencia entre proyecciones.** Los sellos por documento protegen
+  de que una escritura vieja llegue tarde; no protegen de que el mundo cambie
+  MIENTRAS la operación avanza. La autoridad es `files.platform_rev`, y ahora se
+  consulta entre proyecciones: si se movió, la operación se corta antes de tocar
+  la siguiente representación.
+
+### 3. La revisión podía viajar bajo la identidad equivocada
+
+`getBackupFiles` mergea `backup_files` con `files` por `file_name`, y dos
+documentos distintos pueden compartir nombre con `content_id` distintos
+(reimportaciones, un archivo renombrado a un nombre ya usado): `centralByName`
+se queda con el último que ve. Mientras eso solo movía badges era un problema
+conocido de ese endpoint; con la revisión adentro es otra cosa, porque **la
+revisión es la identidad del estado**. Ahora hay un índice aparte por
+`content_id` que solo se usa para adjuntar `platform_rev`; el nombre sigue
+siendo fallback para el resto del merge, pero sin revisión.
+
+### Verificación, y dos guards que no probaba nadie
+
+44 tests en verde (39 integrales + 5 de convergencia), 0 skips, exit 0. `tsc`
+backend 22 / local-backend 46. local-backend 2/2.
+
+De las mutaciones de esta ronda, **dos no rompieron nada la primera vez**:
+sacar el guard de `linkVersion` y sacar el sello de `link_version` en el espejo.
+El motivo era que el caso metía la re-publicación durante la escritura de
+`backup_files`, y ahí lo que salvaba era el chequeo de vigencia -- la transición
+se cortaba antes de llegar a esas proyecciones. Se agregaron dos casos que
+meten la re-publicación DENTRO de cada una de esas escrituras, cuando el chequeo
+ya pasó y lo único que queda es el sello del documento. Con esos casos, las dos
+mutaciones sí rompen.
+
+Lo mismo pasó con el alcance vacío: la invariante "presencia, no vacío" vive
+ahora en dos lugares que **se cubren mutuamente**, así que mutar uno solo no
+prueba nada. La mutación que vale muta los dos.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android
