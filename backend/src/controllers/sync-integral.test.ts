@@ -821,6 +821,15 @@ test('INTEGRAL — una operación cortada a la mitad se reanuda hasta converger'
   assert.deepEqual(parcial.remote.discarded, [], 'y lo que no, no (Nube quedó atrás)');
 
   // Reentrega de la MISMA operación: tiene que completar lo que faltaba.
+  // Mientras el lease de la entrega que se cayó siga vigente, un reintento
+  // recibe 202: la operación es válida (el claim lo dice) pero la está
+  // trabajando otro ejecutor -- y nadie puede distinguir "ese proceso murió" de
+  // "está tardando" sin esperar el vencimiento. Recién ahí se reanuda.
+  const prematuro = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  assert.equal(prematuro.status, 202, 'con el lease de la entrega anterior vigente, todavía no');
+  assert.equal(prematuro.body?.reason, 'in_progress');
+  await vencerLease(op);
+
   const r = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
   assert.equal(r.status, 200, 'reanudar no es conflicto');
 
@@ -935,6 +944,15 @@ test('P0 — una caída entre `pending` y el CAS no puede dejar la revisión sin
   assert.equal(await revisionDe(contentId), rev0, 'precondición: el CAS no llegó a correr');
 
   // Reentrega: tiene que completar de verdad, incluida la revisión.
+  // Mientras el lease de la entrega que se cayó siga vigente, un reintento
+  // recibe 202: la operación es válida (el claim lo dice) pero la está
+  // trabajando otro ejecutor -- y nadie puede distinguir "ese proceso murió" de
+  // "está tardando" sin esperar el vencimiento. Recién ahí se reanuda.
+  const prematuro = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  assert.equal(prematuro.status, 202, 'con el lease de la entrega anterior vigente, todavía no');
+  assert.equal(prematuro.body?.reason, 'in_progress');
+  await vencerLease(op);
+
   const r = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
   assert.equal(r.status, 200, 'la reanudación no es conflicto');
 
@@ -1142,6 +1160,15 @@ test('P0 — una caída entre el CAS y el guardado de resultVersion no puede mat
   assert.equal(await revisionDe(contentId), rev0 + 1, 'precondición: el CAS SÍ alcanzó a incrementar');
 
   // La outbox reintenta con el MISMO baseVersion: es lo único que conoce.
+  // Mientras el lease de la entrega que se cayó siga vigente, un reintento
+  // recibe 202: la operación es válida (el claim lo dice) pero la está
+  // trabajando otro ejecutor -- y nadie puede distinguir "ese proceso murió" de
+  // "está tardando" sin esperar el vencimiento. Recién ahí se reanuda.
+  const prematuro = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
+  assert.equal(prematuro.status, 202, 'con el lease de la entrega anterior vigente, todavía no');
+  assert.equal(prematuro.body?.reason, 'in_progress');
+  await vencerLease(op);
+
   const r = await postTransicion({ contentId, platform: PLATFORM, action: 'discard', operationId: op, baseVersion: rev0 });
 
   assert.notEqual(
@@ -3078,4 +3105,101 @@ test('P8 — el tombstone se puede crear aunque ya no quede ningún vínculo viv
     'salen solo de ahí, el espejo se queda diciendo `linked` y cada PC resucita el link en su ' +
     'próximo pull.',
   );
+});
+
+
+// ---------------------------------------------------------------------------
+// P9 — el worker no puede perder su propio token al reanudar.
+//
+// `procesar()` toma el lease (token W) y después llama a
+// `applyPlatformTransition`, que genera SU PROPIO token (R). Como al reanudar
+// el claim prueba propiedad, esa función reemplaza W por R sin preguntar.
+//
+// Si la reanudación falla a mitad de camino, el worker intenta liberar la
+// operación con W -- que ya no es el token vigente. No matchea nada: no queda
+// `lastError`, no se programa `nextAttemptAt`, y el lease queda puesto con un
+// token interno que ya no existe en ningún lado. La operación queda trabada
+// hasta que ese lease venza, sin registro de por qué.
+//
+// El caso de fallo transitorio que ya existía solo cubre la rama
+// `superseded`/reproyectar. Esta es la otra rama.
+//
+// La corrección conceptual: el claim prueba que la operación sigue siendo
+// causalmente VÁLIDA; el lease prueba QUÉ EJECUTOR puede trabajarla ahora. Son
+// cosas distintas, y `reanudando` solo prueba la primera.
+// ---------------------------------------------------------------------------
+test('P9 — si la reanudación falla, el worker conserva su lease y registra el motivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p9-reanudacion-fallida';
+  await reclamarYCaerse(contentId, op, rev0);
+  await vencerLease(op);
+
+  const repair = await import('../services/transition-repair.service');
+
+  // Falla una proyección DENTRO de la reanudación, no en la reparación.
+  const original = central.BackupPlatformVideoModel.updateMany.bind(central.BackupPlatformVideoModel);
+  (central.BackupPlatformVideoModel as any).updateMany = () => { throw new Error('Mongo se cayó al reanudar'); };
+
+  let resumen: any;
+  try {
+    resumen = await repair.repararTransicionesPendientes();
+  } finally {
+    (central.BackupPlatformVideoModel as any).updateMany = original;
+  }
+
+  assert.equal(resumen.pospuestas, 1, 'un fallo al reanudar se posterga, igual que cualquier otro');
+
+  const registro: any = await registroDe(op);
+  assert.equal(registro?.status, 'pending', 'sigue pendiente: no se aplicó');
+  assert.ok(
+    !registro?.leaseOwner,
+    'El lease quedó puesto con un token que ya no tiene dueño. applyPlatformTransition generó el ' +
+    'suyo y reemplazó el del worker, así que el worker no pudo liberar nada -- la operación queda ' +
+    'trabada hasta que ese lease venza.',
+  );
+  assert.match(String(registro?.lastError), /Mongo se cayó al reanudar/,
+    'y sin poder escribir el motivo, una cola trabada no se puede diagnosticar');
+  assert.ok(registro?.nextAttemptAt && new Date(registro.nextAttemptAt) > new Date(),
+    'con su turno programado');
+});
+
+// ---------------------------------------------------------------------------
+// La otra mitad de la misma distinción: una entrega HTTP no puede quitarle la
+// operación a quien la está trabajando, ni siquiera reanudando.
+// ---------------------------------------------------------------------------
+test('P9 — una entrega HTTP no puede robarle el lease a quien la está trabajando', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p9-http-no-roba';
+  await reclamarYCaerse(contentId, op, rev0);
+  await vencerLease(op);
+
+  // Un worker la toma y se pone a trabajarla.
+  const repair = await import('../services/transition-repair.service');
+  assert.ok(await repair.tomarOperacion(USER_ID, op, 'worker-en-curso', 60_000));
+
+  // Y en el medio llega una entrega HTTP de la misma operación. El claim dice
+  // que sigue siendo válida, pero eso no la hace suya.
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0,
+  });
+
+  assert.equal(
+    r.status, 202,
+    'El claim prueba que la operación sigue siendo causalmente válida, no que esta entrega sea ' +
+    'quien puede trabajarla. Con otro ejecutor en curso, la respuesta honesta es "todavía no".',
+  );
+  assert.equal(r.body?.reason, 'in_progress');
+
+  const registro: any = await registroDe(op);
+  assert.equal(registro?.leaseOwner, 'worker-en-curso', 'y el lease sigue siendo de quien lo tomó');
 });

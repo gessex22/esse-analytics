@@ -142,6 +142,19 @@ export async function applyPlatformTransition(
     operationId?: string;
     /** Informativo (diagnóstico). No decide precedencia. */
     stateChangedAt?: Date;
+    /**
+     * Token del ejecutor que YA tiene el lease de esta operación.
+     *
+     * Lo pasa el worker de reparación, que lo adquirió antes de llamar acá.
+     * Sin esto, esta función generaba el suyo y -- al reanudar -- reemplazaba
+     * el del worker sin preguntar: si la reanudación fallaba, el worker
+     * intentaba liberar con un token que ya no era el vigente, no matcheaba
+     * nada, y la operación quedaba trabada con un lease sin dueño y sin
+     * registro de por qué.
+     *
+     * Una entrega HTTP no declara token: se lo tiene que ganar.
+     */
+    leaseOwner?: string;
   },
 ): Promise<PlatformTransitionResult> {
   const { contentId, platform, action, operationId, baseVersion } = input;
@@ -265,7 +278,11 @@ export async function applyPlatformTransition(
   // está registrada como `pending` y todavía no escribió su claim -- que es
   // exactamente el estado que el worker interpreta como "la superaron". Con el
   // worker cableado, esa ventana se vuelve observable.
-  const leaseOwner = operationId ? randomUUID() : null;
+  //
+  // Si el caller ya tiene el lease (el worker), se usa EL SUYO: generar uno
+  // nuevo acá le sacaría la operación de las manos a quien la está trabajando.
+  const trajoLease = !!input.leaseOwner;
+  const leaseOwner = operationId ? (input.leaseOwner ?? randomUUID()) : null;
 
   if (operationId) {
     let canonico: any = null;
@@ -316,47 +333,37 @@ export async function applyPlatformTransition(
     // define qué abarca la operación.
     if (Array.isArray(canonico.platformIds)) idsVinculados = canonico.platformIds;
 
-    // Si el registro ya existía, el `$setOnInsert` no dejó nuestro lease.
+    // ── CLAIM Y LEASE PRUEBAN COSAS DISTINTAS ────────────────────────────
     //
-    // LA REGLA: el lease se toma sin disputarlo solo cuando hay PRUEBA de
-    // propiedad; si no, hay que ganárselo.
+    //   El CLAIM (en `files`) prueba que esta operación sigue siendo
+    //   causalmente VÁLIDA: es la dueña de la revisión vigente.
+    //   El LEASE (acá) prueba QUÉ EJECUTOR puede trabajarla AHORA.
     //
-    // Tomarlo siempre sin disputa era lo primero que probé y está mal: el
-    // perdedor del CAS podía escribir su token DESPUÉS del ganador, y entonces
-    // el ganador -- que sí aplicó todo -- no podía cerrar la operación. Quedaba
-    // `pending` estando completa, y el siguiente reintento la "reanudaba" en vez
-    // de reconocerla como ya hecha.
+    // Confundirlas fue un bug real: mientras `reanudando` autorizaba a tomar el
+    // lease sin preguntar, el worker adquiría su token, llamaba acá, y esta
+    // función se lo reemplazaba por el suyo. Si la reanudación fallaba, el
+    // worker liberaba con un token que ya no era el vigente -- no matcheaba
+    // nada, no quedaba `lastError` ni `nextAttemptAt`, y la operación quedaba
+    // trabada con un lease sin dueño.
     //
-    // Exigirlo siempre libre también está mal, y por el motivo opuesto: el lease
-    // de un proceso que se murió sigue vigente hasta que vence, así que una
-    // reanudación legítima quedaba esperando ese vencimiento para hacer algo
-    // que ya podía hacer.
-    //
-    // `reanudando` ES prueba de propiedad, y más fuerte que cualquier lease: el
-    // claim de `files` dice que esta operación es la dueña de la revisión
-    // vigente, y eso se escribió atómicamente con el CAS.
-    if (String(canonico.leaseOwner ?? '') !== leaseOwner) {
-      if (reanudando) {
-        await PlatformTransitionOpModel.updateOne(
-          { userId, operationId },
-          { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
-        );
-      } else {
-        // Sin prueba todavía: solo si nadie lo tiene vigente. No conseguirlo NO
-        // detiene la aplicación -- quién aplica lo decide el CAS, no el lease.
-        // Lo que sí implica es que esta entrega no va a poder cerrar la
-        // operación, y está bien: no es la dueña.
-        await PlatformTransitionOpModel.updateOne(
-          {
-            userId, operationId,
-            $or: [
-              { leaseOwner: { $exists: false } }, { leaseOwner: null },
-              { leaseUntil: { $exists: false } }, { leaseUntil: null },
-              { leaseUntil: { $lte: new Date() } },
-            ],
-          },
-          { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
-        );
+    // Ahora: quien ya trajo el lease no lo re-adquiere, y quien no lo trajo
+    // solo se lo queda si está libre o vencido. Si lo tiene otro, esta entrega
+    // no trabaja la operación -- responde "todavía no".
+    if (!trajoLease && String(canonico.leaseOwner ?? '') !== leaseOwner) {
+      const adquirido = await PlatformTransitionOpModel.findOneAndUpdate(
+        {
+          userId, operationId,
+          $or: [
+            { leaseOwner: { $exists: false } }, { leaseOwner: null },
+            { leaseUntil: { $exists: false } }, { leaseUntil: null },
+            { leaseUntil: { $lte: new Date() } },
+          ],
+        },
+        { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
+        { new: true },
+      ).lean();
+      if (!adquirido) {
+        return { ok: false, reason: 'in_progress', fileId: String(file._id), version: revActual ?? 0 };
       }
     }
   }
@@ -434,15 +441,11 @@ export async function applyPlatformTransition(
     }
     versionResultante = ((claimed as any).platform_rev ?? {})[platform] ?? (revActual ?? 0) + 1;
 
-    // Ganar el CAS es LA prueba de propiedad. Acá el lease se toma sin
-    // disputarlo: quien perdió el CAS no tiene derecho a decidir cómo termina
-    // esta operación, tenga el token que tenga.
-    if (operationId) {
-      await PlatformTransitionOpModel.updateOne(
-        { userId, operationId },
-        { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
-      );
-    }
+    // (Acá vivía un re-afirmado del lease "porque ganar el CAS prueba
+    // propiedad". Ya no hace falta ni corresponde: con la regla de arriba, solo
+    // llega hasta el CAS quien tiene el lease, así que no hay nada que
+    // re-afirmar -- y re-afirmarlo podría robárselo a un worker que lo tomó
+    // porque este proceso se pasó de su vencimiento.)
 
     // Informativo. La señal autoritativa del claim es `platform_claim` en
     // FileModel, escrita atómicamente arriba; esto solo deja el resultado a mano

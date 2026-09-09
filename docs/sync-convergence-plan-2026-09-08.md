@@ -704,6 +704,50 @@ que la mutación que vale muta los dos.
 corridas completas seguidas** (una de las regresiones de esta ronda solo se veía
 en la corrida completa). `tsc` backend 22 / local-backend 46. local-backend 2/2.
 
+---
+
+## Entrega 2f — el claim y el lease prueban cosas distintas
+
+El worker adquiría su token `W`, llamaba a `applyPlatformTransition`, y esa
+función generaba el suyo (`R`) y **reemplazaba `W` sin preguntar** -- porque
+`reanudando` era tratado como prueba de propiedad. Si la reanudación fallaba, el
+worker liberaba con `W`, que ya no era el vigente: no matcheaba nada, no quedaba
+`lastError` ni `nextAttemptAt`, y la operación quedaba **trabada con un lease
+sin dueño** hasta que venciera, sin registro de por qué.
+
+El caso de fallo transitorio que ya existía solo cubría la rama
+`superseded`/reproyectar. Esta era la otra rama.
+
+La corrección es una distinción, no un parche:
+
+| | Qué prueba |
+|---|---|
+| **Claim** (en `files`) | Que la operación sigue siendo causalmente **válida**: es dueña de la revisión vigente |
+| **Lease** (en la operación) | Qué **ejecutor** puede trabajarla ahora |
+
+`reanudando` prueba lo primero y no lo segundo. Ahora el worker **pasa su
+token** a `applyPlatformTransition`, y una entrega HTTP -- que no trae token --
+solo adquiere el lease si está libre o vencido; si lo tiene otro, responde
+`202 in_progress`.
+
+Consecuencia visible, y correcta: **un reintento inmediato después de una caída
+recibe 202** hasta que el lease de la entrega anterior venza. Nadie puede
+distinguir "ese proceso murió" de "está tardando" sin esperar. Tres casos que
+asumían reanudación instantánea se actualizaron para afirmar las dos mitades: el
+202 mientras el lease vale, y la reanudación después.
+
+También se retiró el re-afirmado del lease post-CAS que había agregado la ronda
+anterior: con esta regla solo llega al CAS quien ya tiene el lease, así que no
+hay nada que re-afirmar -- y re-afirmarlo podía robárselo a un worker que lo
+tomó porque este proceso se pasó de su vencimiento.
+
+### Verificación
+
+56 tests en verde, 0 skips, exit 0, tres corridas completas seguidas. `tsc`
+backend 22 / local-backend 46. local-backend 2/2. Las 4 mutaciones de esta ronda
+rompen cada una su caso -- dos de ellas contra el caso de reanudación exitosa,
+no contra el de reanudación fallida.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android

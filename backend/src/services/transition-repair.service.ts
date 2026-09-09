@@ -193,7 +193,11 @@ async function procesar(op: any, leaseOwner: string): Promise<Desenlace> {
   // Se cortó por una caída, no porque alguien la superara: sus escrituras son
   // idempotentes y su alcance sigue valiendo. Se reanuda tal cual.
   if (sigueSiendoLaDuena) {
-    const r = await applyPlatformTransition(userId, { contentId, platform, action, operationId, baseVersion });
+    // Se le pasa EL token del worker: si generara el suyo, esta función
+    // reemplazaría el nuestro y no podríamos liberar la operación si falla.
+    const r = await applyPlatformTransition(userId, {
+      contentId, platform, action, operationId, baseVersion, leaseOwner,
+    });
     if (r.ok) return 'reanudada';
     // Perdió entre que la miramos y la reintentamos. Cae al camino de abajo.
   }
