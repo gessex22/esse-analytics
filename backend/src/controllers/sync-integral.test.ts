@@ -2585,3 +2585,225 @@ test('P6 — un publish no puede sellar sus efectos con la revisión de una tran
     'el sello vigente tiene que ser el de la transición, que es la que ganó',
   );
 });
+
+
+// ===========================================================================
+// OUTBOX CENTRAL — reparación de escrituras parciales (paso 9 del plan).
+//
+// Todo lo anterior evita que una operación superada siga DESTRUYENDO. Lo que
+// no resuelve es lo que ya escribió antes de darse cuenta: se corta a mitad de
+// camino, deja unas representaciones movidas y otras no, y su registro queda
+// `pending` para siempre. Reprocesarla con la misma operación y el mismo
+// alcance congelado va a fallar siempre igual -- su base ya no existe.
+//
+// Por eso la salida no puede ser "reintentar": tiene que ser reconocer que fue
+// superada y REPARAR las proyecciones hacia el estado canónico de ahora, que ya
+// no es el que esa operación quería imponer.
+// ===========================================================================
+
+/** Deja una transición cortada a la mitad y superada por una publicación. */
+async function transicionSuperadaAMitad(contentId: string, op: string) {
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  const rev0 = await revisionDe(contentId);
+
+  // La publicación entra cuando la transición ya movió `files` y `backup_files`
+  // pero todavía no llegó al resto.
+  const espia = await conIntercaladoEn(central.PlatformVideoModel, 'updateMany', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-09T14:00:00.000Z'),
+    });
+  });
+
+  let resultado: any;
+  try {
+    resultado = await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink', operationId: op, baseVersion: rev0,
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la publicación se intercaló de verdad');
+  assert.equal(resultado.ok, false, 'precondición: la transición tiene que reconocer que perdió');
+  return resultado;
+}
+
+test('OUTBOX CENTRAL — una operación parcial superada se repara y se cierra', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'central-superada';
+  await transicionSuperadaAMitad(contentId, op);
+
+  // La divergencia: `files` tiene la publicación (la re-agregó el publish) pero
+  // `backup_files` se quedó con lo que alcanzó a escribir la transición. Nadie
+  // repara eso hoy -- el publish no toca los badges de `backup_files`.
+  const antes = await fotoDelEstado(contentId);
+  assert.ok(antes.files.platforms.includes(PLATFORM), 'precondición: el estado canónico es "publicado"');
+  assert.ok(
+    !antes.backupFiles.platforms.includes(PLATFORM),
+    'precondición: backup_files quedó con el efecto parcial de la transición',
+  );
+  assert.equal((await registroDe(op))?.status, 'pending',
+    'precondición: la operación quedó pendiente, y reintentarla va a fallar siempre igual');
+
+  // El worker.
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  const resumen = await repararTransicionesPendientes();
+
+  const despues = await fotoDelEstado(contentId);
+  assert.ok(
+    despues.backupFiles.platforms.includes(PLATFORM),
+    'La reparación tiene que llevar las proyecciones al estado canónico DE AHORA, no volver a ' +
+    'imponer la transición vieja.',
+  );
+  assert.ok(despues.remote.platforms.includes(PLATFORM), 'ídem en Nube');
+
+  const registro = await registroDe(op);
+  assert.equal(
+    registro?.status, 'superseded',
+    'y la operación tiene que cerrarse con una salida explícita: dejarla `pending` es reintentar ' +
+    'para siempre algo que nunca va a poder aplicarse.',
+  );
+  assert.equal(resumen.superadas, 1);
+
+  // Y una segunda pasada no la vuelve a tomar.
+  const segunda = await repararTransicionesPendientes();
+  assert.equal(segunda.superadas, 0, 'ya cerrada: no se vuelve a procesar');
+});
+
+// ---------------------------------------------------------------------------
+// El lease necesita un token, no solo un vencimiento.
+//
+// `leaseUntil` por sí solo no impide nada: un worker cuyo lease venció mientras
+// trabajaba sigue teniendo la operación en la mano y puede escribir su
+// resultado ENCIMA del worker nuevo que ya la tomó. Los dos creen ser dueños.
+//
+// `leaseOwner` es el fencing token: cerrar, liberar o registrar el error tiene
+// que exigir el mismo token que reclamó. El que llega con uno vencido no
+// escribe nada.
+// ---------------------------------------------------------------------------
+test('OUTBOX CENTRAL — un worker con el lease vencido no puede cerrar la operación del nuevo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'central-lease-vencido';
+  await transicionSuperadaAMitad(contentId, op);
+
+  const repair = await import('../services/transition-repair.service');
+
+  // Worker A toma la operación.
+  const tomadaPorA = await repair.tomarOperacion(USER_ID, op, 'worker-A', 50);
+  assert.ok(tomadaPorA, 'precondición: A tiene que poder tomarla');
+
+  // Mientras el lease de A vale, nadie se la puede quitar. Sin esto el lease no
+  // serializa nada y dos workers hacen el mismo trabajo en paralelo.
+  assert.equal(
+    await repair.tomarOperacion(USER_ID, op, 'worker-B', 60_000), false,
+    'con el lease de A vigente, B no puede tomarla',
+  );
+
+  // Su lease vence y worker B la toma.
+  await new Promise(r => setTimeout(r, 80));
+  const tomadaPorB = await repair.tomarOperacion(USER_ID, op, 'worker-B', 60_000);
+  assert.ok(tomadaPorB, 'precondición: con el lease vencido, B tiene que poder tomarla');
+
+  // Y recién ahí A termina, tarde. No puede escribir nada.
+  const cerroA = await repair.cerrarOperacion(USER_ID, op, 'worker-A', 'superseded', null);
+  assert.equal(
+    cerroA, false,
+    'A llegó tarde: su lease ya no vale. Sin token, `leaseUntil` no impide que termine encima del ' +
+    'worker nuevo -- los dos se creen dueños y el último en escribir gana.',
+  );
+  assert.equal((await registroDe(op))?.status, 'pending', 'y la operación sigue siendo de B');
+
+  const cerroB = await repair.cerrarOperacion(USER_ID, op, 'worker-B', 'superseded', null);
+  assert.equal(cerroB, true, 'B, que es el dueño, sí puede cerrarla');
+  assert.equal((await registroDe(op))?.status, 'superseded');
+});
+
+
+// ---------------------------------------------------------------------------
+// La otra salida: una operación que se cortó por una CAÍDA, sin que nadie la
+// superara, sigue siendo la dueña de su revisión. Ahí no hay nada que reparar
+// -- hay que terminarla. Repararla como si la hubieran superado sería tirar a
+// la basura una decisión del usuario que nadie contradijo.
+// ---------------------------------------------------------------------------
+test('OUTBOX CENTRAL — una operación cortada por una caída se reanuda, no se descarta', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'central-reanudable';
+  await reclamarYCaerse(contentId, op, rev0);
+
+  // Quedó a medias: `files` ya perdió la plataforma, el resto no se enteró.
+  const antes = await fotoDelEstado(contentId);
+  assert.ok(!antes.files.platforms.includes(PLATFORM), 'precondición: alcanzó a mover files');
+  assert.ok(antes.platformVideo.linkedFileId, 'precondición: no llegó a soltar el vínculo');
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  const resumen = await repararTransicionesPendientes();
+
+  assert.equal(resumen.reanudadas, 1, 'nadie la superó: hay que TERMINARLA, no repararla');
+  assert.equal(resumen.superadas, 0);
+
+  const despues = await fotoDelEstado(contentId);
+  assert.ok(!despues.files.platforms.includes(PLATFORM), 'la desvinculación queda');
+  assert.ok(!despues.backupFiles.platforms.includes(PLATFORM), 'y llega a backup_files');
+  assert.equal(despues.platformVideo.linkedFileId, null, 'y suelta el vínculo');
+  assert.equal(despues.mirror?.link_state, 'unlinked', 'y deja el tombstone');
+  assert.equal((await registroDe(op))?.status, 'completed');
+});
+
+// ---------------------------------------------------------------------------
+// Un fallo transitorio no puede convertirse en un bucle cerrado. La operación
+// se posterga con espera creciente, deja registrado POR QUÉ, y no se vuelve a
+// tomar hasta que le toque.
+// ---------------------------------------------------------------------------
+test('OUTBOX CENTRAL — un fallo transitorio posterga con espera creciente y deja el motivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'central-fallo-transitorio';
+  await transicionSuperadaAMitad(contentId, op);
+
+  const repair = await import('../services/transition-repair.service');
+
+  // Se rompe la escritura que la reparación necesita hacer. (Parchear la
+  // función exportada NO sirve: la llamada interna del worker no pasa por el
+  // objeto del módulo, así que el parche no la alcanza y el caso pasaba sin
+  // haber fallado nunca.)
+  const original = central.BackupFileModel.updateOne.bind(central.BackupFileModel);
+  (central.BackupFileModel as any).updateOne = () => { throw new Error('Mongo no responde'); };
+
+  let resumen: any;
+  try {
+    resumen = await repair.repararTransicionesPendientes();
+  } finally {
+    (central.BackupFileModel as any).updateOne = original;
+  }
+
+  assert.equal(resumen.pospuestas, 1, 'un fallo transitorio se posterga, no se cierra');
+  const registro: any = await registroDe(op);
+  assert.equal(registro?.status, 'pending', 'sigue pendiente: el trabajo no se hizo');
+  assert.ok(registro?.attempts >= 1, 'el intento tiene que quedar contado');
+  assert.match(String(registro?.lastError), /Mongo no responde/,
+    'y el motivo registrado: una cola que falla sin decir por qué no se puede diagnosticar');
+  assert.ok(registro?.nextAttemptAt && new Date(registro.nextAttemptAt) > new Date(),
+    'con su turno en el futuro');
+  assert.ok(!registro?.leaseOwner, 'y el lease liberado, para que otro worker pueda tomarla');
+
+  // Y no se vuelve a tomar hasta que le toque.
+  const segunda = await repair.repararTransicionesPendientes();
+  assert.equal(segunda.revisadas, 0, 'todavía no es su turno');
+});

@@ -34,8 +34,29 @@ export interface IPlatformTransitionOp extends Document {
   platformIds?: string[];
   /** Revisión resultante, una vez aplicada. */
   resultVersion?: number;
-  status: 'pending' | 'completed';
+  /**
+   * 'pending'    = registrada, sin terminar de aplicar.
+   * 'completed'  = aplicada en todas las proyecciones.
+   * 'superseded' = la superó otra operación. NO se reintenta: su baseVersion
+   *                describe un estado que ya no existe, así que reprocesarla
+   *                fallaría siempre igual. Lo que se repara es lo que alcanzó
+   *                a escribir (ver transition-repair.service.ts).
+   * 'failed'     = no se pudo aplicar ni reparar tras varios intentos.
+   */
+  status: 'pending' | 'completed' | 'superseded' | 'failed';
   completedAt?: Date;
+
+  // ── Reproceso central (ver transition-repair.service.ts) ────────────────
+  /**
+   * Quién tiene la operación en la mano. Es un FENCING TOKEN, no una etiqueta:
+   * cerrar o liberar exige presentarlo. `leaseUntil` por sí solo no impide que
+   * un worker vencido termine encima del nuevo -- los dos se creen dueños.
+   */
+  leaseOwner?: string;
+  leaseUntil?: Date;
+  attempts?: number;
+  nextAttemptAt?: Date;
+  lastError?: string | null;
 }
 
 const PlatformTransitionOpSchema = new Schema<IPlatformTransitionOp>({
@@ -47,13 +68,20 @@ const PlatformTransitionOpSchema = new Schema<IPlatformTransitionOp>({
   baseVersion:   { type: Number },
   platformIds:   { type: [String], default: undefined },
   resultVersion: { type: Number },
-  status:        { type: String, enum: ['pending', 'completed'], default: 'pending' },
+  status:        { type: String, enum: ['pending', 'completed', 'superseded', 'failed'], default: 'pending' },
   completedAt:   { type: Date },
+  leaseOwner:    { type: String },
+  leaseUntil:    { type: Date },
+  attempts:      { type: Number, default: 0 },
+  nextAttemptAt: { type: Date },
+  lastError:     { type: String, default: null },
 }, { timestamps: true });
 
 // La deduplicación se apoya en este índice: dos entregas de la misma operación
 // no pueden crear dos registros, sin importar si llegan en paralelo.
 PlatformTransitionOpSchema.index({ userId: 1, operationId: 1 }, { unique: true });
+// El worker de reparación busca por acá: pendientes cuyo turno ya llegó.
+PlatformTransitionOpSchema.index({ status: 1, nextAttemptAt: 1, leaseUntil: 1 });
 
 export const PlatformTransitionOpModel = model<IPlatformTransitionOp>(
   'PlatformTransitionOp', PlatformTransitionOpSchema, 'platform_transition_ops',

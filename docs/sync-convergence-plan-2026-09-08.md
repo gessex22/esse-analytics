@@ -564,6 +564,78 @@ Lo mismo pasó con el alcance vacío: la invariante "presencia, no vacío" vive
 ahora en dos lugares que **se cubren mutuamente**, así que mutar uno solo no
 prueba nada. La mutación que vale muta los dos.
 
+---
+
+## Entrega 2d + paso 9 — coherencia final y outbox central
+
+### Dos P0 previos
+
+**El estado y la revisión podían salir de documentos distintos.** El caso
+anterior solo comprobaba que la revisión no fuera la del otro archivo, y eso
+dejaba pasar la mitad: el estado seguía viniendo de `centralByName` y la
+revisión de `centralById`, así que se podía servir el estado de B con la
+revisión de A. Una pareja que nunca existió -- y la peligrosa, porque la
+revisión era la correcta para la identidad del cliente y su próxima transición
+pasaba el CAS sin problema, aplicada sobre el estado de otro archivo. Ahora el
+match por `content_id` manda para todo; el nombre sigue siendo fallback para el
+estado, sin revisión.
+
+**`applyPlatformPublish` no propagaba la revisión que ganó.** Incrementaba
+`platform_rev` y después la releía en tres momentos distintos para sellar sus
+proyecciones; una transición posterior entre medio hacía que leyera la revisión
+de ELLA y sellara sus propios efectos -- más viejos -- con ese número. Ahora se
+captura del propio `$inc` y se reusa. Capturarla no alcanzaba para no ESCRIBIR
+(una comprobación previa no ve a quien entra mientras la escritura está en
+vuelo), así que el upsert de `platformvideos` y el del espejo van guardados por
+`linkVersion` / `link_version`.
+
+### Paso 9 — outbox central
+
+Todo lo anterior evita que una operación superada siga **destruyendo**. Lo que
+no resuelve es lo que ya escribió antes de notarlo: una transición que alcanzó a
+mover `files` y `backup_files` y ahí perdió deja esas dos representaciones en un
+estado que nada repara -- el publish que la superó arregla `files`, que es lo
+que le toca, pero nunca toca los badges de `backup_files`.
+
+Y su registro queda `pending`. **Reprocesarla con la misma operación y el mismo
+alcance congelado falla siempre igual**: su `baseVersion` describe un estado que
+ya no existe. Por eso hay dos salidas, no una:
+
+| Situación | Qué hace el worker |
+|---|---|
+| La operación sigue siendo dueña de la revisión vigente (se cortó por una caída) | La **reanuda**: sus escrituras son idempotentes y su alcance sigue valiendo |
+| La superó otra operación | **Repara** las proyecciones hacia el estado canónico de AHORA y cierra como `superseded` |
+| Fallo transitorio | Posterga con `nextAttemptAt` (espera creciente), suma `attempts`, registra `lastError` |
+| Se agotaron los intentos | Cierra como `failed` |
+
+`leaseOwner` es un **fencing token**, no una etiqueta: cerrar o liberar exige
+presentarlo. `leaseUntil` solo no impide que un worker vencido termine encima
+del nuevo -- los dos se creen dueños y gana el último en escribir.
+
+La reparación **deriva** las proyecciones desde `FileModel` (la autoridad) en
+vez de intentar deshacer operación por operación, que es lo único posible sin
+transacciones y sin un log de undo. Todo va sellado con la revisión vigente, así
+que la reparación tampoco puede pisar algo más nuevo.
+
+### Verificación
+
+50 tests en verde (45 integrales + 5 de convergencia), 0 skips, exit 0. `tsc`
+backend 22 / local-backend 46. local-backend 2/2.
+
+Tres cosas que encontró la batería de mutación y no la lectura:
+
+- El caso de P6-2 tenía **la premisa falsa**: el archivo ya estaba confirmado,
+  así que el publish no incrementaba nada y no tenía revisión propia que sellar.
+- Su **punto de intercalado estaba después de todas las lecturas** del publish,
+  así que no distinguía "usé la revisión que gané" de "la releí".
+- Al caso del lease le faltaba afirmar que **un lease vigente no se puede
+  robar**: solo comprobaba que el vencido no pudiera cerrar.
+
+Y una del propio worker: parchear la función exportada `reproyectarPlataforma`
+no alcanza a la llamada interna (bindings ESM), así que el caso del fallo
+transitorio pasaba sin haber fallado nunca. Se fuerza el fallo en la escritura
+real.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android
