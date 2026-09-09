@@ -200,7 +200,7 @@ async function procesar(op: any, leaseOwner: string): Promise<Desenlace> {
 
   // La superaron. Lo que esa operación quería imponer ya no aplica; lo que hay
   // que arreglar es lo que alcanzó a escribir.
-  await reproyectarPlataforma(userId, contentId, platform);
+  await reproyectarPlataforma(userId, contentId, platform, op.platformIds ?? []);
   await cerrarOperacion(userId, operationId, leaseOwner, 'superseded',
     `superada: la revisión vigente (${revActual}) ya no es la que esta operación reclamó`);
   return 'superada';
@@ -221,6 +221,16 @@ export async function reproyectarPlataforma(
   userId: string,
   contentId: string,
   platform: string,
+  /**
+   * Ids del alcance congelado de la operación que se está reparando.
+   *
+   * Hace falta porque cuando el estado canónico es "desvinculado" NO se puede
+   * enumerar qué limpiar mirando los vínculos vivos: si ya no queda ninguno, no
+   * hay nada que enumerar, y los espejos con el link zombi quedan intactos. Se
+   * usa la UNIÓN de tres fuentes -- este alcance, los vínculos actuales y los
+   * espejos de este content_id.
+   */
+  idsDelAlcance: string[] = [],
 ): Promise<void> {
   const file = await FileModel.findOne({ userId, content_id: contentId }).lean();
   if (!file) return;
@@ -285,18 +295,85 @@ export async function reproyectarPlataforma(
     }
   }
 
-  // El espejo de vínculos se deriva de `platformvideos`, que es donde vive el
-  // link real: si hay un vínculo vivo para este archivo, la lápida sobra.
+  // ── Vínculos ────────────────────────────────────────────────────────────
   const vinculos = await PlatformVideoModel
     .find({ userId, platform, linkedFileId: file._id } as any).select('platformId linkVersion').lean();
-  for (const v of vinculos) {
-    if (!v.platformId) continue;
-    await BackupPlatformVideoModel.updateOne(
+
+  if (publicado) {
+    // Estado canónico positivo: los vínculos vivos son la verdad y el espejo
+    // tiene que reflejarlos. Si quedó una lápida de una transición superada, se
+    // levanta.
+    for (const v of vinculos) {
+      if (!v.platformId) continue;
+      await BackupPlatformVideoModel.updateOne(
+        {
+          userId, platform, platform_id: v.platformId,
+          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: rev } }],
+        },
+        { $set: { link_state: 'linked', link_updated_at: new Date(), link_version: rev, content_id: contentId } },
+      );
+    }
+    return;
+  }
+
+  // Estado canónico NEGATIVO (desvinculado o descartado). Acá estaba el hueco:
+  // la reparación sabía decir "esto está vinculado" y nada más, así que dejaba
+  // vínculos zombis en `platformvideos`, en el espejo y en Nube -- y esos zombis
+  // son justamente los que el próximo pull vuelve a convertir en links visibles
+  // en todas las PCs.
+  //
+  // Los ids a limpiar salen de la UNIÓN de tres fuentes: mirar solo los
+  // vínculos vivos no alcanza (si ya no queda ninguno no hay nada que
+  // enumerar, y los espejos quedan intactos).
+  const espejos = await BackupPlatformVideoModel
+    .find({ userId, platform, content_id: contentId }).select('platform_id').lean();
+  const ids = Array.from(new Set([
+    ...idsDelAlcance,
+    ...vinculos.map(v => v.platformId).filter(Boolean) as string[],
+    ...espejos.map(e => e.platform_id).filter(Boolean) as string[],
+  ]));
+
+  await PlatformVideoModel.updateMany(
+    {
+      userId, platform, linkedFileId: file._id,
+      $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: rev } }],
+    } as any,
+    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: rev } },
+  );
+
+  for (const platformId of ids) {
+    try {
+      await BackupPlatformVideoModel.updateOne(
+        {
+          userId, platform, platform_id: platformId,
+          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: rev } }],
+        },
+        {
+          $set: {
+            link_state: 'unlinked', link_updated_at: new Date(),
+            link_version: rev, content_id: contentId,
+          },
+          $setOnInsert: { local_updated_at: new Date(), match_status: 'sin_match' },
+        },
+        { upsert: true },
+      );
+    } catch (err: any) {
+      // Hay una fila más nueva para ese platformId: se la deja como está.
+      if (err?.code !== 11000) throw err;
+    }
+  }
+
+  // Y el link de Nube, que es lo que ven los clientes remotos.
+  if ((TRANSITION_PLATFORMS as readonly string[]).includes(platform)) {
+    await RemoteLibraryVideoModel.updateOne(
       {
-        userId, platform, platform_id: v.platformId,
-        $or: [{ link_version: { $exists: false } }, { link_version: { $lte: rev } }],
+        userId, contentId,
+        $or: [
+          { ['platformRev.' + platform]: { $exists: false } },
+          { ['platformRev.' + platform]: { $lte: rev } },
+        ],
       },
-      { $set: { link_state: 'linked', link_updated_at: new Date(), link_version: rev, content_id: contentId } },
+      { $pull: { platformLinks: { platform } }, $set: { ['platformRev.' + platform]: rev } },
     );
   }
 }

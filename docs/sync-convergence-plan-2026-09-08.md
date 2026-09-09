@@ -636,12 +636,85 @@ no alcanza a la llamada interna (bindings ESM), así que el caso del fallo
 transitorio pasaba sin haber fallado nunca. Se fuerza el fallo en la escritura
 real.
 
+---
+
+## Entrega 2e — cerrar el worker antes de cablearlo (4 casos nuevos)
+
+### 1. El worker podía tomar una operación viva
+
+La request registra la operación como `pending` y recién después hace el CAS que
+escribe el claim. Entre esas dos cosas la operación **existe, está viva y no
+tiene claim** -- que es exactamente el estado que el worker interpreta como "la
+superaron". Si el worker corre ahí, la cierra como `superseded`; la request
+sigue, gana el CAS, aplica la mitad y se cae: queda una transición parcial con
+estado **terminal**, que ya nadie repara.
+
+La solución no es que el worker espere a las operaciones nuevas -- eso es una
+mitigación y una request lenta la sigue perdiendo. Request y worker usan ahora
+el **mismo protocolo de lease**, y el cierre de `applyPlatformTransition`
+también exige su `leaseOwner`.
+
+**La regla del lease costó tres intentos**, y las dos primeras versiones estaban
+mal en direcciones opuestas:
+
+| Regla | Qué rompía |
+|---|---|
+| Tomarlo siempre, sin disputa | El perdedor del CAS escribía su token después del ganador; el ganador -- que sí aplicó todo -- no podía cerrar. Quedaba `pending` estando completa |
+| Exigirlo siempre libre | El lease de un proceso muerto sigue vigente hasta vencer, así que una reanudación legítima esperaba ese vencimiento para hacer algo que ya podía hacer |
+| **Sin disputa solo con prueba de propiedad** | Ganar el CAS, o `reanudando` (el claim de `files` dice que esta operación es dueña de la revisión vigente). Sin prueba: solo si nadie lo tiene vigente, y no conseguirlo no detiene la aplicación -- solo significa que esta entrega no es quien cierra |
+
+La segunda versión fue la que hizo fallar **7 casos** que ya estaban en verde, y
+la primera produjo un fallo que solo aparecía en la corrida completa y no
+aislado.
+
+### 2. La reparación no arreglaba el estado negativo
+
+`reproyectarPlataforma` sabía llevar los badges al estado canónico, pero solo
+sabía decir "esto está vinculado". Con el estado canónico en `unlink`/`discard`
+dejaba **vínculos zombis en tres representaciones**: no desvinculaba
+`platformvideos`, no dejaba tombstone en el espejo (solo marcaba `linked` los
+que encontraba) y no retiraba el `platformLink` de Nube. Esos zombis son
+justamente los que el próximo pull vuelve a convertir en links visibles en todas
+las PCs.
+
+Y para saber **qué ids** limpiar no alcanza con los vínculos vivos: si la
+transición ya alcanzó a soltarlos, no queda ninguno que enumerar y el espejo se
+queda diciendo `linked` para siempre. Los ids salen de la unión de tres fuentes:
+el alcance congelado de la operación, los vínculos actuales y los espejos de ese
+`content_id`.
+
+### Los 4 casos
+
+| Caso | Qué afirma |
+|---|---|
+| P8-1 | El worker no toma una operación que la request está aplicando |
+| P8-2 | La reparación desvincula, deja tombstone y retira el link de Nube |
+| P8-3 | Una request que perdió su lease no puede cerrar la operación |
+| P8-4 | El tombstone se crea aunque ya no quede ningún vínculo vivo |
+
+P8-3 y P8-4 nacieron de la batería de mutación: `cierre-sin-fencing` y
+`ids-solo-de-vinculos` no rompían nada, porque el cierre de la request y la
+unión de fuentes no los miraba ningún caso. Y `reserva-sin-lease` tampoco rompía
+al principio -- el lease se escribe en dos lugares que se cubren mutuamente, así
+que la mutación que vale muta los dos.
+
+### Verificación
+
+54 tests en verde (49 integrales + 5 de convergencia), 0 skips, exit 0, **tres
+corridas completas seguidas** (una de las regresiones de esta ronda solo se veía
+en la corrida completa). `tsc` backend 22 / local-backend 46. local-backend 2/2.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android
   siguen usando el `DELETE` viejo, sin `operationId` ni `baseVersion`. No se
   migran todavía a propósito: hacerlo sobre el contrato anterior solo habría
   multiplicado las operaciones expuestas a estas mismas ventanas.
-- Sigue faltando la **outbox central** (paso 9): reparación de escrituras
-  parciales del lado del servidor.
+- El worker de reparación existe y está probado, pero **nada lo dispara
+  todavía**. Cablearlo pide: corrida al arrancar (después de que Mongo esté
+  listo), barrido periódico (un trigger por eventos no recupera la última
+  operación si el proceso cayó), protección contra pasadas solapadas dentro del
+  proceso -- el lease cubre las réplicas --, disparo oportunista tras detectar
+  una pendiente sin bloquear la respuesta HTTP, backoff con jitter, y métricas
+  de `pending`, `failed` y edad máxima.
 - Siguen faltando los **5 callers** del paso 1.3.

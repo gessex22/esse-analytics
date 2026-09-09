@@ -2601,6 +2601,22 @@ test('P6 — un publish no puede sellar sus efectos con la revisión de una tran
 // no es el que esa operación quería imponer.
 // ===========================================================================
 
+/**
+ * Hace que el lease de una operación quede vencido.
+ *
+ * Representa "pasó el tiempo": la request que la estaba aplicando dejó su lease
+ * puesto y no volvió. Un worker no puede -- ni debe -- distinguir "el proceso se
+ * murió" de "esto está tardando" sin esperar ese vencimiento; por eso hay que
+ * simularlo en vez de asumir que la operación queda libre al instante.
+ */
+async function vencerLease(operationId: string) {
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+  await PlatformTransitionOpModel.updateOne(
+    { userId: USER_ID, operationId },
+    { $set: { leaseUntil: new Date(Date.now() - 1000) } },
+  );
+}
+
 /** Deja una transición cortada a la mitad y superada por una publicación. */
 async function transicionSuperadaAMitad(contentId: string, op: string) {
   const { applyPlatformTransition } = await import('../services/platform-transition.service');
@@ -2650,8 +2666,16 @@ test('OUTBOX CENTRAL — una operación parcial superada se repara y se cierra',
   assert.equal((await registroDe(op))?.status, 'pending',
     'precondición: la operación quedó pendiente, y reintentarla va a fallar siempre igual');
 
-  // El worker.
   const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+
+  // Mientras el lease que dejó la request siga vigente, el worker NO la toca.
+  // No puede distinguir "el proceso murió" de "está tardando", y equivocarse
+  // hacia el lado de tocarla es lo que rompe una operación viva.
+  const prematura = await repararTransicionesPendientes();
+  assert.equal(prematura.revisadas, 0, 'con el lease de la request vigente, el worker no la toma');
+
+  // Pasa el tiempo del lease y ahí sí.
+  await vencerLease(op);
   const resumen = await repararTransicionesPendientes();
 
   const despues = await fotoDelEstado(contentId);
@@ -2696,6 +2720,7 @@ test('OUTBOX CENTRAL — un worker con el lease vencido no puede cerrar la opera
   await transicionSuperadaAMitad(contentId, op);
 
   const repair = await import('../services/transition-repair.service');
+  await vencerLease(op);
 
   // Worker A toma la operación.
   const tomadaPorA = await repair.tomarOperacion(USER_ID, op, 'worker-A', 50);
@@ -2750,6 +2775,7 @@ test('OUTBOX CENTRAL — una operación cortada por una caída se reanuda, no se
   assert.ok(antes.platformVideo.linkedFileId, 'precondición: no llegó a soltar el vínculo');
 
   const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
   const resumen = await repararTransicionesPendientes();
 
   assert.equal(resumen.reanudadas, 1, 'nadie la superó: hay que TERMINARLA, no repararla');
@@ -2783,6 +2809,7 @@ test('OUTBOX CENTRAL — un fallo transitorio posterga con espera creciente y de
   // función exportada NO sirve: la llamada interna del worker no pasa por el
   // objeto del módulo, así que el parche no la alcanza y el caso pasaba sin
   // haber fallado nunca.)
+  await vencerLease(op);
   const original = central.BackupFileModel.updateOne.bind(central.BackupFileModel);
   (central.BackupFileModel as any).updateOne = () => { throw new Error('Mongo no responde'); };
 
@@ -2806,4 +2833,249 @@ test('OUTBOX CENTRAL — un fallo transitorio posterga con espera creciente y de
   // Y no se vuelve a tomar hasta que le toque.
   const segunda = await repair.repararTransicionesPendientes();
   assert.equal(segunda.revisadas, 0, 'todavía no es su turno');
+});
+
+
+// ===========================================================================
+// P8 — dos huecos que el trigger del worker volvería observables.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// P8-1 — el worker no puede tomar una operación que TODAVÍA SE ESTÁ APLICANDO.
+//
+// La request registra la operación como `pending` y recién después hace el CAS
+// que escribe el claim. Entre esas dos cosas la operación existe, está viva, y
+// no tiene claim -- que es exactamente el estado que el worker interpreta como
+// "la superaron".
+//
+// Si el worker corre justo ahí, la cierra como `superseded`. La request sigue,
+// gana el CAS, aplica la mitad y se cae: queda una transición parcial con
+// estado TERMINAL, así que nadie la va a reparar nunca. El worker no rompe nada
+// hoy solo porque no lo dispara nadie; cablearlo vuelve esto observable.
+//
+// La salida no es que el worker espere a las operaciones "nuevas": eso es una
+// mitigación, no una solución -- una request lenta la sigue perdiendo. Request
+// y worker tienen que usar el MISMO protocolo de lease.
+// ---------------------------------------------------------------------------
+test('P8 — el worker no puede tomar una operación que la request está aplicando', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p8-worker-vs-request';
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+
+  // El worker corre JUSTO entre la reserva y el CAS: la operación ya existe
+  // como `pending` y todavía no escribió su claim.
+  // El CAS encadena `.lean()` sobre el query, así que el intercalado tiene que
+  // devolver algo con esa forma -- envolverlo en una promesa a secas rompe la
+  // llamada antes de llegar a probar nada.
+  let resumenDelWorker: any = null;
+  let intercalado = false;
+  const originalCas = central.FileModel.findOneAndUpdate.bind(central.FileModel);
+  (central.FileModel as any).findOneAndUpdate = (...args: any[]) => {
+    if (intercalado) return originalCas(...args);
+    intercalado = true;
+    return {
+      lean: async () => {
+        (central.FileModel as any).findOneAndUpdate = originalCas;
+        resumenDelWorker = await repararTransicionesPendientes();
+        return originalCas(...args).lean();
+      },
+    };
+  };
+
+  let resultado: any;
+  try {
+    resultado = await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink', operationId: op, baseVersion: rev0,
+    });
+  } finally {
+    (central.FileModel as any).findOneAndUpdate = originalCas;
+  }
+  assert.ok(intercalado, 'precondición: el worker corrió entre la reserva y el CAS');
+
+  assert.equal(
+    resumenDelWorker?.revisadas, 0,
+    'El worker tomó una operación que se estaba aplicando en ese mismo momento. La cerraría como ' +
+    'superada, y la request seguiría igual: si se cae después del CAS queda una transición parcial ' +
+    'con estado terminal, que ya nadie repara.',
+  );
+
+  const registro = await registroDe(op);
+  assert.notEqual(registro?.status, 'superseded', 'y por lo tanto no puede quedar cerrada por el worker');
+  assert.equal(registro?.status, 'completed', 'la request es la que la termina');
+  assert.ok(resultado.ok, 'y la request tiene que poder completarla');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.ok(!foto.files.platforms.includes(PLATFORM), 'con su efecto aplicado de verdad');
+  assert.equal(foto.platformVideo.linkedFileId, null);
+});
+
+// ---------------------------------------------------------------------------
+// P8-2 — la reparación tiene que arreglar también el estado NEGATIVO.
+//
+// `reproyectarPlataforma` sabe llevar los badges al estado canónico, pero solo
+// sabe decir "esto está vinculado". Si el estado canónico es "desvinculado",
+// no desvincula `platformvideos`, no deja tombstone en el espejo (solo marca
+// `linked` los que encuentra) y no retira el `platformLink` de Nube.
+//
+// O sea: repara la mitad optimista y deja vínculos zombis en tres
+// representaciones. Y esos zombis son justamente los que un pull vuelve a
+// convertir en links visibles en todas las PCs.
+//
+// Para saber QUÉ ids limpiar no alcanza con mirar los vínculos vivos -- si ya
+// no hay ninguno, no hay nada que enumerar. Hay que unir el alcance congelado
+// de la operación, los vínculos actuales y los espejos de ese content_id.
+// ---------------------------------------------------------------------------
+test('P8 — la reparación desvincula, deja tombstone y retira el link de Nube', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+
+  // Estado canónico: desvinculado. Pero los vínculos quedaron zombis en las
+  // tres representaciones que la transición no alcanzó a tocar.
+  await central.FileModel.updateOne(
+    { userId: USER_ID, content_id: contentId },
+    { $set: { platforms: [], platform_states: [], [`platform_rev.${PLATFORM}`]: 5 } },
+  );
+
+  const antes = await fotoDelEstado(contentId);
+  assert.ok(antes.platformVideo.linkedFileId, 'precondición: el vínculo sigue vivo');
+  assert.notEqual(antes.mirror?.link_state, 'unlinked', 'precondición: el espejo no tiene tombstone');
+  assert.ok((antes.remote.links as any[]).some(l => l.platform === PLATFORM),
+    'precondición: Nube conserva el link');
+
+  // Una operación pendiente ya superada: es lo que el worker va a reparar.
+  const op = 'p8-reparar-negativo';
+  await PlatformTransitionOpModel.create({
+    userId: USER_ID, operationId: op, contentId, platform: PLATFORM, action: 'unlink',
+    baseVersion: 0, status: 'pending', platformIds: [PLATFORM_ID],
+  });
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  const resumen = await repararTransicionesPendientes();
+  assert.equal(resumen.superadas, 1, 'precondición: el worker la trata como superada');
+
+  const despues = await fotoDelEstado(contentId);
+  assert.equal(
+    despues.platformVideo.linkedFileId, null,
+    'La reparación dejó el vínculo vivo en platformvideos aunque el estado canónico es "desvinculado".',
+  );
+  assert.equal(
+    despues.mirror?.link_state, 'unlinked',
+    'y sin tombstone en el espejo, el próximo pull de CUALQUIER PC resucita el link',
+  );
+  assert.ok(
+    !(despues.remote.links as any[]).some(l => l.platform === PLATFORM),
+    'y Nube se queda con un platformLink que ya no corresponde a nada',
+  );
+  assert.ok(!despues.remote.platforms.includes(PLATFORM), 'con su badge también retirado');
+  assert.ok(!despues.backupFiles.platforms.includes(PLATFORM));
+});
+
+
+// ---------------------------------------------------------------------------
+// P8-3 — el cierre de la REQUEST también está fenced.
+//
+// El caso del fencing prueba `cerrarOperacion` (el camino del worker). El
+// cierre de `applyPlatformTransition` es el otro lado del mismo protocolo y no
+// lo miraba nadie: si la request tarda más que su lease y un worker toma la
+// operación, la request no puede llegar tarde y declararla `completed` -- el
+// dueño actual es quien decide cómo termina.
+// ---------------------------------------------------------------------------
+test('P8 — una request que perdió su lease no puede cerrar la operación', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p8-request-sin-lease';
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+
+  // Alguien le saca el lease mientras la request está en su última proyección.
+  const espia = await conIntercaladoEn(central.RemoteLibraryVideoModel, 'updateOne', async () => {
+    await PlatformTransitionOpModel.updateOne(
+      { userId: USER_ID, operationId: op },
+      { $set: { leaseOwner: 'worker-que-la-tomo', leaseUntil: new Date(Date.now() + 60_000) } },
+    );
+  });
+
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink', operationId: op, baseVersion: rev0,
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el lease se le fue a otro durante la aplicación');
+
+  const registro: any = await registroDe(op);
+  assert.equal(
+    registro?.status, 'pending',
+    'La request cerró una operación que ya no era suya. El dueño actual es quien tiene que decidir ' +
+    'cómo termina -- si no, dos actores escriben el desenlace y gana el último.',
+  );
+  assert.equal(registro?.leaseOwner, 'worker-que-la-tomo', 'y el lease sigue siendo del otro');
+});
+
+// ---------------------------------------------------------------------------
+// P8-4 — sin vínculos vivos NO hay nada que enumerar, y ahí está el problema.
+//
+// El caso anterior deja vínculos zombis en las tres representaciones, así que
+// los ids se pueden sacar de `platformvideos`. Pero el caso feo es el otro: la
+// transición SÍ alcanzó a soltar el vínculo y no llegó al espejo. Ahí no queda
+// ningún vínculo vivo del que sacar el id, y el espejo -- que es de donde cada
+// PC reconstruye sus links -- se queda diciendo `linked` para siempre.
+//
+// Por eso los ids salen de la unión del alcance congelado, los vínculos
+// actuales y los espejos de ese content_id.
+// ---------------------------------------------------------------------------
+test('P8 — el tombstone se puede crear aunque ya no quede ningún vínculo vivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+
+  // Estado canónico: desvinculado. El vínculo YA se soltó. El espejo no se
+  // enteró.
+  await central.FileModel.updateOne(
+    { userId: USER_ID, content_id: contentId },
+    { $set: { platforms: [], platform_states: [], [`platform_rev.${PLATFORM}`]: 5 } },
+  );
+  await central.PlatformVideoModel.updateMany(
+    { userId: USER_ID, platform: PLATFORM },
+    { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
+  );
+
+  const antes = await fotoDelEstado(contentId);
+  assert.equal(antes.platformVideo.linkedFileId, null, 'precondición: no queda vínculo vivo');
+  assert.notEqual(antes.mirror?.link_state, 'unlinked', 'precondición: el espejo sigue diciendo linked');
+
+  const op = 'p8-sin-vinculos-vivos';
+  await PlatformTransitionOpModel.create({
+    userId: USER_ID, operationId: op, contentId, platform: PLATFORM, action: 'unlink',
+    baseVersion: 0, status: 'pending', platformIds: [PLATFORM_ID],
+  });
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  assert.equal((await repararTransicionesPendientes()).superadas, 1);
+
+  const despues = await fotoDelEstado(contentId);
+  assert.equal(
+    despues.mirror?.link_state, 'unlinked',
+    'Sin vínculos vivos no hay de dónde sacar el platformId mirando `platformvideos`. Si los ids ' +
+    'salen solo de ahí, el espejo se queda diciendo `linked` y cada PC resucita el link en su ' +
+    'próximo pull.',
+  );
 });

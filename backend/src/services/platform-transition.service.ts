@@ -24,7 +24,17 @@ import { BackupFileModel } from '../models/backup-file.model';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
 import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
+import { randomUUID } from 'crypto';
 import { PlatformTransitionOpModel } from '../models/platform-transition-op.model';
+
+/**
+ * Cuánto vale el lease que toma una request mientras aplica.
+ *
+ * Generoso a propósito: si vence mientras la request sigue trabajando, el
+ * worker la puede tomar y las dos escriben. Que venza tiene que ser señal de
+ * "el proceso se murió", no de "esto tardó".
+ */
+const LEASE_REQUEST_MS = 120_000;
 
 
 /** Las 3 plataformas con estado propio comparable. 'facebook' es crosspost. */
@@ -250,6 +260,13 @@ export async function applyPlatformTransition(
   //
   // El upsert devuelve siempre el registro CANÓNICO: el que quedó, sea nuestro
   // o del que llegó primero. Todo lo que sigue se compara contra ese.
+  // El token de ESTA aplicación. Request y worker usan el mismo protocolo: sin
+  // eso, entre la reserva y el CAS existe una ventana en la que la operación ya
+  // está registrada como `pending` y todavía no escribió su claim -- que es
+  // exactamente el estado que el worker interpreta como "la superaron". Con el
+  // worker cableado, esa ventana se vuelve observable.
+  const leaseOwner = operationId ? randomUUID() : null;
+
   if (operationId) {
     let canonico: any = null;
     try {
@@ -264,6 +281,10 @@ export async function applyPlatformTransition(
             // entre "esta operación no abarca ningún vínculo" y "todavía no se
             // sabe", y confundirlas es lo que la hacía recalcular al reanudar.
             platformIds: idsVinculados ?? [],
+            // El lease se toma EN LA MISMA escritura que reserva. Si fuera un
+            // paso aparte quedaría una ventana -- chica, pero es justo la que
+            // el worker sabe malinterpretar.
+            leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS),
           },
         },
         { upsert: true, new: true },
@@ -294,6 +315,50 @@ export async function applyPlatformTransition(
     // recién: si otra entrega reservó primero, congeló SU foto, y esa es la que
     // define qué abarca la operación.
     if (Array.isArray(canonico.platformIds)) idsVinculados = canonico.platformIds;
+
+    // Si el registro ya existía, el `$setOnInsert` no dejó nuestro lease.
+    //
+    // LA REGLA: el lease se toma sin disputarlo solo cuando hay PRUEBA de
+    // propiedad; si no, hay que ganárselo.
+    //
+    // Tomarlo siempre sin disputa era lo primero que probé y está mal: el
+    // perdedor del CAS podía escribir su token DESPUÉS del ganador, y entonces
+    // el ganador -- que sí aplicó todo -- no podía cerrar la operación. Quedaba
+    // `pending` estando completa, y el siguiente reintento la "reanudaba" en vez
+    // de reconocerla como ya hecha.
+    //
+    // Exigirlo siempre libre también está mal, y por el motivo opuesto: el lease
+    // de un proceso que se murió sigue vigente hasta que vence, así que una
+    // reanudación legítima quedaba esperando ese vencimiento para hacer algo
+    // que ya podía hacer.
+    //
+    // `reanudando` ES prueba de propiedad, y más fuerte que cualquier lease: el
+    // claim de `files` dice que esta operación es la dueña de la revisión
+    // vigente, y eso se escribió atómicamente con el CAS.
+    if (String(canonico.leaseOwner ?? '') !== leaseOwner) {
+      if (reanudando) {
+        await PlatformTransitionOpModel.updateOne(
+          { userId, operationId },
+          { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
+        );
+      } else {
+        // Sin prueba todavía: solo si nadie lo tiene vigente. No conseguirlo NO
+        // detiene la aplicación -- quién aplica lo decide el CAS, no el lease.
+        // Lo que sí implica es que esta entrega no va a poder cerrar la
+        // operación, y está bien: no es la dueña.
+        await PlatformTransitionOpModel.updateOne(
+          {
+            userId, operationId,
+            $or: [
+              { leaseOwner: { $exists: false } }, { leaseOwner: null },
+              { leaseUntil: { $exists: false } }, { leaseUntil: null },
+              { leaseUntil: { $lte: new Date() } },
+            ],
+          },
+          { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
+        );
+      }
+    }
   }
 
   // ── Claim atómico de la revisión (compare-and-swap) ─────────────────────
@@ -368,6 +433,16 @@ export async function applyPlatformTransition(
       return { ok: false, reason: 'conflict', fileId: String(file._id) };
     }
     versionResultante = ((claimed as any).platform_rev ?? {})[platform] ?? (revActual ?? 0) + 1;
+
+    // Ganar el CAS es LA prueba de propiedad. Acá el lease se toma sin
+    // disputarlo: quien perdió el CAS no tiene derecho a decidir cómo termina
+    // esta operación, tenga el token que tenga.
+    if (operationId) {
+      await PlatformTransitionOpModel.updateOne(
+        { userId, operationId },
+        { $set: { leaseOwner, leaseUntil: new Date(Date.now() + LEASE_REQUEST_MS) } },
+      );
+    }
 
     // Informativo. La señal autoritativa del claim es `platform_claim` en
     // FileModel, escrita atómicamente arriba; esto solo deja el resultado a mano
@@ -636,10 +711,22 @@ export async function applyPlatformTransition(
   // antes sería mentir: una caída en el medio la dejaría como hecha y nadie la
   // reanudaría.
   if (operationId) {
-    await PlatformTransitionOpModel.updateOne(
-      { userId, operationId },
-      { $set: { status: 'completed', completedAt: new Date(), resultVersion: versionResultante } },
+    // Fenced: cerrar exige seguir siendo el dueño. Si el lease venció y otro
+    // worker tomó la operación, esta escritura no matchea -- y está bien que no
+    // matchee: el dueño actual es quien tiene que decidir cómo termina.
+    const cerrada = await PlatformTransitionOpModel.updateOne(
+      { userId, operationId, leaseOwner },
+      {
+        $set: { status: 'completed', completedAt: new Date(), resultVersion: versionResultante },
+        $unset: { leaseOwner: '', leaseUntil: '' },
+      },
     );
+    if ((cerrada.matchedCount ?? 0) === 0) {
+      console.warn(
+        `[platform-transition] ${operationId}: se aplicó pero el lease ya no era nuestro. ` +
+        `La cierra quien la tenga ahora.`,
+      );
+    }
   }
 
   // Se relee en vez de devolver lo calculado: con escrituras atómicas, el
