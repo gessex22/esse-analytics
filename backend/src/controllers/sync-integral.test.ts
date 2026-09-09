@@ -2444,3 +2444,144 @@ test('P5 — re-publicar durante el tombstone no puede dejar la lápida puesta',
     'podía salvarlo era que el publish sellara `link_version` en el espejo.',
   );
 });
+
+
+// ===========================================================================
+// P6 — dos P0 que el caso anterior no alcanzaba a ver.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// P6-1 — coherencia de verdad: el estado y la revisión, del MISMO documento.
+//
+// El caso P5-3 solo comprobaba que la revisión no fuera la del OTRO archivo.
+// Eso deja pasar la mitad del problema: el estado se sigue tomando de
+// `centralByName` (que con nombres repetidos se queda con el último) y la
+// revisión de `centralById`. O sea que se puede servir el estado de B con la
+// revisión de A -- una pareja que nunca existió.
+//
+// Y es la pareja peligrosa: el cliente guarda la revisión correcta para SU
+// identidad, así que su próxima transición pasa el CAS sin problema... aplicada
+// sobre un estado que era de otro archivo.
+// ---------------------------------------------------------------------------
+test('P6 — el estado servido y su revisión salen del mismo documento', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // El documento central de ESTE archivo, con su estado y su revisión.
+  await central.FileModel.updateOne(
+    { userId: USER_ID, content_id: contentId },
+    { $set: { platforms: [PLATFORM], platform_rev: { [PLATFORM]: 3 } } },
+  );
+
+  // Y otro archivo distinto, mismo nombre, con OTRO estado y OTRA revisión.
+  // `centralByName` se queda con este.
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'video integral.mp4', file_path: 'D:/otra copia/video integral.mp4',
+    content_id: '11111111-2222-3333-4444-555555555555', status: 'PENDIENTE',
+    platforms: ['youtube'], platforms_discarded: ['tiktok'],
+    platform_states: [{ platform: 'youtube', state: 'confirmed' }],
+    platform_rev: { [PLATFORM]: 9, youtube: 4 },
+  });
+
+  const r = await dispatch(central.getBackupFiles, { query: { includeResolved: 'true' } });
+  const { files } = await r.json() as { files: any[] };
+  const fila = files.find(f => f.content_id === contentId);
+  assert.ok(fila, 'precondición: el archivo tiene que venir en la respuesta');
+
+  // Lo que se sirve tiene que describir a UN documento: el de este content_id.
+  assert.deepEqual(
+    [...(fila.platforms ?? [])].sort(), [PLATFORM],
+    'El estado servido es el del OTRO archivo que solo comparte el nombre. Con la revisión ' +
+    'tomada por content_id, la pareja estado+revisión que recibe el cliente nunca existió en ' +
+    'ningún documento.',
+  );
+  assert.deepEqual([...(fila.platforms_discarded ?? [])].sort(), []);
+  assert.equal((fila.platform_rev ?? {})[PLATFORM], 3,
+    'y la revisión tiene que ser la de ese mismo documento');
+});
+
+// ---------------------------------------------------------------------------
+// P6-2 — el publish tiene que usar LA revisión que ganó, no la que haya.
+//
+// `applyPlatformPublish` incrementa `platform_rev` y después la vuelve a LEER
+// en tres momentos distintos para sellar sus proyecciones. Entre el incremento
+// y esas lecturas cabe una transición posterior: el publish lee entonces la
+// revisión de ELLA y sella sus propios efectos -- más viejos -- como si fueran
+// de esa revisión.
+//
+// El resultado es lo peor de los dos mundos: los efectos del publish
+// sobreviven a una operación causalmente posterior, y encima quedan marcados
+// con su número, así que ningún guard puede distinguirlos después.
+// ---------------------------------------------------------------------------
+test('P6 — un publish no puede sellar sus efectos con la revisión de una transición posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // El badge se saca del documento central para que este publish CAMBIE el
+  // estado de verdad y por lo tanto mueva la revisión. Un publish que no cambia
+  // nada no incrementa, y sin incremento no tiene revisión propia que sellar
+  // -- el caso no probaría lo que dice.
+  await central.FileModel.updateOne(
+    { userId: USER_ID, content_id: contentId },
+    { $set: { platforms: [], platform_states: [] } },
+  );
+  const rev0 = await revisionDe(contentId);
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+
+  // La transición entra DESPUÉS de que el publish movió `files` y ANTES de que
+  // el publish escriba sus proyecciones.
+  let revTrasTransicion = -1;
+  // Se intercala en el `FileModel.updateOne` que va JUSTO DESPUÉS del $inc del
+  // publish. Ese es el punto: entre que el publish gana su revisión y que la
+  // usa. Intercalar más tarde (en la escritura de platformvideos, por ejemplo)
+  // no sirve -- para entonces el publish ya leyó todo lo que iba a leer, y el
+  // caso no distingue "usé la revisión que gané" de "la releí".
+  const espia = await conIntercaladoEn(central.FileModel, 'updateOne', async () => {
+    const revTrasPublish = await revisionDe(contentId);
+    assert.ok(revTrasPublish > rev0, 'precondición: el publish movió la revisión antes de ser interrumpido');
+    const r = await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink',
+      operationId: 'p6-transicion-posterior', baseVersion: revTrasPublish,
+    });
+    assert.ok(r.ok, 'precondición: la transición posterior tiene que aplicarse');
+    revTrasTransicion = await revisionDe(contentId);
+    assert.ok(revTrasTransicion > revTrasPublish, 'precondición: la transición movió la revisión');
+  });
+
+  try {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-09T13:00:00.000Z'),
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la transición se intercaló de verdad');
+
+  const foto = await fotoDelEstado(contentId);
+  assert.equal(
+    foto.platformVideo.linkedFileId, null,
+    'La desvinculación es causalmente POSTERIOR al publish y tiene que ganar. El publish releyó la ' +
+    'revisión después de que la transición la moviera, así que volvió a vincular sellándolo con el ' +
+    'número de ella.',
+  );
+  assert.equal(
+    foto.mirror?.link_state, 'unlinked',
+    'y el espejo tampoco: su upsert escribía `linked` sin comparar nada, así que el vínculo ' +
+    'resucitaba en todas las PCs en su próximo pull',
+  );
+  const pv = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  // El último sello que quedó tiene que ser el de la operación causalmente
+  // posterior. Si fuera el del publish, sus efectos habrían quedado escritos
+  // encima -- y con un número que ningún guard posterior podría distinguir.
+  assert.equal(
+    pv?.linkVersion, revTrasTransicion,
+    'el sello vigente tiene que ser el de la transición, que es la que ganó',
+  );
+});

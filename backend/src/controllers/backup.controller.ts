@@ -94,19 +94,25 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
     // de un content_id bajo el nombre de otro deja al cliente declarando la
     // `baseVersion` de un archivo que no es el suyo.
     //
-    // El nombre puede seguir siendo fallback para el resto del merge. Para la
-    // revisión, no: si no hay match por content_id, no va revisión.
+    // El nombre sigue siendo FALLBACK, pero solo para el estado y sin revisión.
+    // Tomar el estado por nombre y la revisión por content_id era peor que
+    // cualquiera de las dos cosas sola: entregaba una pareja estado+revisión
+    // que nunca existió en ningún documento, y encima la revisión era la
+    // correcta para la identidad del cliente, así que su próxima transición
+    // pasaba el CAS sin problema -- aplicada sobre el estado de otro archivo.
     const centralById = new Map(
       centralFiles.filter(f => f.content_id).map(f => [String(f.content_id), f]),
     );
-    const revisionDe = (contentId: unknown): Record<string, number> | undefined =>
-      (typeof contentId === 'string' && centralById.has(contentId))
-        ? (centralById.get(contentId) as any).platform_rev
-        : undefined;
     const backupNames = new Set(allFiles.map(f => f.file_name));
     const enriched = allFiles.map(f => {
       const current = (f.platforms?.length ?? 0) + (f.platforms_discarded?.length ?? 0);
-      const central = centralByName.get(f.file_name);
+      // Primero por content_id, que es la identidad. El nombre solo cuando no
+      // hay match por identidad -- y en ese caso lo que se sirva NO lleva
+      // revisión, porque describe a un documento que no es este.
+      const porId = (typeof f.content_id === 'string') ? centralById.get(f.content_id) : undefined;
+      const central = porId ?? centralByName.get(f.file_name);
+      const mismoDocumento = !!porId;
+      const revisionDelDocumento = mismoDocumento ? (porId as any).platform_rev : undefined;
       // BUG-2026-08-15-03: platform_states vive solo en FileModel (central) --
       // BackupFileModel (de donde sale `f`) nunca tuvo el concepto de
       // confirmed/badge_only, así que siempre hay que traerlo de acá cuando
@@ -130,7 +136,7 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) {
         // Coinciden, así que lo que se sirve describe también al documento
         // central: su revisión es la que corresponde a este estado.
-        return { ...f, platform_states, platform_rev: revisionDe(f.content_id) };
+        return { ...f, platform_states, platform_rev: revisionDelDocumento };
       }
       // El pull del cliente compara local_updated_at antes de aplicar el
       // badge. Si devolvemos la marca vieja de BackupFileModel, Electron
@@ -141,8 +147,8 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         platforms_discarded: central.platforms_discarded ?? f.platforms_discarded,
         platform_states,
         // El estado servido es el del documento central: su revisión también,
-        // pero solo si ese documento es el de ESTE content_id (ver centralById).
-        platform_rev: revisionDe(f.content_id),
+        // pero solo si ese documento es el de ESTE content_id (ver arriba).
+        platform_rev: revisionDelDocumento,
         local_updated_at: (central as any).updatedAt ?? f.local_updated_at,
       };
     });
@@ -933,6 +939,10 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
 // badge en FileModel.platforms (eso sí llega al PC vía pullFromCloud), pero el link
 // real nunca aparecía ahí: el PC solo consulta backup_platform_videos. Usado por
 // recordUploadEvent y por los uploadToX de youtube/instagram/tiktok-upload.controller.
+// NOTA: el upsert de acá abajo va guardado por `link_version` cuando el caller
+// declara una. Sin eso, un publish rezagado escribía `link_state: 'linked'`
+// sobre el tombstone que una transición POSTERIOR acababa de dejar, y el
+// vínculo resucitaba en todas las PCs en su próximo pull.
 export async function mirrorPlatformVideoToBackup(userId: string, data: {
   platform: string;
   platformId: string | null | undefined;
@@ -949,8 +959,14 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   linkVersion?: number;
 }): Promise<void> {
   if (!data.platformId) return;
-  await BackupPlatformVideoModel.updateOne(
-    { userId, platform: data.platform, platform_id: data.platformId },
+  try {
+    await BackupPlatformVideoModel.updateOne(
+    {
+      userId, platform: data.platform, platform_id: data.platformId,
+      ...(typeof data.linkVersion === 'number'
+        ? { $or: [{ link_version: { $exists: false } }, { link_version: { $lte: data.linkVersion } }] }
+        : {}),
+    },
     {
       $set: {
         userId, platform: data.platform, platform_id: data.platformId,
@@ -979,7 +995,11 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
       },
     },
     { upsert: true },
-  );
+    );
+  } catch (err: any) {
+    // Ídem: hay una fila más nueva para ese platformId.
+    if (err?.code !== 11000) throw err;
+  }
 }
 
 // Actualiza platform_config (la colección que lee getCalendarConfig, ver
@@ -1260,6 +1280,20 @@ export async function applyPlatformPublish(userId: string, data: {
 
   let linkedFileId: any = null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
+  /**
+   * La revisión de esta plataforma que ESTE publish produjo.
+   *
+   * Se captura del propio `$inc`, no se relee. Releerla -- que es lo que se
+   * hacía, en tres momentos distintos -- deja una ventana en la que una
+   * transición posterior mueve la revisión y este publish la lee como si fuera
+   * suya: termina sellando sus efectos, más viejos, con el número de ella. Lo
+   * peor de los dos mundos, porque después ningún guard puede distinguirlos.
+   *
+   * `undefined` = este publish no cambió el estado de la plataforma (no hubo
+   * `$inc`); en ese caso no sella nada, que es lo correcto: no tiene una
+   * revisión propia que ofrecer.
+   */
+  let revGanada: number | undefined;
   if (fileName) {
     const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId: data.remoteLibraryVideoId });
     if (file) {
@@ -1284,7 +1318,7 @@ export async function applyPlatformPublish(userId: string, data: {
         // `$pull` + `$addToSet` en dos pasos porque no se puede hacer las dos
         // cosas sobre el mismo campo en una sola actualización. Cada paso toca
         // únicamente la entrada de ESTA plataforma.
-        await FileModel.updateOne(
+        const tras = await FileModel.findOneAndUpdate(
           { _id: file._id },
           {
             $addToSet: { platforms: platform },
@@ -1310,7 +1344,10 @@ export async function applyPlatformPublish(userId: string, data: {
             // atómico y no toca las otras plataformas.
             $inc: { [`platform_rev.${platform}`]: 1 },
           },
-        );
+          { new: true, projection: { platform_rev: 1 } },
+        ).lean();
+        // `new: true` para quedarse con LA revisión que produjo este $inc.
+        revGanada = ((tras?.platform_rev ?? {}) as Record<string, number>)[platform];
         await FileModel.updateOne(
           { _id: file._id },
           { $addToSet: { platform_states: { platform, state: 'confirmed' } } },
@@ -1363,7 +1400,7 @@ export async function applyPlatformPublish(userId: string, data: {
       // un reintento del MISMO platformId no debe mover el reloj, porque eso
       // haría parecer rezagada a una operación posterior legítima.
       if ((desvinculados.modifiedCount ?? 0) > 0) {
-        await FileModel.updateOne(
+        const trasRelink = await FileModel.findOneAndUpdate(
           { _id: linkedFileId },
           {
             $set: {
@@ -1372,7 +1409,9 @@ export async function applyPlatformPublish(userId: string, data: {
             },
             $inc: { [`platform_rev.${platform}`]: 1 },
           },
-        );
+          { new: true, projection: { platform_rev: 1 } },
+        ).lean();
+        revGanada = ((trasRelink?.platform_rev ?? {}) as Record<string, number>)[platform];
       }
     }
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
@@ -1383,15 +1422,25 @@ export async function applyPlatformPublish(userId: string, data: {
     // siguiente llamada la vuelva a pisar con `new Date()`. Bug real: BUG-2026-08-15-06,
     // "clip - enemigos tiene.mp4" corregido a mano y vuelto a aparecer como
     // "recién publicado" horas después por un reintento con el mismo platformId.
-    // La revisión vigente DESPUÉS de los incrementos de arriba. Es lo que sella
-    // este vínculo: una transición que reclamó una revisión anterior tiene que
-    // poder ver que el vínculo que encuentra ya no es el que ella vio.
-    const revDelVinculo = linkedFileId
-      ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
-      : undefined;
+    const revDelVinculo = revGanada;
 
-    await PlatformVideoModel.updateOne(
-      { userId, platform, platformId },
+    // El sello del propio documento decide si esta escritura todavía vale.
+    //
+    // Capturar la revisión del `$inc` evita sellar con un número ajeno, pero no
+    // alcanza para no ESCRIBIR: una comprobación previa no ve a la operación
+    // que entra mientras la escritura está en vuelo. Guardando el update contra
+    // `linkVersion`, si una transición posterior ya dejó su número acá, este
+    // publish no matchea -- y el upsert choca contra el índice único, que es la
+    // prueba de que hay algo más nuevo que no hay que tocar (mismo criterio que
+    // el upsert del tombstone en platform-transition.service.ts).
+    try {
+      await PlatformVideoModel.updateOne(
+      {
+        userId, platform, platformId,
+        ...(revGanada !== undefined
+          ? { $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: revGanada } }] }
+          : {}),
+      },
       {
         $set: {
           userId, platform, platformId,
@@ -1405,12 +1454,15 @@ export async function applyPlatformPublish(userId: string, data: {
         $setOnInsert: { publishedAt: publishedAtDate },
       },
       { upsert: true },
-    );
+      );
+    } catch (err: any) {
+      // 11000 = ya hay una fila para ese platformId con una revisión posterior.
+      // Se la deja como está, a propósito.
+      if (err?.code !== 11000) throw err;
+    }
   }
 
-  const revParaEspejoBackup = linkedFileId
-    ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
-    : undefined;
+  const revParaEspejoBackup = revGanada;
 
   // Y la misma revisión en `backup_files`. Es la proyección que el publish
   // NUNCA tocó -- su badge lo mantiene el push del escritorio -- y por eso su
@@ -1487,9 +1539,7 @@ export async function applyPlatformPublish(userId: string, data: {
         // que quedó en FileModel. Es lo que permite que una transición vieja
         // (que reclamó una revisión anterior) no pueda pisar acá la publicación
         // que acaba de entrar: su guard compara contra este sello.
-        const revTrasPublish = linkedFileId
-          ? (((await FileModel.findById(linkedFileId).select('platform_rev').lean())?.platform_rev ?? {}) as Record<string, number>)[platform]
-          : undefined;
+        const revTrasPublish = revGanada;
         await RemoteLibraryVideoModel.updateOne(
           { _id: remote._id },
           {
