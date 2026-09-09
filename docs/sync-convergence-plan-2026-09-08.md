@@ -429,10 +429,77 @@ alcanzan para un push completo contra Mongo real -- declaraba "no terminó
 nunca" algo que solo estaba tardando. Ahora cede tiempo real, con presupuesto
 acotado para que un cuelgue de verdad siga siendo un error.
 
+---
+
+## Entrega 2b — cerrar la outbox de verdad (8 casos nuevos)
+
+La revisión independiente encontró que la outbox mejoraba el sistema pero
+todavía no era una outbox transaccional, y que el commit anterior no había
+tocado el servicio central. Ocho casos nuevos, rojos primero.
+
+### Cuatro huecos del servicio central
+
+| Hueco | Qué pasaba | Cómo se cerró |
+|---|---|---|
+| Claim viejo tras un publish | `applyPlatformPublish` mueve la revisión y no borra `platform_claim`. Una entrega atrasada se reconocía como reanudación, y reanudar SALTEA `baseVersion` y el CAS: se aplicaba sobre la revisión nueva y destruía la publicación | El claim guarda `{ op, rev }`. Si la revisión se movió, caduca solo -- ningún otro escritor tiene que acordarse de limpiarlo, que es lo que no se puede garantizar con 7 escritores |
+| `platformIds: []` recalculado | Un alcance legítimamente vacío se leía como "todavía no se calculó" y se recalculaba al reanudar, llevándose puesto lo aparecido mientras tanto | Se pregunta si el alcance ESTÁ (`Array.isArray`), no si tiene elementos |
+| Upsert del tombstone sin guard | El `updateMany` comparaba `link_version`; el `updateOne` con upsert que sigue no comparaba nada y pisaba re-vínculos más nuevos | El guard va también en el filtro del upsert; el `E11000` resultante es la prueba de que hay una fila más nueva que no hay que tocar |
+| `200 deduplicated` prematuro | El claim se escribe al RECLAMAR, no al terminar. La gemela podía estar a mitad de las proyecciones y el cliente daba la fila por entregada | "Deduplicada" exige `status === 'completed'`. Mientras no terminó: **202 `in_progress`** |
+
+### Y tres propiedades que faltaban del lado del cliente
+
+- **Transacción SQLite.** Soltar el vínculo, sacar el badge y encolar la
+  intención son el mismo hecho. Estaban en tres escrituras sueltas, la tercera
+  desde otra función: una caída en el medio dejaba justo lo que la outbox venía
+  a eliminar. Ahora van en una `db.transaction()`, y la entrega arranca después
+  del commit. Si no se puede encolar, no se aplica nada y el cliente recibe 500.
+- **Estado y revisión observados juntos.** El pull traía los archivos y después,
+  en otra llamada, las revisiones. Entre las dos respuestas cabía una
+  publicación: la PC se quedaba con el estado de ANTES y la revisión de DESPUÉS,
+  que es peor que estar desactualizado -- una desvinculación decidida sobre lo
+  viejo salía declarando la revisión nueva y la central la ACEPTABA. Ahora
+  `platform_rev` viaja dentro de `GET /api/backup/files`, y solo se adjunta
+  cuando el estado servido sale del mismo documento que la revisión. El endpoint
+  `GET /api/sync/platform-revisions` se **retiró**: era el que abría la ventana,
+  y dejarlo disponible es dejar el error a mano.
+- **Validación estricta de la respuesta.** `res.ok` cubre todo el rango 2xx, y
+  ahí conviven "terminé", "la recibí" y contratos futuros. Ahora solo un 200 con
+  `version` numérica cuenta como entrega; 202, otros 2xx y cuerpos que no se
+  entienden siguen pendientes.
+
+### Los 8 casos
+
+| Caso | Qué afirma |
+|---|---|
+| P1-1 | Un claim viejo no se reanuda después de que otro escritor movió la revisión |
+| P1-2 | Un alcance vacío no se recalcula al reanudar |
+| P1-3 | El upsert del tombstone no pisa un link con revisión posterior |
+| P1-4 | Una gemela no se declara deduplicada mientras la otra sigue aplicando |
+| P2 | Si no se puede encolar, el cambio local tampoco se aplica |
+| P3 | Una publicación llegada entre el estado y su revisión no puede ser destruida |
+| P4-a | Un 202 deja la intención pendiente |
+| P4-b | Un 200 sin revisión tampoco cuenta como entregado |
+
+P0-9 se reescribió: con "deduplicada solo si terminó", la perdedora puede
+responder 200 o 202 según cuándo termine la ganadora. Antes exigía `[200, 200]`,
+que había pasado a depender del tiempo. Ahora exige que ninguna dé 409, que la
+respuesta sea una de las dos legítimas, y que **reintentar converja** a
+200 + `deduplicated`.
+
+### Verificación
+
+39 tests en verde (34 integrales + 5 de convergencia), 0 skips, exit 0 contra
+Mongo real. Las **14 mutaciones** (6 de la ronda anterior + 8 de esta) rompen
+cada una su caso. `tsc` backend 22 / local-backend 46 (bajó de 47: la llamada
+vieja a `reportUnlinkPlatform` arrastraba un error de tipos que ya no existe).
+local-backend 2/2.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android
-  siguen usando el `DELETE` viejo, sin `operationId` ni `baseVersion`.
+  siguen usando el `DELETE` viejo, sin `operationId` ni `baseVersion`. No se
+  migran todavía a propósito: hacerlo sobre el contrato anterior solo habría
+  multiplicado las operaciones expuestas a estas mismas ventanas.
 - Sigue faltando la **outbox central** (paso 9): reparación de escrituras
   parciales del lado del servidor.
 - Siguen faltando los **5 callers** del paso 1.3.

@@ -99,6 +99,14 @@ interface Router {
   cortar: ((method: string, path: string) => ModoDeCorte | null) | null;
   /** Milisegundos de demora para esa llamada. Sirve para dejar algo EN VUELO. */
   demorar: ((method: string, path: string) => number) | null;
+  /**
+   * Corre DESPUÉS de que la central calculó la respuesta y ANTES de que el
+   * cliente la reciba. Es la ventana en la que el mundo cambia mientras una
+   * respuesta viaja: lo que el cliente está por leer ya es pasado.
+   */
+  tras: ((method: string, path: string) => Promise<void> | void) | null;
+  /** Responde en lugar de la central. Para probar respuestas que todavía no emite. */
+  responder: ((method: string, path: string) => Response | null) | null;
   /** Rutas sin handler ni ignorar explícito. Debe quedar vacío. */
   unknown: string[];
   /** Espera a que no quede ningún fetch en vuelo (incluye los de setImmediate). */
@@ -111,7 +119,7 @@ function routeToCentral(): Router {
   const calls: string[] = [];
   const unknown: string[] = [];
   let pending = 0;
-  const router: Partial<Router> = { cortar: null, demorar: null };
+  const router: Partial<Router> = { cortar: null, demorar: null, tras: null, responder: null };
 
   globalThis.fetch = (async (input: any, init?: any) => {
     pending++;
@@ -131,17 +139,21 @@ function routeToCentral(): Router {
       const demora = router.demorar ? router.demorar(method, p) : 0;
       if (demora > 0) await new Promise(r => setTimeout(r, demora));
 
+      const propia = router.responder ? router.responder(method, p) : null;
+      if (propia) return propia;
+
       if (method === 'POST' && p === '/api/backup/files/bulk') return await dispatch(central.bulkUpsertBackupFiles, { body });
-      if (method === 'GET' && p === '/api/backup/files') return await dispatch(central.getBackupFiles, { query });
+      if (method === 'GET' && p === '/api/backup/files') {
+        const r = await dispatch(central.getBackupFiles, { query });
+        if (router.tras) await router.tras(method, p);
+        return r;
+      }
       if (method === 'POST' && p === '/api/backup/platform-videos/bulk') return await dispatch(central.bulkUpsertBackupPlatformVideos, { body });
       if (method === 'GET' && p === '/api/backup/platform-videos') return await dispatch(central.getBackupPlatformVideos, {});
       if (method === 'GET' && p === '/api/backup/config') return await dispatch(central.getBackupConfig, {});
       if (method === 'POST' && p === '/api/backup/config') return await dispatch(central.upsertBackupConfig, { body });
       if (method === 'POST' && (p === '/api/sync/history' || p === '/api/sync/record-publish')) {
         return await dispatch(central.recordUploadEvent, { body });
-      }
-      if (method === 'GET' && p === '/api/sync/platform-revisions') {
-        return await dispatch(central.getPlatformRevisions, {});
       }
       if (method === 'POST' && p === '/api/sync/platform-transition') {
         const r = await dispatch(central.applyPlatformTransitionEndpoint, { body });
@@ -1296,15 +1308,31 @@ test('P0 — dos entregas simultáneas idénticas responden ambas OK, ninguna co
 
   const [a, b] = await Promise.all([postTransicion(payload), postTransicion(payload)]);
 
-  assert.deepEqual(
-    [a.status, b.status], [200, 200],
-    'Las dos entregas de la MISMA operación tienen que responder OK. Un 409 significa "tu operación ' +
-    'quedó vieja", que es otra cosa: una outbox que lo lea puede creer que se perdió y armar una nueva.',
-  );
+  // Ninguna puede leer "tu operación quedó vieja": es la MISMA operación. Una
+  // outbox que lea 409 puede creer que se perdió y armar una nueva.
+  assert.ok(![a.status, b.status].includes(409), 'ninguna de las dos entregas puede dar conflicto');
+
+  // Las dos respuestas legítimas son distintas y las dos son honestas:
+  //   200 + deduplicated = la gemela YA terminó de aplicar.
+  //   202 in_progress    = la gemela ganó el CAS y sigue aplicando.
+  // Cuál de las dos toca depende de cuándo termine la ganadora, así que no se
+  // fija una; lo que SÍ se exige es que sea una de esas dos, y que reintentar
+  // converja. Ver el caso P1 de "deduplicada mientras la otra sigue aplicando":
+  // responder 200 en la ventana de la segunda es lo que hacía que el cliente
+  // diera por entregados efectos incompletos.
+  for (const r of [a, b]) {
+    assert.ok(r.status === 200 || r.status === 202, `respuesta inesperada: ${r.status}`);
+    if (r.status === 202) assert.equal(r.body?.reason, 'in_progress');
+  }
   assert.ok(
-    [a.body?.deduplicated, b.body?.deduplicated].includes(true),
-    'y una de las dos tiene que declararse deduplicada',
+    [a.body?.deduplicated, b.body?.deduplicated].includes(true) || [a.status, b.status].includes(202),
+    'una de las dos tiene que declararse deduplicada o en curso',
   );
+
+  // Y una vez terminada, reintentar la misma operación converge a 200 + dedup.
+  const reintento = await postTransicion(payload);
+  assert.equal(reintento.status, 200);
+  assert.equal(reintento.body?.deduplicated, true);
   assert.equal(await revisionDe(contentId), rev0 + 1, 'los efectos se aplican una sola vez');
 });
 
@@ -1687,6 +1715,442 @@ test('OUTBOX — un flush ya en vuelo no hace que la desvinculación se reporte 
 
     const foto = await fotoDelEstado(contentId);
     assert.ok(!foto.files.platforms.includes(PLATFORM), 'la central tenía que quedar desvinculada');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+
+// ===========================================================================
+// P1 — cuatro huecos del servicio central que sobrevivieron a las dos rondas
+// anteriores. Rojos primero, como todo lo demás.
+// ===========================================================================
+
+/** Deja el estado "una operación reclamó y se cayó antes de terminar". */
+async function reclamarYCaerse(contentId: string, op: string, baseVersion: number, action = 'unlink') {
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  const original = central.BackupFileModel.updateOne.bind(central.BackupFileModel);
+  let rota = false;
+  (central.BackupFileModel as any).updateOne = (...args: any[]) => {
+    if (!rota) { rota = true; throw new Error('caída simulada después del CAS'); }
+    return original(...args);
+  };
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: action as any, operationId: op, baseVersion,
+    });
+    assert.fail('la caída simulada tenía que interrumpir la operación');
+  } catch (err: any) {
+    if (!/caída simulada/.test(err.message)) throw err;
+  } finally {
+    (central.BackupFileModel as any).updateOne = original;
+  }
+  const registro = await registroDe(op);
+  assert.equal(registro?.status, 'pending', 'precondición: la operación quedó a medias');
+}
+
+// ---------------------------------------------------------------------------
+// P1-1 — un claim que quedó de una operación anterior no puede sobrevivir a
+// que OTRO escritor mueva la revisión.
+//
+// `platform_claim` se escribe junto al CAS, y eso resolvió el problema de
+// reconocer una reanudación. Pero nadie lo BORRA: `applyPlatformPublish`
+// incrementa `platform_rev` y deja el claim viejo intacto. Una entrega
+// atrasada de esa operación se reconoce entonces como "reanudando", y reanudar
+// SALTEA la comprobación de `baseVersion` y el CAS -- así que se aplica sobre
+// la revisión nueva, destruyendo la publicación que entró en el medio.
+//
+// El claim no puede ser solo un nombre: tiene que decir QUÉ revisión reclamó.
+// Si la revisión se movió, el claim ya no describe el presente.
+// ---------------------------------------------------------------------------
+test('P1 — un claim viejo no puede reanudarse después de que otro escritor movió la revisión', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p1-claim-viejo-tras-publish';
+
+  await reclamarYCaerse(contentId, op, rev0);
+
+  // Entra una publicación nueva en esa misma plataforma. Mueve la revisión y
+  // deja el badge puesto otra vez.
+  const NUEVO_ID = '17666666666666666';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId, platform: PLATFORM, platformId: NUEVO_ID,
+    platformUrl: 'https://www.instagram.com/reel/DDDDDDDDDDD/',
+    fileName: 'video integral.mp4', matchStatus: 'manual',
+    publishedAt: new Date('2026-09-08T12:00:00.000Z'),
+  });
+  const revTrasPublicar = await revisionDe(contentId);
+  assert.ok(revTrasPublicar > rev0 + 1, 'precondición: la publicación movió la revisión');
+
+  // Y recién ahí llega la entrega atrasada de la operación cortada.
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0,
+  });
+
+  const foto = await fotoDelEstado(contentId);
+  assert.ok(
+    foto.files.platforms.includes(PLATFORM),
+    'La publicación nueva fue destruida por una operación que había reclamado una revisión anterior. ' +
+    'El claim quedó vivo después de que applyPlatformPublish moviera la revisión, así que la entrega ' +
+    'atrasada se creyó una reanudación y se saltó la comprobación de baseVersion.',
+  );
+  assert.equal(r.status, 409, 'la operación quedó atrasada: tiene que rechazarse, no reanudarse');
+  assert.equal(await revisionDe(contentId), revTrasPublicar, 'y no puede mover la revisión');
+});
+
+// ---------------------------------------------------------------------------
+// P1-2 — un alcance VACÍO es un alcance, no un "todavía no se calculó".
+//
+// El alcance se congela con la operación justamente para que una publicación
+// posterior no entre en él. Pero la reanudación lo lee como
+// `platformIds?.length > 0 ? guardado : recalcular` -- así que una operación
+// cuyo alcance era legítimamente vacío (badge sin link, el caso de un video
+// marcado a mano) vuelve a calcularlo al reanudar, y se lleva puesto lo que
+// haya aparecido mientras tanto.
+//
+// La publicación acá NO pasa por el escritor único: entra por
+// `PlatformVideoModel` directo, como todavía hacen los 5 callers sin migrar.
+// Por eso no mueve la revisión y el guard de revisión no la protege -- el
+// alcance es lo único que puede.
+// ---------------------------------------------------------------------------
+test('P1 — un alcance vacío no se recalcula al reanudar', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+
+  // Se deja el archivo con el badge pero SIN vínculo: alcance vacío.
+  await central.PlatformVideoModel.deleteMany({ userId: USER_ID, platform: PLATFORM });
+  const rev0 = await revisionDe(contentId);
+  const op = 'p1-alcance-vacio';
+
+  await reclamarYCaerse(contentId, op, rev0);
+  const registro = await registroDe(op);
+  assert.deepEqual(registro?.platformIds ?? [], [], 'precondición: el alcance guardado está vacío');
+
+  // Aparece un vínculo nuevo por un camino que no mueve la revisión.
+  const file = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const NUEVO_ID = '17555555555555555';
+  await central.PlatformVideoModel.create({
+    userId: USER_ID, platform: PLATFORM, platformId: NUEVO_ID,
+    platformUrl: 'https://www.instagram.com/reel/EEEEEEEEEEE/',
+    linkedFileId: file._id, matchStatus: 'manual',
+    publishedAt: new Date('2026-09-08T12:00:00.000Z'),
+  });
+
+  // Se reanuda la operación cortada.
+  await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0,
+  });
+
+  const pv = await central.PlatformVideoModel.findOne({ userId: USER_ID, platformId: NUEVO_ID }).lean();
+  assert.ok(
+    pv?.linkedFileId,
+    'El vínculo nuevo fue soltado por una operación cuyo alcance era vacío. Al reanudar, el alcance ' +
+    'guardado ([]) se leyó como "no hay alcance" y se recalculó contra la base, incluyendo algo que ' +
+    'la operación nunca había visto.',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P1-3 — el tombstone tampoco puede pisar una revisión posterior.
+//
+// El `updateMany` de tombstones sí compara `link_version`. El `updateOne` con
+// upsert que viene justo después -- el que crea la lápida cuando la fila del
+// espejo no existía -- no compara nada: escribe `link_state: 'unlinked'` y su
+// propia `link_version` sobre lo que haya. Una transición vieja borra así un
+// re-vínculo más nuevo que ya había llegado.
+// ---------------------------------------------------------------------------
+test('P1 — el upsert del tombstone no puede pisar un link con revisión posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+
+  // Otro dispositivo ya re-vinculó ese platformId, y su escritura -- con una
+  // revisión muy posterior -- ya está en el espejo.
+  await central.BackupPlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID },
+    { $set: { link_state: 'linked', link_updated_at: new Date('2026-09-08T20:00:00.000Z'), link_version: 99 } },
+  );
+
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  await applyPlatformTransition(USER_ID, {
+    contentId, platform: PLATFORM as any, action: 'unlink',
+    operationId: 'p1-tombstone-sin-guard', baseVersion: rev0,
+  });
+
+  const mirror = await central.BackupPlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID }).lean();
+
+  assert.equal(
+    mirror?.link_state, 'linked',
+    'El tombstone pisó un re-vínculo posterior. El updateMany compara link_version pero el upsert ' +
+    'que viene después no compara nada, así que escribe igual.',
+  );
+  assert.equal(mirror?.link_version, 99, 'y no puede bajarle la revisión');
+});
+
+// ---------------------------------------------------------------------------
+// P1-4 — "deduplicada" no puede significar "todavía se está aplicando".
+//
+// Cuando una entrega gemela pierde el CAS, hoy alcanza con que el claim lleve
+// su operationId para responder 200 + deduplicated. Pero el claim se escribe al
+// RECLAMAR, no al terminar: la gemela puede estar todavía a mitad de las
+// proyecciones, o haberse caído ahí. El cliente lee 200, marca la fila como
+// entregada y deja de reintentar -- sobre efectos que no están completos.
+//
+// Deduplicada tiene que significar "ya terminó". Mientras no terminó, la
+// respuesta correcta es "todavía no, volvé a intentar" (202), que la outbox
+// tiene que dejar pendiente.
+// ---------------------------------------------------------------------------
+test('P1 — una entrega gemela no puede declararse deduplicada mientras la otra sigue aplicando', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const op = 'p1-dedup-antes-de-completar';
+  const payload = { contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0 };
+
+  // La que gane el CAS se queda frenada en su primera proyección. Durante esa
+  // pausa, la que perdió ya respondió: es exactamente la ventana del caso.
+  let enPausa = false;
+  let yaPausada = false;
+  const original = central.BackupFileModel.updateOne.bind(central.BackupFileModel);
+  (central.BackupFileModel as any).updateOne = async (...args: any[]) => {
+    if (!yaPausada) {
+      yaPausada = true;
+      enPausa = true;
+      await new Promise(r => setTimeout(r, 300));
+      enPausa = false;
+    }
+    return original(...args);
+  };
+
+  let perdedora: any;
+  try {
+    const [a, b] = await Promise.all([postTransicion(payload), postTransicion(payload)]);
+    // La perdedora es la que no aplicó: la que declara deduplicated, o la que
+    // no devolvió 200.
+    perdedora = (a.body?.deduplicated || a.status !== 200) ? a : b;
+    assert.ok(yaPausada, 'precondición: alguna llegó a las proyecciones');
+  } finally {
+    (central.BackupFileModel as any).updateOne = original;
+  }
+
+  assert.notEqual(
+    perdedora.status, 200,
+    'La gemela respondió 200 mientras la otra seguía a mitad de las proyecciones. El cliente marca ' +
+    'la fila como entregada y deja de reintentar sobre efectos incompletos. Mientras no terminó, la ' +
+    'respuesta correcta es 202 (todavía no, reintentá).',
+  );
+  assert.equal(perdedora.status, 202, 'y ese "todavía no" tiene que ser distinguible de un conflicto');
+  assert.equal(perdedora.body?.reason, 'in_progress');
+});
+
+
+// ---------------------------------------------------------------------------
+// P2 — la mutación local y el encolado son UNA sola escritura.
+//
+// Hoy `setPlatformLink` suelta el vínculo, saca el badge y RECIÉN DESPUÉS -- ya
+// fuera de esa función, dentro de `reportUnlinkPlatform` -- encola la intención.
+// Son tres escrituras a SQLite sin nada que las una. Una caída entre la segunda
+// y la tercera deja exactamente el estado que la outbox venía a eliminar: lo
+// local cambiado, la central sin enterarse, y nada encolado que lo reintente.
+//
+// La outbox no vale por guardar la intención, sino por guardarla en la misma
+// transacción que el cambio que la origina. O están las tres, o no está ninguna.
+// ---------------------------------------------------------------------------
+test('P2 — si no se puede encolar la intención, el cambio local tampoco se aplica', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    const { transitionOutboxRepo } = await import('../../../local-backend/src/db/transition-outbox.repo');
+    const { setPlatformLink } = await import('../../../local-backend/src/controllers/video.controller');
+    const originalEnqueue = transitionOutboxRepo.enqueue;
+    (transitionOutboxRepo as any).enqueue = () => { throw new Error('caída simulada al encolar'); };
+
+    const { res, captured } = fakeRes();
+    try {
+      await setPlatformLink(
+        { params: { fileId: String(local.id), platform: PLATFORM }, body: { url: '' }, headers: { authorization: AUTH } } as any,
+        res as any,
+      );
+    } catch { /* que reviente o que devuelva 500: lo que importa es qué quedó escrito */ }
+    finally {
+      (transitionOutboxRepo as any).enqueue = originalEnqueue;
+    }
+    await router.waitIdle();
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(
+      foto.sqlite.link,
+      'El vínculo local se soltó aunque la intención no se pudo encolar. Quedó el estado que la ' +
+      'outbox venía a eliminar: lo local cambiado y nada que lo propague nunca.',
+    );
+    assert.ok(foto.sqlite.platforms.includes(PLATFORM), 'y el badge tampoco se puede haber ido');
+    assert.deepEqual(await pendientesEnOutbox(contentId), [], 'no quedó nada encolado, que es la premisa');
+
+    assert.notEqual(captured.status, 200,
+      'y el cliente no puede recibir un OK por algo que no se aplicó');
+  } finally {
+    router.restore();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// P3 — el estado y su revisión tienen que observarse JUNTOS.
+//
+// El pull traía primero los archivos y después, en otra llamada, las
+// revisiones. Entre las dos respuestas cabe una publicación: la PC se queda con
+// el estado de ANTES y la revisión de DESPUÉS.
+//
+// Esa combinación es peor que estar simplemente desactualizado. Una
+// desvinculación decidida sobre el estado viejo sale declarando la revisión
+// nueva, y la central la ACEPTA -- porque la revisión coincide. La protección
+// causal entera se apoya en que `baseVersion` describa lo que el usuario vio, y
+// acá describe otra cosa.
+//
+// Un cliente atrasado tiene que fallar con 409, no acertarle por casualidad.
+// ---------------------------------------------------------------------------
+test('P3 — una publicación llegada entre el estado y su revisión no puede ser destruida', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    // La publicación entra JUSTO DESPUÉS de que la central calculó la respuesta
+    // de archivos. Todo lo que el cliente pida a partir de ahí ya la incluye.
+    const NUEVO_ID = '17444444444444444';
+    let publicado = false;
+    router.tras = async () => {
+      if (publicado) return;
+      publicado = true;
+      await central.applyPlatformPublish(USER_ID, {
+        contentId, platform: PLATFORM, platformId: NUEVO_ID,
+        platformUrl: 'https://www.instagram.com/reel/FFFFFFFFFFF/',
+        fileName: 'video integral.mp4', matchStatus: 'manual',
+        publishedAt: new Date('2026-09-08T15:00:00.000Z'),
+      });
+    };
+
+    await cicloSync();
+    await router.waitIdle();
+    router.tras = null;
+    assert.ok(publicado, 'precondición: la publicación se intercaló de verdad');
+
+    const revReal = await revisionDe(contentId);
+    const { platformRevisionRepo } = await import('../../../local-backend/src/db/platform-revision.repo');
+    assert.notEqual(
+      platformRevisionRepo.get(contentId, PLATFORM), revReal,
+      'La PC se quedó con la revisión POSTERIOR a la publicación mientras su estado es el ANTERIOR. ' +
+      'Estado y revisión se observaron en dos respuestas distintas, con una publicación en el medio.',
+    );
+
+    // Y la consecuencia: el usuario desvincula mirando el estado viejo.
+    await unlinkDesdeElectron(local.id, router);
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(
+      foto.files.platforms.includes(PLATFORM),
+      'La publicación que esta PC nunca vio fue destruida por una desvinculación que declaró una ' +
+      'revisión que sí la incluía.',
+    );
+    const pv = await central.PlatformVideoModel.findOne({ userId: USER_ID, platformId: NUEVO_ID }).lean();
+    assert.ok(pv?.linkedFileId, 'y el vínculo nuevo tenía que sobrevivir');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// P4 — no todo 2xx es "entregado".
+//
+// El flush marcaba la fila como entregada con cualquier `res.ok`. Eso confunde
+// dos cosas distintas: "la central recibió esto" y "la central TERMINÓ de
+// aplicarlo". Un 202 dice explícitamente la primera y no la segunda -- y desde
+// el arreglo de las entregas gemelas, la central lo emite de verdad.
+//
+// Lo mismo vale para un 200 sin `version`: sin ese número el cliente no puede
+// actualizar la revisión conocida, así que su próxima transición saldría con
+// una base vencida. Dar por entregada una respuesta que no se entiende es
+// perder la intención igual que perderla en la red, solo que en silencio.
+// ---------------------------------------------------------------------------
+test('P4 — un 202 deja la intención pendiente, no entregada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.responder = (m, p) => (p === '/api/sync/platform-transition'
+      ? new Response(JSON.stringify({ reason: 'in_progress' }), {
+          status: 202, headers: { 'Content-Type': 'application/json' },
+        })
+      : null);
+
+    await unlinkDesdeElectron(local.id, router);
+
+    const fila = (await pendientesEnOutbox(contentId))[0];
+    assert.ok(fila, 'la intención tenía que quedar encolada');
+    assert.equal(
+      fila.status, 'pending',
+      'Un 202 dice "la recibí, todavía no terminó". Darla por entregada deja de reintentar sobre ' +
+      'efectos incompletos -- que es exactamente lo que el 202 vino a evitar.',
+    );
+
+    // Y cuando la central responde de verdad, se entrega.
+    router.responder = null;
+    const { entregadas } = await flushOutbox();
+    assert.equal(entregadas, 1, 'con la respuesta real tiene que entregarse');
+    assert.equal((await pendientesEnOutbox(contentId))[0].status, 'delivered');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P4 — un 200 sin revisión tampoco cuenta como entregado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.responder = (m, p) => (p === '/api/sync/platform-transition'
+      ? new Response(JSON.stringify({ ok: true }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        })
+      : null);
+
+    await unlinkDesdeElectron(local.id, router);
+
+    assert.equal(
+      (await pendientesEnOutbox(contentId))[0].status, 'pending',
+      'Sin `version` el cliente no puede actualizar la revisión conocida, así que su próxima ' +
+      'transición saldría con una base vencida. Una respuesta que no se entiende no es una entrega.',
+    );
     assert.deepEqual(router.unknown, []);
   } finally {
     router.restore();

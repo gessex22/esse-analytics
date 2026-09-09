@@ -101,16 +101,44 @@ async function entregar(entry: TransitionOutboxEntry, authHeader: string): Promi
     return 'reintentar';
   }
 
-  if (res.ok) {
-    const body = await res.json().catch(() => ({} as any));
+  // 202: la central recibió la operación pero TODAVÍA NO TERMINÓ de aplicarla
+  // -- es lo que responde cuando una entrega gemela ganó el CAS y sigue
+  // proyectando. Sigue pendiente: darla por entregada acá es dejar de
+  // reintentar sobre efectos incompletos, exactamente lo que ese 202 vino a
+  // evitar.
+  if (res.status === 202) {
+    transitionOutboxRepo.markRetry(entry.id, 'HTTP 202 in_progress');
+    return 'reintentar';
+  }
+
+  // Solo un 200 que se ENTIENDE cuenta como entrega. `res.ok` cubre todo el
+  // rango 2xx, y ahí adentro conviven cosas distintas: "terminé", "la recibí" y
+  // un futuro cualquiera que este cliente todavía no sabe leer. Dar por
+  // entregada una respuesta que no se entiende pierde la intención igual que
+  // perderla en la red, solo que en silencio.
+  //
+  // `version` es obligatoria porque es lo que deja al cliente en condiciones de
+  // decidir lo siguiente: sin ella, la próxima transición sobre este archivo
+  // saldría declarando una base ya vencida.
+  if (res.status === 200) {
+    const body = await res.json().catch(() => null as any);
+    if (!body || typeof body.version !== 'number' || body.ok === false) {
+      transitionOutboxRepo.markRetry(entry.id, 'respuesta 200 sin `version` utilizable');
+      return 'reintentar';
+    }
     // La revisión que devuelve la central es la nueva verdad para esta
     // plataforma: sin guardarla, la próxima transición sobre el mismo archivo
     // declararía una base ya vencida y sería rechazada por atrasada.
-    if (typeof body?.version === 'number') {
-      platformRevisionRepo.set(entry.content_id, entry.platform, body.version);
-    }
+    platformRevisionRepo.set(entry.content_id, entry.platform, body.version);
     transitionOutboxRepo.markDelivered(entry.id);
     return 'entregada';
+  }
+
+  // Cualquier otro 2xx es un contrato que este cliente no conoce. Se reintenta
+  // en vez de adivinar.
+  if (res.ok) {
+    transitionOutboxRepo.markRetry(entry.id, `HTTP ${res.status} no reconocido`);
+    return 'reintentar';
   }
 
   // 409: llegó tarde. La central manda la revisión vigente -- se guarda, para

@@ -5,7 +5,9 @@ import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
-import { reportUploadEvent, reportUnlinkPlatform } from '../services/upload-history.service';
+import { reportUploadEvent, encolarDesvinculacion, entregarDesvinculacion } from '../services/upload-history.service';
+import { db } from '../db/database';
+import { TransitionOutboxEntry } from '../db/transition-outbox.repo';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
 import { ensureThumbnail, deleteThumbnail, probeVideoInfo } from '../services/thumbnail.service';
 import { pushVideoToRemoteLibrary } from '../services/remote-library-preload.service';
@@ -322,23 +324,48 @@ export const setPlatformLink = async (req: Request, res: Response): Promise<void
 
   const trimmed = url?.trim();
   if (!trimmed) {
-    platformVideoRepo.unlinkFromFile(fileId, platform);
-    fileRepo.removePlatform(fileId, platform as Platform);
+    // LAS TRES ESCRITURAS, EN UNA SOLA TRANSACCIÓN.
+    //
+    // Soltar el vínculo, sacar el badge y encolar la intención son el mismo
+    // hecho, y tienen que aplicarse juntos o no aplicarse. Mientras el encolado
+    // ocurría después -- y encima desde otra función -- una caída en el medio
+    // dejaba justo lo que la outbox venía a eliminar: lo local cambiado, la
+    // central sin enterarse y nada que lo reintente nunca.
+    //
+    // El cuerpo es SÍNCRONO porque `better-sqlite3` lo exige; la entrega a la
+    // central va después del commit, más abajo.
+    let fila: TransitionOutboxEntry;
+    try {
+      fila = db.transaction(() => {
+        platformVideoRepo.unlinkFromFile(fileId, platform);
+        fileRepo.removePlatform(fileId, platform as Platform);
+        // El espejo central es additive para publicaciones nuevas; una limpieza
+        // manual necesita este evento explícito para no resucitar en el próximo
+        // pull. Se manda `content_id`, no el id local: la central resuelve por
+        // ahí (ver unlinkPlatform).
+        return encolarDesvinculacion(file.content_id, String(platform));
+      })();
+    } catch (err: any) {
+      // La transacción no se aplicó: nada cambió. Decirle al cliente que salió
+      // bien sería lo peor de los dos mundos.
+      console.error('[sync] no se pudo registrar la desvinculación:', err?.message);
+      res.status(500).json({
+        message: `No se pudo desvincular ${platform}: ${err?.message ?? 'error desconocido'}. No se cambió nada.`,
+      });
+      return;
+    }
+
     pushFilesToCloudInBackground(req.headers.authorization);
 
-    // El espejo central es additive para publicaciones nuevas; una limpieza
-    // manual necesita este evento explícito para no resucitar en el próximo pull.
-    //
-    // Se manda `content_id`, no el id local: la central resuelve por ahí (ver
-    // unlinkPlatform). Y el fallo YA NO se traga -- antes terminaba en un
-    // console.warn que nadie mira, y el usuario veía el link desaparecer de la
-    // pantalla creyendo que se había guardado en todos lados. El cambio local ya
-    // está hecho y no se revierte (es la copia de esta PC, y es lo que el
-    // usuario pidió); lo que se agrega es que el cliente se entere de que la
-    // central no lo acompañó.
+    // El fallo de ENTREGA no se traga -- antes terminaba en un console.warn que
+    // nadie mira, y el usuario veía el link desaparecer de la pantalla creyendo
+    // que se había guardado en todos lados. El cambio local ya está hecho y no
+    // se revierte (es la copia de esta PC, y es lo que el usuario pidió); lo que
+    // se agrega es que el cliente se entere de que la central todavía no
+    // acompañó. A diferencia de antes, eso ya no significa que se haya perdido.
     let syncWarning: string | undefined;
     try {
-      await reportUnlinkPlatform(req.headers.authorization, file.content_id, platform);
+      await entregarDesvinculacion(req.headers.authorization, fila.id, String(platform));
     } catch (err: any) {
       syncWarning = err?.message ?? 'No se pudo propagar la desvinculación a la central.';
       console.warn('[sync]', syncWarning);

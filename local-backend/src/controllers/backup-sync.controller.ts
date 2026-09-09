@@ -271,29 +271,31 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
 
     const { files: cloudFiles }: { files: any[] } = await upstream.json();
 
-    // Revisiones de plataforma. Sin esto esta PC no puede declarar
-    // `baseVersion` en una transición, y `POST /api/sync/platform-transition`
-    // la rechaza -- o peor, la manda con una base inventada.
+    // Revisiones de plataforma. Vienen EN ESTA MISMA RESPUESTA, junto al
+    // estado que describen.
     //
-    // Va aparte del pull de archivos a propósito: ese endpoint mergea por
-    // `file_name` y la revisión se identifica por `content_id`. Y falla
-    // blando: quedarse sin revisiones frescas degrada la próxima transición a
-    // un conflicto (que se ve y se reintenta), no arruina el pull entero.
-    try {
-      const revUpstream = await fetch(`${CENTRAL}/api/sync/platform-revisions`, {
-        headers: { Authorization: authHeader },
-      });
-      if (revUpstream.ok) {
-        const { revisions } = await revUpstream.json() as {
-          revisions?: { contentId: string; platform: string; version: number }[];
-        };
-        if (Array.isArray(revisions) && revisions.length > 0) {
-          platformRevisionRepo.setMany(revisions);
+    // Antes se pedían aparte, en una segunda llamada. Entre las dos respuestas
+    // cabía una publicación, y esta PC terminaba con el estado de ANTES y la
+    // revisión de DESPUÉS -- la peor combinación posible: una desvinculación
+    // decidida sobre el estado viejo salía declarando la revisión nueva, y la
+    // central la aceptaba porque la revisión coincidía. La protección causal
+    // entera se apoya en que `baseVersion` describa lo que el usuario vio.
+    //
+    // La central solo adjunta `platform_rev` cuando el estado que sirve sale
+    // del mismo documento que la revisión (ver getBackupFiles); los archivos
+    // sin ella simplemente no actualizan lo conocido, y una transición sobre
+    // ellos se degrada a un 409, que es recuperable.
+    const revisiones: { contentId: string; platform: string; version: number }[] = [];
+    for (const cf of cloudFiles) {
+      const rev = (cf as any).platform_rev;
+      if (!cf?.content_id || !rev || typeof rev !== 'object') continue;
+      for (const [platform, version] of Object.entries(rev)) {
+        if (typeof version === 'number') {
+          revisiones.push({ contentId: cf.content_id, platform, version });
         }
       }
-    } catch (err: any) {
-      console.warn('[sync] no se pudieron traer las revisiones de plataforma:', err.message);
     }
+    if (revisiones.length > 0) platformRevisionRepo.setMany(revisiones);
 
     const applyStarted = performance.now();
     let updated = 0;

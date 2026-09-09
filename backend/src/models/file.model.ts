@@ -73,7 +73,8 @@ export interface IFile extends Document {
   // ya movida y la operación sin forma de reconocerse como dueña, y al
   // reintentar se rechazaría a sí misma por `stale`. Con esto, una reanudación
   // se identifica leyendo el propio documento.
-  platform_claim?: Record<string, string>;
+  /** Por plataforma: { op, rev } -- ver ClaimDePlataforma en platform-transition.service.ts. */
+  platform_claim?: Record<string, { op: string; rev: number }>;
 
   // Cuándo cambió el estado de cada plataforma. INFORMATIVO -- para diagnóstico
   // y para que el cliente pueda mostrar algo; la precedencia la decide

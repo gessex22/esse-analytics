@@ -40,7 +40,7 @@ export interface PlatformTransitionResult {
    * 'stale'     = la operación es anterior al último cambio de estado ya
    *               aplicado, así que se descarta (llegó tarde).
    */
-  reason?: 'not_found' | 'stale' | 'conflict' | 'operation_mismatch';
+  reason?: 'not_found' | 'stale' | 'conflict' | 'operation_mismatch' | 'in_progress';
   fileId?: string;
   platforms?: string[];
   platformsDiscarded?: string[];
@@ -48,6 +48,29 @@ export interface PlatformTransitionResult {
   version?: number;
   /** true = ya se había aplicado antes con este mismo operationId. */
   deduplicated?: boolean;
+}
+
+/**
+ * Lo que queda escrito en `platform_claim.<plataforma>` al reclamar.
+ *
+ * Lleva la revisión, no solo el nombre de la operación, y esa es toda la
+ * diferencia. Un claim que solo dice "la operación X reclamó esto" no caduca
+ * nunca: `applyPlatformPublish` incrementa la revisión y no lo borra, así que
+ * una entrega atrasada de X seguía reconociéndose como reanudación -- y
+ * reanudar SALTEA la comprobación de `baseVersion` y el CAS, así que se
+ * aplicaba sobre la revisión nueva y destruía la publicación que entró en el
+ * medio.
+ *
+ * Con la revisión adentro el claim caduca solo: si alguien la movió, deja de
+ * describir el presente. Ningún otro escritor tiene que acordarse de limpiarlo,
+ * que es justamente lo que no se puede garantizar con 7 escritores.
+ */
+interface ClaimDePlataforma { op: string; rev: number }
+
+function leerClaim(valor: unknown): ClaimDePlataforma | null {
+  if (!valor || typeof valor !== 'object') return null;
+  const c = valor as any;
+  return (typeof c.op === 'string' && typeof c.rev === 'number') ? { op: c.op, rev: c.rev } : null;
 }
 
 // Nota: acá vivía `applyExplicitTransition`, un núcleo puro que calculaba los
@@ -166,7 +189,14 @@ export async function applyPlatformTransition(
   // Si la operación ya venía registrada, manda SU alcance: al reanudar, releer
   // la base devuelve vacío (el intento anterior ya soltó los vínculos) y la
   // reanudación no llegaría a completar las proyecciones que faltaban.
-  const idsVinculados: string[] = (opPrevia?.platformIds && opPrevia.platformIds.length > 0)
+  //
+  // Se pregunta si el alcance ESTÁ, no si tiene elementos. Un alcance vacío es
+  // un alcance: describe una operación sobre un archivo con badge y sin
+  // vínculo, que es un caso real. Tratarlo como "no se calculó" lo hacía
+  // recalcular al reanudar, y se llevaba puesto cualquier vínculo aparecido
+  // mientras tanto -- incluidos los que entran por los callers que todavía no
+  // pasan por acá y por eso ni siquiera mueven la revisión.
+  const idsVinculados: string[] = Array.isArray(opPrevia?.platformIds)
     ? opPrevia.platformIds
     : pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
 
@@ -182,8 +212,14 @@ export async function applyPlatformTransition(
   // en el propio update que incrementa la revisión, así que o están las dos
   // cosas o no está ninguna. Si el claim vigente lleva nuestro operationId,
   // esta operación ya reclamó y lo que falta es terminar de aplicar.
-  const claims = (file.platform_claim ?? {}) as Record<string, string>;
-  const reanudando = !!operationId && claims[platform] === operationId;
+  // Se exige que el claim coincida en OPERACIÓN Y REVISIÓN. Si la revisión se
+  // movió, el claim quedó viejo: esta operación reclamó un estado que ya no
+  // existe, y lo que corresponde es que caiga por `stale`, no que se reanude.
+  const claims = (file.platform_claim ?? {}) as Record<string, unknown>;
+  const claimVigente = leerClaim(claims[platform]);
+  const reanudando = !!operationId
+    && claimVigente?.op === operationId
+    && claimVigente?.rev === (revActual ?? 0);
 
   // ── Precedencia por revisión causal ─────────────────────────────────────
   // Solo se exige cuando el cliente declara sobre qué revisión trabajó. Al
@@ -209,8 +245,10 @@ export async function applyPlatformTransition(
         userId, operationId, contentId, platform, action,
         baseVersion, status: 'pending',
         // El alcance se congela acá, con la operación: ver el comentario del
-        // campo en el modelo.
-        platformIds: idsVinculados,
+        // campo en el modelo. Se guarda aunque esté vacío -- es la diferencia
+        // entre "esta operación no abarca ningún vínculo" y "todavía no se
+        // sabe", y confundirlas es lo que la hacía recalcular al reanudar.
+        platformIds: idsVinculados ?? [],
       });
     } catch (err: any) {
       // Índice único: otra entrega de la MISMA operación se nos adelantó. No es
@@ -240,8 +278,12 @@ export async function applyPlatformTransition(
         $set: {
           [`platform_state_changed_at.${platform}`]: ahora,
           // El claim, en el MISMO update que la revisión: es lo que permite que
-          // una reanudación se reconozca a sí misma después de una caída.
-          ...(operationId ? { [`platform_claim.${platform}`]: operationId } : {}),
+          // una reanudación se reconozca a sí misma después de una caída. Lleva
+          // la revisión que este $inc va a producir, para que caduque solo
+          // cuando otro escritor mueva la revisión.
+          ...(operationId
+            ? { [`platform_claim.${platform}`]: { op: operationId, rev: (revActual ?? 0) + 1 } }
+            : {}),
         },
       },
       { new: true },
@@ -254,13 +296,33 @@ export async function applyPlatformTransition(
       // operación quedó vieja y armara una nueva.
       if (operationId) {
         const relectura = await FileModel.findById(file._id).select('platform_rev platform_claim').lean();
-        const claimVigente = ((relectura?.platform_claim ?? {}) as Record<string, string>)[platform];
-        if (claimVigente === operationId) {
+        const claimTrasCas = leerClaim(((relectura?.platform_claim ?? {}) as Record<string, unknown>)[platform]);
+        if (claimTrasCas?.op === operationId) {
+          // El claim se escribe al RECLAMAR, no al terminar. Que lleve nuestro
+          // operationId prueba que la gemela ganó el CAS, no que haya aplicado
+          // nada todavía -- puede estar a mitad de las proyecciones, o haberse
+          // caído ahí. Responder "deduplicada" ahí es mentir: el cliente marca
+          // la fila como entregada y deja de reintentar sobre efectos
+          // incompletos.
+          //
+          // "Deduplicada" significa "ya terminó". Mientras no terminó, la
+          // respuesta honesta es "todavía no, volvé a intentar".
+          const registro = await PlatformTransitionOpModel.findOne({ userId, operationId })
+            .select('status resultVersion').lean();
+          if (registro?.status !== 'completed') {
+            return {
+              ok: false,
+              reason: 'in_progress',
+              fileId: String(file._id),
+              version: ((relectura?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0,
+            };
+          }
           return {
             ok: true,
             deduplicated: true,
             fileId: String(file._id),
-            version: ((relectura?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0,
+            version: registro.resultVersion
+              ?? ((relectura?.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0,
           };
         }
       }
@@ -420,9 +482,22 @@ export async function applyPlatformTransition(
   );
 
   for (const platformId of idsVinculados) {
-    await BackupPlatformVideoModel.updateOne(
-      { userId, platform, platform_id: platformId },
-      {
+    // El guard va TAMBIÉN acá. El `updateMany` de arriba compara `link_version`
+    // pero este upsert no comparaba nada: escribía la lápida sobre lo que
+    // hubiera, así que una transición vieja borraba un re-vínculo más nuevo que
+    // ya había llegado.
+    //
+    // Con el guard en el filtro, si la fila existe con una revisión posterior el
+    // update no matchea -- y el upsert intenta INSERTAR, chocando contra el
+    // índice único {userId, platform, platform_id}. Ese choque no es un error:
+    // es la prueba de que hay una fila más nueva que no hay que tocar.
+    try {
+      await BackupPlatformVideoModel.updateOne(
+        {
+          userId, platform, platform_id: platformId,
+          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: versionResultante } }],
+        },
+        {
         $set: {
           link_state: 'unlinked',
           link_updated_at: ahora,
@@ -430,14 +505,19 @@ export async function applyPlatformTransition(
           content_id: contentId,
           ...(operationId ? { operation_id: operationId } : {}),
         },
-        // El índice único es {userId, platform, platform_id}, así que el
-        // tombstone se crea por platformId. `local_updated_at` es requerido por
-        // el schema y solo se fija al insertar: si la fila ya existía, su valor
-        // real no se pisa.
-        $setOnInsert: { local_updated_at: ahora, match_status: 'sin_match' },
-      },
-      { upsert: true },
-    );
+          // El índice único es {userId, platform, platform_id}, así que el
+          // tombstone se crea por platformId. `local_updated_at` es requerido por
+          // el schema y solo se fija al insertar: si la fila ya existía, su valor
+          // real no se pisa.
+          $setOnInsert: { local_updated_at: ahora, match_status: 'sin_match' },
+        },
+        { upsert: true },
+      );
+    } catch (err: any) {
+      // 11000 = ya hay una fila para ese platformId, con una revisión posterior
+      // a la de esta operación. Se la deja como está, a propósito.
+      if (err?.code !== 11000) throw err;
+    }
   }
 
   // 5) remote_library_videos — la copia de Nube. Solo si el video vive ahí y

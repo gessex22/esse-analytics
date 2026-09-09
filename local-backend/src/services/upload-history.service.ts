@@ -1,7 +1,7 @@
 import { getOrCreateDeviceName } from '../routes/local-admin.routes';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { historyOutboxRepo } from '../db/history-outbox.repo';
-import { transitionOutboxRepo } from '../db/transition-outbox.repo';
+import { transitionOutboxRepo, TransitionOutboxEntry } from '../db/transition-outbox.repo';
 import { platformRevisionRepo } from '../db/platform-revision.repo';
 import { flushTransitionOutbox } from './transition-outbox.service';
 import { CENTRAL_API } from '../config';
@@ -107,40 +107,63 @@ export async function reportUploadEvent(
  * local -- para cuando se llama, la SQLite ya se actualizó. Lanzar acá sirve
  * para AVISAR, no para revertir.
  */
-export async function reportUnlinkPlatform(
-  authHeader: string | undefined,
+/**
+ * Encola la intención de desvincular. SÍNCRONO a propósito.
+ *
+ * Está separado de la entrega justamente para poder correr DENTRO de la misma
+ * `db.transaction()` que suelta el vínculo y saca el badge (ver
+ * `setPlatformLink`). Mientras el encolado vivía después de esas dos
+ * escrituras, una caída en el medio dejaba exactamente el estado que la outbox
+ * venía a eliminar: lo local cambiado, la central sin enterarse y nada
+ * encolado que lo reintente. La outbox no vale por guardar la intención, sino
+ * por guardarla en la misma transacción que el cambio que la origina.
+ *
+ * `better-sqlite3` exige que el cuerpo de una transacción sea síncrono, así que
+ * acá no puede haber ningún `await`: la entrega va después del commit.
+ */
+export function encolarDesvinculacion(
   contentId: string | null | undefined,
   platform: string,
-): Promise<void> {
-  if (!authHeader) return;
+): TransitionOutboxEntry {
   if (!contentId) {
     throw new Error(
       `No se puede propagar la desvinculación de ${platform}: el archivo no tiene content_id. ` +
       `Sin él la central no puede identificarlo (el id local no le sirve).`,
     );
   }
-
-  // La intención se GUARDA antes de intentar entregarla. Encolar es síncrono y
-  // local: no depende de la central, así que no hay ventana en la que la
-  // decisión exista solo en memoria.
-  const fila = transitionOutboxRepo.enqueue({
+  return transitionOutboxRepo.enqueue({
     contentId,
     platform,
     action: 'unlink',
     knownVersion: platformRevisionRepo.get(contentId, platform),
   });
+}
 
-  // Y se intenta entregar YA, para que el caso normal (hay red) siga siendo
-  // inmediato. Si falla, la fila queda 'pending' y el próximo flush la toma
-  // -- por eso esto no se traga el error: el caller sigue necesitando saber que
-  // la central no acompañó, aunque ahora eso ya no signifique que la intención
-  // se haya perdido.
+/**
+ * Intenta entregar YA una intención ya encolada, para que el caso normal (hay
+ * red) siga siendo inmediato. Si falla, la fila queda 'pending' y el próximo
+ * flush la toma -- por eso esto no se traga el error: el caller sigue
+ * necesitando saber que la central no acompañó, aunque ahora eso ya no
+ * signifique que la intención se haya perdido.
+ */
+export async function entregarDesvinculacion(
+  authHeader: string | undefined,
+  filaId: number,
+  platform: string,
+): Promise<void> {
+  if (!authHeader) {
+    throw new Error(
+      `La desvinculación de ${platform} quedó pendiente: no hay sesión para entregarla. ` +
+      `Se reintenta sola en la próxima sincronización.`,
+    );
+  }
+
   await flushTransitionOutbox(authHeader);
 
   // Se mira ESTA fila, no un contador global de pendientes: con varias
   // desvinculaciones en vuelo, "quedan pendientes" no dice nada sobre la que
   // el usuario acaba de pedir.
-  const estado = transitionOutboxRepo.findById(fila.id)?.status;
+  const estado = transitionOutboxRepo.findById(filaId)?.status;
   if (estado === 'pending') {
     throw new Error(
       `La desvinculación de ${platform} quedó pendiente de entregar a la central. ` +

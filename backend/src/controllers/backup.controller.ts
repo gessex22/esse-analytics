@@ -72,7 +72,14 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       // wipe de logout + pull no recupera esos videos (bug real, ver incidente de
       // julio 2026 / fix-local-files-platforms.js): el pull queda tan incompleto
       // como el propio push, aunque en la nube exista el dato correcto en otro lado.
-      FileModel.find({ userId }).select('file_name platforms platforms_discarded platform_states content_status scheduled_date duracion_segundos resolucion formato fecha_creacion updatedAt').lean(),
+      // `platform_rev` y `content_id` viajan JUNTO con el estado a propósito:
+      // la revisión describe ESTE estado, y sirve como `baseVersion` de la
+      // próxima transición. Mientras el cliente las pedía por separado, una
+      // publicación entre las dos respuestas lo dejaba con el estado de antes y
+      // la revisión de después -- y una desvinculación decidida sobre lo viejo
+      // salía declarando la revisión nueva, así que la central la ACEPTABA.
+      // Un cliente atrasado tiene que fallar con 409, no acertarle de casualidad.
+      FileModel.find({ userId }).select('file_name content_id platforms platforms_discarded platform_states platform_rev content_status scheduled_date duracion_segundos resolucion formato fecha_creacion updatedAt').lean(),
     ]);
 
     const centralByName = new Map(centralFiles.map(f => [f.file_name, f]));
@@ -87,6 +94,13 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       // ya coincidían (esa comparación de abajo es para decidir si hace falta
       // pisar los arrays planos, no para esto).
       const platform_states = central?.platform_states ?? (f as any).platform_states;
+      // REGLA: solo se adjunta `platform_rev` cuando el estado que se está
+      // sirviendo sale del MISMO documento del que sale la revisión. Si el
+      // estado viene de `backup_files` y la revisión de `files`, la pareja es
+      // incoherente -- y de las dos formas de equivocarse, informar una
+      // revisión MÁS NUEVA que el estado servido es la peligrosa: hace que la
+      // central acepte una decisión que el cliente tomó sobre otra cosa.
+      // Omitirla solo degrada a un 409, que es recuperable.
       if (current >= 3) return { ...f, platform_states };
       if (!central) return { ...f, platform_states };
       const centralPlatforms = [...(central.platforms ?? [])].sort().join('|');
@@ -94,7 +108,9 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
       const centralDiscarded = [...(central.platforms_discarded ?? [])].sort().join('|');
       const currentDiscarded = [...(f.platforms_discarded ?? [])].sort().join('|');
       if (centralPlatforms === currentPlatforms && centralDiscarded === currentDiscarded) {
-        return { ...f, platform_states };
+        // Coinciden, así que lo que se sirve describe también al documento
+        // central: su revisión es la que corresponde a este estado.
+        return { ...f, platform_states, platform_rev: (central as any).platform_rev };
       }
       // El pull del cliente compara local_updated_at antes de aplicar el
       // badge. Si devolvemos la marca vieja de BackupFileModel, Electron
@@ -104,6 +120,8 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         platforms: central.platforms ?? f.platforms,
         platforms_discarded: central.platforms_discarded ?? f.platforms_discarded,
         platform_states,
+        // El estado servido es el del documento central: su revisión también.
+        platform_rev: (central as any).platform_rev,
         local_updated_at: (central as any).updatedAt ?? f.local_updated_at,
       };
     });
@@ -127,6 +145,9 @@ export async function getBackupFiles(req: AuthRequest, res: Response): Promise<v
         _id:                 f._id,
         createdAt:           f.fecha_creacion ?? (f as any).updatedAt ?? new Date(),
         file_name:           f.file_name,
+        // Todo sale del mismo documento acá, estado y revisión incluidos.
+        content_id:          (f as any).content_id ?? null,
+        platform_rev:        (f as any).platform_rev,
         platforms:           f.platforms           ?? [],
         platforms_discarded: f.platforms_discarded ?? [],
         platform_states:     f.platform_states      ?? [],

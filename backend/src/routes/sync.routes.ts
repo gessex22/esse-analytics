@@ -5,7 +5,6 @@ import {
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
   applyPlatformTransitionEndpoint,
-  getPlatformRevisions,
   getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -46,9 +45,11 @@ router.delete('/api/sync/platform-link/:contentId/:platform', verifyToken, unlin
 // reanudación) y baseVersion (precedencia causal), cosas que el DELETE de arriba
 // no puede expresar. Ver applyPlatformTransitionEndpoint.
 router.post('/api/sync/platform-transition', verifyToken, applyPlatformTransitionEndpoint);
-// La contracara del anterior: sin conocer la revisión vigente, un cliente no
-// puede declarar `baseVersion` y no puede usar el contrato de arriba.
-router.get('/api/sync/platform-revisions', verifyToken, getPlatformRevisions);
+// (Acá vivió GET /api/sync/platform-revisions, retirado a propósito: pedir la
+// revisión aparte del estado abre una ventana en la que el cliente se queda con
+// el estado de antes y la revisión de después, y esa combinación hace que la
+// central ACEPTE una decisión tomada sobre otra cosa. La revisión viaja ahora
+// dentro de GET /api/backup/files, junto al estado que describe.)
 // "Descartar" desde iOS/Android era 100% local -- ver comentario completo en
 // updateFilePlatforms (backup.controller.ts).
 router.post('/api/sync/file-platforms',             verifyToken, updateFilePlatforms);
