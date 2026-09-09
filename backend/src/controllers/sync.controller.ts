@@ -12,6 +12,7 @@ import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { applyPlatformPublish } from './backup.controller';
 import { applyPlatformTransition } from '../services/platform-transition.service';
+import { dispararReparacionOportunista } from '../services/transition-repair.scheduler';
 import { recordAuditEvent } from '../services/audit.service';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
@@ -313,6 +314,11 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
     // la misma operación -- pero tampoco terminó, así que la outbox tiene que
     // dejarla PENDIENTE y volver a intentar, no marcarla entregada.
     if (!result.ok && result.reason === 'in_progress') {
+      // Alguien está trabajando esta operación, o la dejó a medias. Vale la
+      // pena mirar la cola ya -- pero SIN bloquear esta respuesta: es un
+      // adicional para que el caso normal se repare en segundos, no un
+      // sustituto del barrido periódico.
+      dispararReparacionOportunista();
       res.status(202).json({
         message: 'La operación ya está en curso: todavía no terminó de aplicarse.',
         reason: 'in_progress', version: result.version, contentId, platform,

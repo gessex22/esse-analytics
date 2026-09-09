@@ -3203,3 +3203,127 @@ test('P9 — una entrega HTTP no puede robarle el lease a quien la está trabaja
   const registro: any = await registroDe(op);
   assert.equal(registro?.leaseOwner, 'worker-en-curso', 'y el lease sigue siendo de quien lo tomó');
 });
+
+
+// ===========================================================================
+// P10 — el cableado del worker.
+//
+// Tres propiedades del disparador que pueden fallar EN SILENCIO, que es la
+// razón por la que tienen caso propio: un guard de solapamiento que no guarda
+// nada, un backoff sin jitter y unas métricas que no miran lo que dicen mirar
+// se ven exactamente igual que los que sí funcionan.
+// ===========================================================================
+
+test('P10 — dos pasadas solapadas en el mismo proceso no corren a la vez', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // VARIAS operaciones pendientes. Con una sola no se prueba nada: el lease ya
+  // la serializa, las otras pasadas no encuentran trabajo, y el guard del
+  // proceso queda sin ejercitar aunque no exista.
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+  await PlatformTransitionOpModel.create(
+    Array.from({ length: 6 }, (_, i) => ({
+      userId: USER_ID, operationId: `p10-solapadas-${i}`, contentId,
+      platform: PLATFORM, action: 'unlink', baseVersion: 0, status: 'pending',
+      platformIds: [PLATFORM_ID],
+    })),
+  );
+
+  const { ejecutarPasadaDeReparacion } = await import('../services/transition-repair.scheduler');
+
+  // Se cuenta cuántas pasadas están DENTRO al mismo tiempo. El lease serializa
+  // entre réplicas, pero dentro de un proceso dos pasadas simultáneas se pisan
+  // el trabajo y multiplican la carga sobre Mongo sin ganar nada.
+  let dentro = 0;
+  let maximoSimultaneo = 0;
+  const original = central.FileModel.findOne.bind(central.FileModel);
+  (central.FileModel as any).findOne = (...args: any[]) => {
+    dentro++;
+    maximoSimultaneo = Math.max(maximoSimultaneo, dentro);
+    const q = original(...args);
+    const leanOriginal = q.lean.bind(q);
+    q.lean = async (...a: any[]) => { try { return await leanOriginal(...a); } finally { dentro--; } };
+    return q;
+  };
+
+  try {
+    await Promise.all([
+      ejecutarPasadaDeReparacion(),
+      ejecutarPasadaDeReparacion(),
+      ejecutarPasadaDeReparacion(),
+    ]);
+  } finally {
+    (central.FileModel as any).findOne = original;
+  }
+
+  assert.equal(
+    maximoSimultaneo, 1,
+    'Tres pasadas arrancaron a la vez dentro del mismo proceso. El lease serializa entre réplicas, ' +
+    'no acá adentro: dos pasadas simultáneas se pisan el trabajo y multiplican la carga sobre Mongo.',
+  );
+});
+
+test('P10 — el backoff lleva jitter: dos operaciones que fallan igual no vuelven juntas', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { esperaParaIntento } = await import('../services/transition-repair.service');
+
+  // Sin jitter, todo lo que falló junto vuelve junto -- y vuelve a fallar
+  // junto. Es el patrón que convierte una caída breve de Mongo en una tormenta
+  // periódica de reintentos sincronizados.
+  const esperas = new Set(Array.from({ length: 30 }, () => esperaParaIntento(3)));
+  assert.ok(
+    esperas.size > 1,
+    'Todas las esperas del mismo intento dieron el mismo número. Sin jitter, lo que falló junto ' +
+    'vuelve junto y se sincroniza para siempre.',
+  );
+
+  // Pero sigue siendo un backoff: crece con los intentos y tiene techo.
+  const bajo = Math.min(...Array.from({ length: 30 }, () => esperaParaIntento(1)));
+  const alto = Math.min(...Array.from({ length: 30 }, () => esperaParaIntento(5)));
+  assert.ok(alto > bajo, 'y sigue creciendo con los intentos');
+  assert.ok(Math.max(...Array.from({ length: 30 }, () => esperaParaIntento(50))) <= 3_600_000,
+    'con techo, para que un intento 50 no quede programado para el año que viene');
+});
+
+test('P10 — las métricas reportan pendientes, fallidas y la edad de la más vieja', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+
+  const hace2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  await PlatformTransitionOpModel.create([
+    { userId: USER_ID, operationId: 'm-vieja', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'pending', createdAt: hace2h },
+    { userId: USER_ID, operationId: 'm-nueva', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'pending' },
+    { userId: USER_ID, operationId: 'm-fallida', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'failed' },
+    { userId: USER_ID, operationId: 'm-hecha', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'completed' },
+  ]);
+  // `timestamps: false` en `create` no alcanza: Mongoose igual sella
+  // `createdAt` con ahora. Se fija por el driver crudo, que es lo que de verdad
+  // deja el documento como si fuera viejo.
+  await PlatformTransitionOpModel.collection.updateOne(
+    { operationId: 'm-vieja' }, { $set: { createdAt: hace2h } },
+  );
+
+  const { metricasDeReparacion } = await import('../services/transition-repair.service');
+  const m = await metricasDeReparacion();
+
+  assert.equal(m.pendientes, 2, 'una cola que no se puede medir no se puede operar');
+  assert.equal(m.fallidas, 1, 'y `failed` no se reintenta solo: si nadie lo mira, no existe');
+  assert.ok(
+    m.edadMaximaMs >= 2 * 60 * 60 * 1000 - 60_000,
+    'la edad de la más vieja es la señal que distingue "hay cola" de "hay cola TRABADA"',
+  );
+});

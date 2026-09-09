@@ -748,6 +748,50 @@ backend 22 / local-backend 46. local-backend 2/2. Las 4 mutaciones de esta ronda
 rompen cada una su caso -- dos de ellas contra el caso de reanudación exitosa,
 no contra el de reanudación fallida.
 
+---
+
+## Entrega 2g — cableado del worker
+
+| Punto | Cómo quedó |
+|---|---|
+| Arranque tras Mongo listo | En el `.then()` del `mongoose.connect`, con 10 s de retraso para no competir con el arranque. Antes de eso las consultas se encolarían en el buffer de Mongoose y el primer barrido correría a ciegas |
+| Barrido periódico | Cada 5 min, `unref()` para no sostener el proceso |
+| Sin pasadas solapadas en el proceso | Las pasadas se **encadenan** (no se descartan): quien pide una recibe la promesa de una que empieza después de la suya |
+| Disparo oportunista | En el 202 `in_progress` del endpoint, fire-and-forget, con ventana de 30 s para que una ráfaga no dispare una pasada por operación |
+| Backoff con jitter | Reparte sobre el 50% superior de la ventana |
+| Métricas | `pendientes`, `fallidas` y **edad de la más vieja** |
+
+**El barrido periódico no es opcional.** El caso que la reparación existe para
+cubrir es justamente el que NO genera un evento después: el proceso se cayó a
+mitad de una transición. Con disparo por evento nada más, esa última operación
+espera a que alguien más haga algo -- que en una instalación de un solo usuario
+puede ser al día siguiente. El oportunista es un adicional, no un sustituto.
+
+**El jitter tampoco es cosmético.** Sin él, todo lo que falló junto -- que es lo
+normal: una caída de Mongo tumba todas las operaciones en vuelo a la vez --
+vuelve junto, falla junto y se reprograma junto. Una caída breve se convierte en
+una tormenta periódica de reintentos sincronizados que se mantiene sola.
+
+**Y las métricas miran lo que importa**: `pendientes` sube y baja solo, así que
+por sí mismo no dice nada. Las dos señales son `fallidas` (nadie las reintenta:
+si no las mira una persona, no existen) y la EDAD de la más vieja, que es lo que
+distingue "hay cola" de "hay cola TRABADA".
+
+### Dos casos que no probaban lo que decían
+
+- El de solapamiento tenía **una sola operación** pendiente: el lease ya la
+  serializaba, las otras pasadas no encontraban trabajo, y el guard del proceso
+  quedaba sin ejercitar aunque no existiera. Con seis operaciones, sacar el
+  encadenado rompe el caso.
+- El techo del backoff estaba aplicado **dos veces** (antes y después del
+  jitter), así que sacar uno no cambiaba nada -- no había forma de saber cuál
+  sostenía el límite. Quedó uno solo, sobre el valor final.
+
+### Verificación
+
+59 tests en verde, 0 skips, exit 0, tres corridas completas seguidas. `tsc`
+backend 22 / local-backend 46. local-backend 2/2.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android

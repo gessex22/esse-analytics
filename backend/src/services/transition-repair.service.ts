@@ -125,9 +125,51 @@ export async function liberarOperacion(
   return (r.matchedCount ?? 0) > 0;
 }
 
-/** Espera creciente, para no martillar cuando algo está roto de verdad. */
-function esperaPara(intentos: number): number {
-  return Math.min(60_000 * 2 ** Math.max(0, intentos - 1), 3_600_000);
+/**
+ * Espera creciente CON JITTER, para no martillar cuando algo está roto.
+ *
+ * El jitter no es cosmético. Sin él, todo lo que falló junto -- que es lo
+ * normal: una caída de Mongo tumba todas las operaciones en vuelo a la vez --
+ * vuelve junto, falla junto, y se reprograma junto. Una caída breve se
+ * convierte así en una tormenta periódica de reintentos sincronizados que se
+ * mantiene sola. Se reparte sobre el 50% superior de la ventana: nunca antes de
+ * lo que dice el backoff, nunca más del doble.
+ */
+export function esperaParaIntento(intentos: number): number {
+  // Un solo techo, aplicado al valor final. Tenerlo dos veces (antes y después
+  // del jitter) hacía que sacar el primero no cambiara nada -- o sea que no
+  // había forma de saber cuál de los dos estaba sosteniendo el límite.
+  const base = 60_000 * 2 ** Math.max(0, intentos - 1);
+  return Math.min(Math.round(base * (1 + Math.random() * 0.5)), 3_600_000);
+}
+
+export interface MetricasReparacion {
+  pendientes: number;
+  fallidas: number;
+  /** Antigüedad de la operación sin resolver más vieja. 0 si no hay ninguna. */
+  edadMaximaMs: number;
+}
+
+/**
+ * Lo que hay que mirar para saber si la cola está sana.
+ *
+ * `pendientes` sube y baja solo, así que por sí mismo no dice nada. Las dos
+ * señales que importan son `fallidas` -- nadie las reintenta, así que si no las
+ * mira una persona no existen -- y la EDAD de la más vieja, que es lo que
+ * distingue "hay cola" de "hay cola TRABADA".
+ */
+export async function metricasDeReparacion(): Promise<MetricasReparacion> {
+  const [pendientes, fallidas, masVieja] = await Promise.all([
+    PlatformTransitionOpModel.countDocuments({ status: 'pending' }),
+    PlatformTransitionOpModel.countDocuments({ status: 'failed' }),
+    PlatformTransitionOpModel.findOne({ status: { $in: ['pending', 'failed'] } })
+      .sort({ createdAt: 1 }).select('createdAt').lean(),
+  ]);
+  const creada = (masVieja as any)?.createdAt ? new Date((masVieja as any).createdAt).getTime() : null;
+  return {
+    pendientes, fallidas,
+    edadMaximaMs: creada ? Math.max(0, Date.now() - creada) : 0,
+  };
 }
 
 /**
@@ -165,7 +207,7 @@ export async function repararTransicionesPendientes(limite = 50): Promise<Resume
         await cerrarOperacion(userId, operationId, leaseOwner, 'failed', err?.message ?? 'error desconocido');
         resumen.fallidas++;
       } else {
-        await liberarOperacion(userId, operationId, leaseOwner, err?.message ?? 'error', esperaPara(intentos));
+        await liberarOperacion(userId, operationId, leaseOwner, err?.message ?? 'error', esperaParaIntento(intentos));
         resumen.pospuestas++;
       }
     }

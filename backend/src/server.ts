@@ -1,6 +1,7 @@
 import './load-env';   // ⚠️ DEBE ir primero: carga .env antes de que otros módulos lean process.env
 import express from 'express';
 import mongoose from 'mongoose';
+import { iniciarReparacionDeTransiciones } from './services/transition-repair.scheduler';
 import cors from 'cors';
 import helmet from 'helmet';
 import videoRouter from './routes/video.routes';
@@ -100,6 +101,17 @@ mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 
     // después cada 1h -- no hace falta disparo inmediato por evento porque
     // total, si un video queda de más un rato, no pasa nada grave.
     scheduleRemoteLibraryRetentionSweep();
+
+    // Reparación de transiciones parciales (ver transition-repair.service.ts).
+    // Va ACÁ, con Mongo ya conectado: antes, cada consulta se encolaría en el
+    // buffer de Mongoose y el primer barrido correría a ciegas.
+    //
+    // Barrido periódico, no solo disparo por evento: el caso que esto viene a
+    // cubrir es justamente el que NO genera un evento después -- el proceso se
+    // cayó a mitad de una transición. Con disparo por evento nada más, esa
+    // última operación esperaría a que alguien más haga algo, que en una
+    // instalación de un solo usuario puede ser al día siguiente.
+    iniciarReparacionDeTransiciones();
   })
   .catch((err) => {
     console.error('Error de conexion a MongoDB:', err.message);
