@@ -59,16 +59,24 @@ function jsonResponse(body: unknown): Response {
  * (los pulls secundarios -- config, platform-videos -- no son el objeto de
  * estos tests, solo no deben romper el flujo).
  */
-function stubFetch(routes: Record<string, unknown>): { calls: string[]; restore: () => void } {
+interface LlamadaStub { url: string; body: any }
+
+function stubFetch(routes: Record<string, unknown>): {
+  calls: string[]; llamadas: LlamadaStub[]; restore: () => void;
+} {
   const original = globalThis.fetch;
   const calls: string[] = [];
+  const llamadas: LlamadaStub[] = [];
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = typeof input === 'string' ? input : String(input?.url ?? input);
     calls.push(url);
+    let body: any = undefined;
+    try { body = init?.body ? JSON.parse(init.body) : undefined; } catch { /* no era JSON */ }
+    llamadas.push({ url, body });
     const hit = Object.keys(routes).find(fragment => url.includes(fragment));
     return jsonResponse(hit ? routes[hit] : {});
   }) as typeof fetch;
-  return { calls, restore: () => { globalThis.fetch = original; } };
+  return { calls, llamadas, restore: () => { globalThis.fetch = original; } };
 }
 
 /** Par req/res falso, suficiente para los handlers de Express que se prueban. */
@@ -91,12 +99,21 @@ function fakeReqRes(params: Record<string, string>, body: unknown = {}) {
 // de Mongo, que espera un ObjectId: el cast fallaba, respondía 500 y el
 // local-backend se lo tragaba con un console.warn. Nunca funcionó.
 //
-// La expectativa de este test CAMBIÓ junto con el plan: la clave de mutación
-// pasó a ser `content_id` (UUID), no un `remote_file_id` nuevo -- medido contra
-// producción, el 100% de los archivos activos de los dos lados ya lo tiene, con
-// índice único. Lo que se afirma sigue siendo lo mismo ("Electron tiene que
-// mandar un identificador que la central pueda resolver"); solo cambió cuál es
-// ese identificador. Ver docs/sync-convergence-plan-2026-09-08.md.
+// La expectativa de este test CAMBIÓ DOS VECES junto con el plan, sin que lo
+// que afirma cambie nunca ("Electron tiene que mandar un identificador que la
+// central pueda resolver"):
+//
+//  1. La clave de mutación pasó a ser `content_id` (UUID), no un
+//     `remote_file_id` nuevo -- medido contra producción, el 100% de los
+//     archivos activos de los dos lados ya lo tiene, con índice único.
+//  2. El transporte pasó del `DELETE /api/sync/platform-link/:contentId/...` a
+//     `POST /api/sync/platform-transition`, porque la desvinculación ahora sale
+//     por la outbox y necesita declarar `operationId` (deduplicar el reintento)
+//     y `baseVersion` (precedencia causal) -- cosas que una URL de DELETE no
+//     puede expresar. El identificador dejó de viajar en el path y viaja en el
+//     cuerpo, así que se lee de ahí.
+//
+// Ver docs/sync-convergence-plan-2026-09-08.md.
 // ---------------------------------------------------------------------------
 test('BUG 1 — al desvincular, Electron manda a la central un identificador que puede resolver', async () => {
   const { db } = await import('../db/database');
@@ -130,11 +147,11 @@ test('BUG 1 — al desvincular, Electron manda a la central un identificador que
     stub.restore();
   }
 
-  const unlinkCall = stub.calls.find(url => url.includes('/api/sync/platform-link/'));
+  const unlinkCall = stub.llamadas.find(l => l.url.includes('/api/sync/platform-transition'));
   assert.ok(unlinkCall, 'Electron debería avisarle a la central que se desvinculó la plataforma');
 
-  // El segmento de path que la central va a usar para resolver el archivo.
-  const sentId = decodeURIComponent(new URL(unlinkCall).pathname.split('/').at(-2) ?? '');
+  // El identificador que la central va a usar para resolver el archivo.
+  const sentId = String(unlinkCall.body?.contentId ?? '');
 
   assert.match(
     sentId,
@@ -143,6 +160,14 @@ test('BUG 1 — al desvincular, Electron manda a la central un identificador que
     `número, es el id de SQLite y la central no tiene forma de resolverlo.`,
   );
   assert.equal(sentId, CONTENT_ID, 'y tiene que ser el content_id de ESE archivo, no otro');
+  assert.equal(unlinkCall.body?.platform, 'instagram');
+  assert.equal(unlinkCall.body?.action, 'unlink');
+
+  // Sin estos dos el endpoint responde 400: son lo que distingue una intención
+  // reintentable de un disparo a ciegas.
+  assert.ok(unlinkCall.body?.operationId, 'sin operationId la central no puede deduplicar el reintento');
+  assert.ok(Number.isInteger(unlinkCall.body?.baseVersion) && unlinkCall.body.baseVersion >= 0,
+    'sin baseVersion la central no puede saber sobre qué estado se decidió');
 
 });
 

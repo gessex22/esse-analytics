@@ -335,6 +335,43 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
   }
 };
 
+// GET /api/sync/platform-revisions — la revisión vigente de cada (archivo,
+// plataforma).
+//
+// POR QUÉ EXISTE COMO RUTA PROPIA. `POST /api/sync/platform-transition` exige
+// `baseVersion`: la revisión sobre la que el cliente basó su decisión. Un
+// cliente que no la conoce no puede declararla, y adivinarla es peor que no
+// mandarla -- releerla al momento de ENTREGAR convertiría una desvinculación
+// decidida ayer en una desvinculación aplicada contra el estado de hoy, que es
+// justamente la familia de bugs que motivó todo esto.
+//
+// Va acá y no dentro de `GET /api/backup/files` a propósito: ese endpoint
+// mergea BackupFileModel con FileModel POR `file_name`, y la revisión es un
+// dato de control de concurrencia que se identifica por `content_id`. Meterla
+// ahí la ataría a una clave que ya se decidió no usar para esto.
+export const getPlatformRevisions = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const files = await FileModel
+      .find({ userId, content_id: { $ne: null } })
+      .select('content_id platform_rev')
+      .lean();
+
+    const revisions: { contentId: string; platform: string; version: number }[] = [];
+    for (const f of files) {
+      const revs = (f.platform_rev ?? {}) as Record<string, number>;
+      for (const [platform, version] of Object.entries(revs)) {
+        if (typeof version === 'number') {
+          revisions.push({ contentId: String(f.content_id), platform, version });
+        }
+      }
+    }
+    res.json({ revisions });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 // GET /api/sync/platform-recent/:platform?limit=20&cursor=... — página de videos
 // EN VIVO de la plataforma, para elegir manualmente cuáles son "el mismo video"
 // entre redes (emparejado cruzado). `cursor` es lo que devolvió la página

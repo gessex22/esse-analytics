@@ -1,6 +1,9 @@
 import { getOrCreateDeviceName } from '../routes/local-admin.routes';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { historyOutboxRepo } from '../db/history-outbox.repo';
+import { transitionOutboxRepo } from '../db/transition-outbox.repo';
+import { platformRevisionRepo } from '../db/platform-revision.repo';
+import { flushTransitionOutbox } from './transition-outbox.service';
 import { CENTRAL_API } from '../config';
 
 const CENTRAL = CENTRAL_API;
@@ -117,12 +120,40 @@ export async function reportUnlinkPlatform(
     );
   }
 
-  const res = await fetch(
-    `${CENTRAL}/api/sync/platform-link/${encodeURIComponent(contentId)}/${encodeURIComponent(platform)}`,
-    { method: 'DELETE', headers: { Authorization: authHeader } },
-  );
-  if (!res.ok) {
-    const detalle = await res.text().catch(() => '');
-    throw new Error(`La central rechazó la desvinculación de ${platform}: HTTP ${res.status}. ${detalle}`.trim());
+  // La intención se GUARDA antes de intentar entregarla. Encolar es síncrono y
+  // local: no depende de la central, así que no hay ventana en la que la
+  // decisión exista solo en memoria.
+  const fila = transitionOutboxRepo.enqueue({
+    contentId,
+    platform,
+    action: 'unlink',
+    knownVersion: platformRevisionRepo.get(contentId, platform),
+  });
+
+  // Y se intenta entregar YA, para que el caso normal (hay red) siga siendo
+  // inmediato. Si falla, la fila queda 'pending' y el próximo flush la toma
+  // -- por eso esto no se traga el error: el caller sigue necesitando saber que
+  // la central no acompañó, aunque ahora eso ya no signifique que la intención
+  // se haya perdido.
+  await flushTransitionOutbox(authHeader);
+
+  // Se mira ESTA fila, no un contador global de pendientes: con varias
+  // desvinculaciones en vuelo, "quedan pendientes" no dice nada sobre la que
+  // el usuario acaba de pedir.
+  const estado = transitionOutboxRepo.findById(fila.id)?.status;
+  if (estado === 'pending') {
+    throw new Error(
+      `La desvinculación de ${platform} quedó pendiente de entregar a la central. ` +
+      `Se reintenta sola en la próxima sincronización.`,
+    );
+  }
+  if (estado === 'conflict') {
+    throw new Error(
+      `La central rechazó la desvinculación de ${platform}: el estado de esa plataforma ` +
+      `cambió desde otro dispositivo después de que abrieras esta pantalla. Actualizá y volvé a intentar.`,
+    );
+  }
+  if (estado === 'failed') {
+    throw new Error(`La central rechazó la desvinculación de ${platform}.`);
   }
 }

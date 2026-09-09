@@ -8,6 +8,8 @@ import { CENTRAL_API } from '../config';
 import { deviceIdentityRepo } from '../db/device-identity.repo';
 import { stopWatcher } from '../watcher';
 import { flushHistoryOutbox } from '../services/history-outbox.service';
+import { flushTransitionOutbox } from '../services/transition-outbox.service';
+import { platformRevisionRepo } from '../db/platform-revision.repo';
 import { fetchBackupWithMetrics, recordSyncMetric } from '../services/sync-metrics.service';
 
 const CENTRAL = CENTRAL_API;
@@ -195,6 +197,11 @@ export function pushFilesToCloudInBackground(authHeader?: string): void {
     flushHistoryOutbox(authHeader).catch(err => {
       console.warn('[history-outbox] flush tras publicar falló:', err.message);
     });
+    // Ídem para las transiciones (desvincular/descartar) que hayan quedado sin
+    // entregar -- ver transition-outbox.repo.ts.
+    flushTransitionOutbox(authHeader).catch(err => {
+      console.warn('[transition-outbox] flush tras publicar falló:', err.message);
+    });
   });
 }
 
@@ -263,6 +270,30 @@ export async function pullFromCloud(req: Request, res: Response): Promise<void> 
     }
 
     const { files: cloudFiles }: { files: any[] } = await upstream.json();
+
+    // Revisiones de plataforma. Sin esto esta PC no puede declarar
+    // `baseVersion` en una transición, y `POST /api/sync/platform-transition`
+    // la rechaza -- o peor, la manda con una base inventada.
+    //
+    // Va aparte del pull de archivos a propósito: ese endpoint mergea por
+    // `file_name` y la revisión se identifica por `content_id`. Y falla
+    // blando: quedarse sin revisiones frescas degrada la próxima transición a
+    // un conflicto (que se ve y se reintenta), no arruina el pull entero.
+    try {
+      const revUpstream = await fetch(`${CENTRAL}/api/sync/platform-revisions`, {
+        headers: { Authorization: authHeader },
+      });
+      if (revUpstream.ok) {
+        const { revisions } = await revUpstream.json() as {
+          revisions?: { contentId: string; platform: string; version: number }[];
+        };
+        if (Array.isArray(revisions) && revisions.length > 0) {
+          platformRevisionRepo.setMany(revisions);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[sync] no se pudieron traer las revisiones de plataforma:', err.message);
+    }
 
     const applyStarted = performance.now();
     let updated = 0;

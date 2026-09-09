@@ -80,8 +80,25 @@ const RUTAS_IGNORADAS = [
   '/api/remote-library',
 ];
 
+/**
+ * Cómo se corta una entrega. Es lo único que hace falta simular para probar
+ * una outbox: todo lo que la justifica pasa cuando la entrega falla.
+ *
+ *  - 'red':          el fetch revienta ANTES de llegar a la central. No se
+ *                    aplicó nada del otro lado.
+ *  - 'tras-aplicar': la central SÍ aplica y la respuesta se pierde en el
+ *                    camino. Es el caso incómodo: el cliente no puede saber si
+ *                    su operación corrió, y reintentarla a ciegas la aplicaría
+ *                    dos veces.
+ */
+type ModoDeCorte = 'red' | 'tras-aplicar';
+
 interface Router {
   calls: string[];
+  /** Devuelve cómo cortar esa llamada, o null para dejarla pasar. */
+  cortar: ((method: string, path: string) => ModoDeCorte | null) | null;
+  /** Milisegundos de demora para esa llamada. Sirve para dejar algo EN VUELO. */
+  demorar: ((method: string, path: string) => number) | null;
   /** Rutas sin handler ni ignorar explícito. Debe quedar vacío. */
   unknown: string[];
   /** Espera a que no quede ningún fetch en vuelo (incluye los de setImmediate). */
@@ -94,6 +111,7 @@ function routeToCentral(): Router {
   const calls: string[] = [];
   const unknown: string[] = [];
   let pending = 0;
+  const router: Partial<Router> = { cortar: null, demorar: null };
 
   globalThis.fetch = (async (input: any, init?: any) => {
     pending++;
@@ -106,6 +124,13 @@ function routeToCentral(): Router {
       const query = Object.fromEntries(url.searchParams.entries());
       calls.push(method + ' ' + p);
 
+      const corte = router.cortar ? router.cortar(method, p) : null;
+      // 'red' corta antes de despachar: la central no se entera de nada.
+      if (corte === 'red') throw new TypeError('fetch failed');
+
+      const demora = router.demorar ? router.demorar(method, p) : 0;
+      if (demora > 0) await new Promise(r => setTimeout(r, demora));
+
       if (method === 'POST' && p === '/api/backup/files/bulk') return await dispatch(central.bulkUpsertBackupFiles, { body });
       if (method === 'GET' && p === '/api/backup/files') return await dispatch(central.getBackupFiles, { query });
       if (method === 'POST' && p === '/api/backup/platform-videos/bulk') return await dispatch(central.bulkUpsertBackupPlatformVideos, { body });
@@ -114,6 +139,15 @@ function routeToCentral(): Router {
       if (method === 'POST' && p === '/api/backup/config') return await dispatch(central.upsertBackupConfig, { body });
       if (method === 'POST' && (p === '/api/sync/history' || p === '/api/sync/record-publish')) {
         return await dispatch(central.recordUploadEvent, { body });
+      }
+      if (method === 'GET' && p === '/api/sync/platform-revisions') {
+        return await dispatch(central.getPlatformRevisions, {});
+      }
+      if (method === 'POST' && p === '/api/sync/platform-transition') {
+        const r = await dispatch(central.applyPlatformTransitionEndpoint, { body });
+        // 'tras-aplicar': el efecto quedó, la respuesta se pierde.
+        if (corte === 'tras-aplicar') throw new TypeError('fetch failed');
+        return r;
       }
       if (method === 'DELETE' && p.startsWith('/api/sync/platform-link/')) {
         const parts = p.split('/');
@@ -146,8 +180,17 @@ function routeToCentral(): Router {
   // MIENTRAS el test arranca el ciclo siguiente: carrera real, resultados no
   // deterministas. Se drena el macrotask y se espera a que no quede ningún
   // fetch en vuelo, repetido hasta estabilizar (un push puede encadenar otro).
+  //
+  // Ojo con el reloj: drenar solo `setImmediate` NO alcanza. Cada fetch de acá
+  // termina en una ida y vuelta real a Mongo, que tarda milisegundos; 100
+  // turnos de setImmediate pasan en microsegundos. Mientras el push de fondo
+  // fue corto el margen alcanzó, pero al sumarle el flush de transiciones dejó
+  // de alcanzar y el harness declaraba "no terminó nunca" algo que solo estaba
+  // tardando. Por eso mientras haya trabajo en vuelo se cede tiempo REAL, con
+  // un presupuesto acotado para que un cuelgue de verdad siga siendo un error.
   const waitIdle = async () => {
-    for (let intento = 0; intento < 100; intento++) {
+    for (let intento = 0; intento < 600; intento++) {
+      if (pending > 0) { await new Promise(r => setTimeout(r, 5)); continue; }
       await new Promise(r => setImmediate(r));
       if (pending === 0) {
         await new Promise(r => setImmediate(r));
@@ -157,7 +200,8 @@ function routeToCentral(): Router {
     throw new Error('el push de fondo no terminó nunca: sigue habiendo fetch en vuelo');
   };
 
-  return { calls, unknown, waitIdle, restore: () => { globalThis.fetch = original; } };
+  Object.assign(router, { calls, unknown, waitIdle, restore: () => { globalThis.fetch = original; } });
+  return router as Router;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +233,10 @@ async function limpiarEstado() {
   const { db } = await import('../../../local-backend/src/db/database');
   db.prepare('DELETE FROM platform_videos').run();
   db.prepare('DELETE FROM files').run();
+  // Sin esto un test hereda las intenciones que el anterior dejó pendientes, y
+  // el flush de un caso entrega la operación de otro.
+  try { db.prepare('DELETE FROM transition_outbox').run(); } catch {}
+  try { db.prepare('DELETE FROM platform_revisions').run(); } catch {}
   await mongoose.connection.dropDatabase();
 }
 
@@ -1258,4 +1306,389 @@ test('P0 — dos entregas simultáneas idénticas responden ambas OK, ninguna co
     'y una de las dos tiene que declararse deduplicada',
   );
   assert.equal(await revisionDe(contentId), rev0 + 1, 'los efectos se aplican una sola vez');
+});
+
+
+// ===========================================================================
+// ENTREGA 2 — OUTBOX LOCAL. Rojos primero, como todo lo anterior.
+//
+// Qué falta hoy, concretamente: `reportUnlinkPlatform` hace el DELETE y, si
+// falla, lanza. El caller (setPlatformLink) lo atrapa, devuelve un
+// `syncWarning` en el JSON... y ahí termina. La SQLite local YA quedó
+// desvinculada. No queda registro de que la central no acompañó, ni nada que
+// lo reintente. La intención se perdió, y el próximo pull puede resucitar el
+// link porque del otro lado nunca pasó nada.
+//
+// La outbox es lo que vuelve durable esa intención. Y al volverla durable
+// aparecen tres problemas que hoy no existen porque no hay reintento:
+// deduplicar, no reintentar para siempre lo que nunca va a andar, y mantener
+// el orden. Cada uno tiene su caso.
+// ===========================================================================
+
+/** Lo que la outbox local tiene encolado para ese archivo/plataforma. */
+async function pendientesEnOutbox(contentId?: string): Promise<any[]> {
+  const { db } = await import('../../../local-backend/src/db/database');
+  try {
+    return db.prepare(
+      contentId
+        ? `SELECT * FROM transition_outbox WHERE content_id = ? ORDER BY id ASC`
+        : `SELECT * FROM transition_outbox ORDER BY id ASC`,
+    ).all(...(contentId ? [contentId] : [])) as any[];
+  } catch (err: any) {
+    // Rojo explícito, no un error críptico de SQLite a mitad de un assert.
+    throw new Error('No existe la outbox de transiciones en SQLite: ' + err.message);
+  }
+}
+
+/** El reintento tal como lo dispara el server (arranque / push de fondo). */
+async function flushOutbox() {
+  const mod = await import('../../../local-backend/src/services/transition-outbox.service');
+  return mod.flushTransitionOutbox(AUTH);
+}
+
+// ---------------------------------------------------------------------------
+// OUT-1 — una desvinculación decidida con la central caída NO se pierde.
+//
+// Es el caso que justifica todo lo demás. Hoy el usuario ve el link
+// desaparecer de su pantalla, la central nunca se entera, y no queda ni rastro
+// de la intención: no hay nada que reintentar después.
+// ---------------------------------------------------------------------------
+test('OUTBOX — un unlink decidido con la central caída se entrega cuando vuelve', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    // La central no está. Todo lo que salga de local-backend hacia la
+    // transición revienta como reviente un fetch sin red.
+    router.cortar = (m, p) =>
+      (p === '/api/sync/platform-transition' || p.startsWith('/api/sync/platform-link/')) ? 'red' : null;
+
+    await unlinkDesdeElectron(local.id, router);
+
+    // Punto de partida del caso: los dos lados quedaron en desacuerdo. Lo local
+    // ya cambió (es la copia de esta PC y es lo que el usuario pidió) y la
+    // central no se enteró.
+    const durante = await fotoDelEstado(contentId);
+    assert.equal(durante.sqlite.link, null, 'la SQLite local tenía que quedar desvinculada igual');
+    assert.ok(durante.files.platforms.includes(PLATFORM),
+      'con la entrega cortada la central no puede haberse enterado: si ya está desvinculada, ' +
+      'el corte del harness no cortó nada y el caso no prueba lo que dice');
+
+    // Vuelve la conectividad. Sin que el usuario vuelva a tocar nada, el
+    // disparador normal ("algo cambió, sincronizá" -- el mismo que ya usa el
+    // outbox de historial) tiene que reparar la divergencia.
+    //
+    // ESTA es la afirmación central del caso, y no menciona ninguna outbox: hoy
+    // falla porque la intención se evaporó en el catch de setPlatformLink. No
+    // hay nada que reintentar, y no lo va a haber nunca.
+    router.cortar = null;
+    const { pushFilesToCloudInBackground } = await import('../../../local-backend/src/controllers/backup-sync.controller');
+    pushFilesToCloudInBackground(AUTH);
+    await router.waitIdle();
+
+    const despues = await fotoDelEstado(contentId);
+    assert.ok(!despues.files.platforms.includes(PLATFORM),
+      'la desvinculación se perdió: la central quedó vinculada y nada la reintenta');
+    assert.equal(despues.platformVideo.linkedFileId, null, 'el vínculo central tenía que soltarse');
+
+    // Y el detalle de cómo: encolada con su operationId, entregada, sin quedar
+    // pendiente.
+    const encoladas = await pendientesEnOutbox(contentId);
+    assert.equal(encoladas.length, 1, 'la intención de desvincular tenía que quedar encolada');
+    assert.equal(encoladas[0].platform, PLATFORM);
+    assert.ok(encoladas[0].operation_id, 'sin operationId la central no puede deduplicar el reintento');
+    assert.notEqual(encoladas[0].status, 'pending', 'ya entregada: no puede seguir pendiente');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OUT-2 — el reintento no puede aplicar los efectos dos veces.
+//
+// El caso incómodo de toda outbox: la central APLICÓ y la respuesta se perdió.
+// El cliente no tiene forma de saberlo, así que va a reintentar. Si el
+// reintento genera un `operationId` nuevo, para la central es otra operación
+// -- y una segunda operación con la misma `baseVersion` ya vieja es un
+// conflicto, o peor, vuelve a correr los efectos.
+// ---------------------------------------------------------------------------
+test('OUTBOX — si se pierde la respuesta, el reintento no vuelve a aplicar nada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const revInicial = await revisionDe(contentId);
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'tras-aplicar' : null);
+    await unlinkDesdeElectron(local.id, router);
+
+    // Del lado de la central ya se aplicó: la revisión avanzó.
+    const revTrasAplicar = await revisionDe(contentId);
+    assert.equal(revTrasAplicar, revInicial + 1, 'la central aplicó la transición');
+
+    // El cliente, en cambio, la sigue viendo pendiente: nunca recibió respuesta.
+    const encoladas = await pendientesEnOutbox(contentId);
+    assert.equal(encoladas.length, 1);
+    assert.equal(encoladas[0].status, 'pending');
+    const opId = encoladas[0].operation_id;
+
+    // Reintento con la red sana.
+    router.cortar = null;
+    const { entregadas } = await flushOutbox();
+
+    // Se ENTREGÓ. No es un detalle: si el reintento se presentara como una
+    // operación nueva, la central lo rechazaría por atrasado (su base ya no
+    // describe el estado) y el usuario vería su desvinculación descartada por
+    // conflicto cuando en realidad ya se había aplicado.
+    assert.equal(entregadas, 1, 'el reintento tenía que entregarse, no quedar en conflicto');
+    const mismaOp = await pendientesEnOutbox(contentId);
+    assert.equal(mismaOp[0].operation_id, opId, 'el reintento tenía que reusar el MISMO operationId');
+    assert.equal(mismaOp[0].status, 'delivered',
+      'entregada, no en conflicto: la central tenía que reconocerla como el mismo trabajo');
+
+    // Y reconocerla como el mismo trabajo significa no volver a aplicarla.
+    assert.equal(await revisionDe(contentId), revTrasAplicar,
+      'el reintento aplicó los efectos por segunda vez');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OUT-3 — el `baseVersion` que se entrega es el que el usuario VIO al decidir,
+// no el que hay al momento de entregar.
+//
+// Es la razón entera por la que la outbox guarda la revisión en vez de
+// releerla al entregar. Si la releyera, una desvinculación decidida ayer sobre
+// el estado de ayer se aplicaría contra el estado de hoy -- y borraría una
+// publicación que entró en el medio, que es exactamente la familia de bugs que
+// motivó todo esto.
+// ---------------------------------------------------------------------------
+test('OUTBOX — una intención encolada no destruye lo que se publicó mientras esperaba', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const revInicial = await revisionDe(contentId);
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await unlinkDesdeElectron(local.id, router);
+    assert.equal((await pendientesEnOutbox(contentId)).length, 1, 'la intención tenía que quedar encolada');
+
+    // Mientras la intención espera, el mismo video se publica de nuevo en esa
+    // plataforma desde otro dispositivo. La revisión avanza.
+    const NUEVO_ID = '17888888888888888';
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: NUEVO_ID,
+      platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
+      fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-07T12:00:00.000Z'),
+    });
+    const revTrasPublicar = await revisionDe(contentId);
+
+    // Y esta PC se entera de la publicación nueva por el ciclo normal de sync:
+    // a partir de acá CONOCE la revisión nueva. Es lo que separa las dos
+    // lecturas posibles de `baseVersion` -- sin este ciclo, "la que se congeló
+    // al decidir" y "la que hay al entregar" son el mismo número y el caso no
+    // prueba nada.
+    router.cortar = null;
+    await cicloSync();
+    await router.waitIdle();
+
+    const { platformRevisionRepo } = await import('../../../local-backend/src/db/platform-revision.repo');
+    assert.equal(platformRevisionRepo.get(contentId, PLATFORM), revTrasPublicar,
+      'el pull tenía que traer la revisión nueva; si no, el caso vuelve a no distinguir nada');
+    const encolada = (await pendientesEnOutbox(contentId))[0];
+    assert.equal(Number(encolada.base_version), revInicial,
+      'la intención tiene que seguir declarando la revisión que el usuario vio, no la de ahora');
+
+    // Y ahora sí se entrega. Con la base congelada llega atrasada y la central
+    // la rechaza. Con la base releída se aplicaría, y borraría la publicación.
+    await flushOutbox();
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(foto.files.platforms.includes(PLATFORM),
+      'la publicación nueva fue destruida por una intención basada en un estado anterior');
+    assert.equal(await revisionDe(contentId), revTrasPublicar,
+      'una operación atrasada no puede mover la revisión');
+    assert.equal((await pendientesEnOutbox(contentId))[0].status, 'conflict',
+      'llegó tarde: tenía que archivarse como conflicto, no aplicarse');
+    const pv = await central.PlatformVideoModel.findOne({ userId: USER_ID, platformId: NUEVO_ID }).lean();
+    assert.ok(pv?.linkedFileId, 'el vínculo nuevo tenía que sobrevivir');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OUT-4 — no todo se reintenta igual.
+//
+// Un fallo de red es transitorio: hay que insistir. Un 409 (la operación llegó
+// tarde) y un 422 (esa clave ya identifica otra operación) NO se arreglan
+// insistiendo -- reintentarlos para siempre es una fila que nunca se vacía y
+// un log que nadie va a poder leer.
+// ---------------------------------------------------------------------------
+test('OUTBOX — un conflicto se resuelve y se archiva; un fallo de red sigue pendiente', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await unlinkDesdeElectron(local.id, router);
+
+    // Un fallo de red deja la fila pendiente y suma un intento.
+    await flushOutbox();
+    let fila = (await pendientesEnOutbox(contentId))[0];
+    assert.equal(fila.status, 'pending', 'un fallo de red es transitorio: tiene que seguir pendiente');
+    assert.ok(fila.attempts >= 1, 'el intento fallido tenía que quedar contado');
+
+    // Ahora el estado cambia debajo, así que la operación queda atrasada -> 409.
+    router.cortar = null;
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: '17777777777777777',
+      platformUrl: 'https://www.instagram.com/reel/CCCCCCCCCCC/',
+      fileName: 'video integral.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-07T12:00:00.000Z'),
+    });
+
+    await flushOutbox();
+    fila = (await pendientesEnOutbox(contentId))[0];
+    assert.notEqual(fila.status, 'pending',
+      'un 409 no se arregla reintentando: la fila no puede quedar pendiente para siempre');
+
+    // Y no se sigue intentando en los flushes siguientes.
+    const intentosTrasConflicto = fila.attempts;
+    await flushOutbox();
+    assert.equal((await pendientesEnOutbox(contentId))[0].attempts, intentosTrasConflicto,
+      'una operación ya resuelta no se puede seguir reintentando');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// OUT-5 — el orden por (contentId, plataforma) se respeta.
+//
+// La segunda operación sobre la misma plataforma se decidió SOBRE EL RESULTADO
+// de la primera: su `baseVersion` es la revisión que la primera va a producir.
+// Si el flush la entrega antes, llega con una base que todavía no existe y la
+// central la rechaza -- y encima queda archivada como conflicto, o sea perdida,
+// cuando en realidad solo había llegado temprano.
+// ---------------------------------------------------------------------------
+test('OUTBOX — dos intenciones sobre la misma plataforma se entregan en orden', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+
+    // Primera intención: desvincular. Queda encolada, sin entregar.
+    await unlinkDesdeElectron(local.id, router);
+    // Segunda: se vuelve a vincular y a desvincular sobre el resultado de la
+    // primera. Ambas viven en la cola a la vez.
+    const { platformVideoRepo } = await import('../../../local-backend/src/db/platform-video.repo');
+    platformVideoRepo.upsert({
+      platform: PLATFORM, platform_id: PLATFORM_ID, platform_url: PLATFORM_URL,
+      linked_file_id: local.id, match_status: 'manual',
+    });
+    await unlinkDesdeElectron(local.id, router);
+
+    const cola = await pendientesEnOutbox(contentId);
+    assert.equal(cola.length, 2, 'las dos intenciones tenían que quedar encoladas');
+    assert.ok(cola[0].id < cola[1].id, 'la cola tiene que conservar el orden en que se decidieron');
+    assert.notEqual(cola[0].operation_id, cola[1].operation_id,
+      'son dos decisiones distintas: no pueden compartir operationId');
+    assert.ok(
+      Number(cola[1].base_version) > Number(cola[0].base_version),
+      'la segunda se decidió sobre el resultado de la primera: su base tiene que ser posterior',
+    );
+
+    // Al entregar, la primera va primero. Si se invirtiera, la segunda llegaría
+    // con una base inexistente.
+    router.cortar = null;
+    await flushOutbox();
+
+    const entregadas = router.calls.filter(c => c === 'POST /api/sync/platform-transition');
+    assert.ok(entregadas.length >= 2, 'las dos tenían que salir');
+    const finales = await pendientesEnOutbox(contentId);
+    assert.deepEqual(finales.filter(e => e.status === 'pending'), [],
+      'ninguna puede quedar colgada tras un flush con la red sana');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// OUT-6 — dos flushes solapados no pueden inventar un problema.
+//
+// `setPlatformLink` dispara el push de fondo (que flushea) y enseguida encola
+// la desvinculación y flushea otra vez. Con un guard de "si ya hay uno
+// corriendo, salteá", la segunda llamada vuelve sin haber hecho nada y sin
+// saber si la primera alcanzó a ver su fila -- el lote de `findPending` ya se
+// había leído antes de que la fila existiera.
+//
+// Con red sana y la desvinculación entregándose bien, el usuario no puede
+// recibir un aviso de que quedó pendiente. Es un falso positivo, y de los
+// peores: enseña a ignorar el aviso justo cuando algún día sea cierto.
+// ---------------------------------------------------------------------------
+test('OUTBOX — un flush ya en vuelo no hace que la desvinculación se reporte como pendiente', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    const { flushTransitionOutbox } = await import('../../../local-backend/src/services/transition-outbox.service');
+    const { setPlatformLink } = await import('../../../local-backend/src/controllers/video.controller');
+
+    // Se deja un flush EN VUELO: hay una transición previa encolada de otra
+    // plataforma, y su entrega tarda.
+    const { transitionOutboxRepo } = await import('../../../local-backend/src/db/transition-outbox.repo');
+    transitionOutboxRepo.enqueue({ contentId, platform: 'youtube', action: 'unlink', knownVersion: 0 });
+    router.demorar = (m, p) => (p === '/api/sync/platform-transition' ? 60 : 0);
+    const enVuelo = flushTransitionOutbox(AUTH);
+
+    // Y en el medio el usuario desvincula. La red está sana: esto tiene que
+    // salir bien y sin avisos.
+    const { res, captured } = fakeRes();
+    await setPlatformLink(
+      { params: { fileId: String(local.id), platform: PLATFORM }, body: { url: '' }, headers: { authorization: AUTH } } as any,
+      res as any,
+    );
+    await enVuelo;
+    await router.waitIdle();
+
+    assert.equal(captured.body?.syncWarning, undefined,
+      'con red sana no puede avisar que quedó pendiente: la entrega salió bien');
+
+    const fila = (await pendientesEnOutbox(contentId)).find(e => e.platform === PLATFORM);
+    assert.ok(fila, 'la desvinculación tenía que quedar encolada');
+    assert.equal(fila.status, 'delivered', 'y entregada');
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(!foto.files.platforms.includes(PLATFORM), 'la central tenía que quedar desvinculada');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
 });

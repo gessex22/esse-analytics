@@ -28,6 +28,8 @@ import { LAB_MODE } from './config';
 import { configRepo } from './db/config.repo';
 import { flushHistoryOutbox } from './services/history-outbox.service';
 import { historyOutboxRepo } from './db/history-outbox.repo';
+import { flushTransitionOutbox } from './services/transition-outbox.service';
+import { transitionOutboxRepo } from './db/transition-outbox.repo';
 import { fetchInstallationRole } from './services/installation-role.service';
 
 const app  = express();
@@ -134,6 +136,21 @@ httpServer.on('listening', () => {
   // estar vencido si pasaron más de 7 días sin loguearse; si falla, el
   // próximo flush disparado por una acción real con sesión fresca lo cubre
   // igual.
+  // Lo mismo para las transiciones (desvincular/descartar) que quedaron sin
+  // entregar -- ver transition-outbox.repo.ts. Va en su propio bloque, no
+  // colgado del anterior: son dos colas independientes, y tener transiciones
+  // pendientes no implica tener eventos de historial pendientes.
+  const transicionesPendientes = transitionOutboxRepo.countPending();
+  if (transicionesPendientes > 0) {
+    console.log(`[transition-outbox] ${transicionesPendientes} transición(es) sin entregar de sesiones anteriores, reintentando...`);
+    const cachedToken = configRepo.get('owner_token');
+    if (cachedToken) {
+      flushTransitionOutbox(`Bearer ${cachedToken}`).then(({ entregadas, pendientes }) => {
+        console.log(`[transition-outbox] arranque: ${entregadas} entregada(s), ${pendientes} siguen pendientes`);
+      }).catch(err => console.warn('[transition-outbox] flush de arranque falló:', err.message));
+    }
+  }
+
   const pendingAtStartup = historyOutboxRepo.countPending();
   if (pendingAtStartup > 0) {
     console.log(`[history-outbox] ${pendingAtStartup} evento(s) pendiente(s) de sesiones anteriores, reintentando...`);

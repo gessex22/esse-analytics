@@ -322,7 +322,7 @@ sin cubrir nada. Sus garantías se mudaron al harness, contra el camino real.
 | 6 | Tombstone de desvinculación | Hecho |
 | 7 | LWW de links + precedencia por plataforma | Hecho |
 | 7b | Semántica causal: dedup persistente, CAS, reanudación, endpoint POST | **Parcial** — 3 P0 abiertos |
-| 8 | Outbox local (intención durable) | **Sin empezar** |
+| 8 | Outbox local (intención durable) | Hecho para el unlink |
 | 9 | Outbox central (reparación de escrituras parciales) | **Sin empezar** |
 | 2 a 5 | Reconciliador, relojes restantes, fallos secundarios, consolidación | Sin empezar |
 
@@ -346,3 +346,93 @@ automático NO degrada un `confirmed`.
 - Los clientes todavía no mandan `baseVersion`/`operationId`: sin eso la
   precedencia y la deduplicación no se ejercitan en producción. Es lo que
   aporta la outbox local.
+
+---
+
+## Entrega 2 — OUTBOX LOCAL (6 casos nuevos en verde)
+
+### El agujero, concretamente
+
+`reportUnlinkPlatform` hacía el `DELETE` contra la central y, si fallaba,
+lanzaba; `setPlatformLink` lo atrapaba y devolvía un `syncWarning` en el JSON.
+Ahí terminaba todo. La SQLite local ya estaba desvinculada, la central nunca se
+enteraba, y **no quedaba nada que reintentar** -- ni en ese momento ni nunca.
+El usuario veía el link desaparecer y el próximo pull podía resucitarlo, porque
+del otro lado no había pasado nada.
+
+Es el mismo agujero que `history_outbox` ya había tapado para el historial
+(BUG-2026-08-15-07), en otra ruta.
+
+### Qué se agregó
+
+| Pieza | Dónde | Para qué |
+|---|---|---|
+| `transition_outbox` | SQLite local | La intención se guarda ANTES de intentar entregarla |
+| `platform_revisions` | SQLite local | La revisión que esta PC vio, para poder declarar `baseVersion` |
+| `GET /api/sync/platform-revisions` | central | Sin esto el cliente no conoce la revisión y no puede usar el endpoint de transición |
+| `flushTransitionOutbox` | local-backend | Reintento, colgado de los mismos disparadores que el outbox de historial (arranque + push de fondo) |
+
+Tres decisiones que no son obvias:
+
+1. **La revisión se congela al ENCOLAR, no al entregar.** Releerla al entregar
+   convertiría una desvinculación decidida ayer, sobre el estado de ayer, en una
+   desvinculación aplicada contra el estado de hoy -- borrando una publicación
+   que entró en el medio. Es exactamente la familia de bugs que motivó todo
+   esto.
+2. **El reintento reusa el mismo `operationId`.** Con uno nuevo, un reintento
+   tras una respuesta perdida sería para la central otra operación: o reaplica
+   los efectos, o la rechaza por atrasada y el usuario ve un conflicto sobre
+   algo que ya se había aplicado bien.
+3. **Los flushes se encadenan, no se descartan.** El guard obvio ("si ya hay uno
+   corriendo, salteá") hacía que la segunda llamada volviera sin saber si la
+   primera había alcanzado a ver su fila -- `findPending` ya había leído su lote
+   antes de que la fila existiera. Producía un aviso de "quedó pendiente" sobre
+   desvinculaciones que se estaban entregando bien.
+
+### Los 6 casos
+
+| Caso | Qué afirma |
+|---|---|
+| OUT-1 | Un unlink decidido con la central caída se entrega solo cuando vuelve la red |
+| OUT-2 | Si se pierde la RESPUESTA, el reintento se entrega y no reaplica nada |
+| OUT-3 | Una intención encolada no destruye lo que se publicó mientras esperaba |
+| OUT-4 | Un 409 se archiva; un fallo de red sigue pendiente |
+| OUT-5 | Dos intenciones sobre la misma plataforma se entregan en orden |
+| OUT-6 | Un flush ya en vuelo no hace que la desvinculación se reporte como pendiente |
+
+### Verificado por mutación, no solo por color
+
+Dos de los seis casos pasaban **por el motivo equivocado** y lo destapó romper
+la implementación a propósito, no leer el código:
+
+- **OUT-2** pasaba aunque el reintento se presentara con un `operationId` nuevo:
+  la central lo rechazaba por atrasado y la revisión tampoco avanzaba, así que
+  el assert de "no se aplicó dos veces" se cumplía igual. Ahora exige que se
+  ENTREGUE (`delivered`), no que simplemente no empeore.
+- **OUT-3** no distinguía "base congelada" de "base releída": esta PC nunca se
+  había enterado de la publicación nueva, así que releer daba el mismo número.
+  Ahora corre un ciclo de sync en el medio, para que la PC SÍ conozca la
+  revisión nueva y la operación encolada tenga que salir igual con la vieja.
+
+Las 6 mutaciones (sacar el disparador, id nuevo por reintento, base releída,
+409 reintentado, sin orden por clave, guard en vez de cola) rompen cada una su
+caso.
+
+### Estado
+
+31 tests en verde en `backend` (26 integrales + 5 de convergencia), 0 skips,
+exit 0 contra Mongo real. `tsc` backend 22 / local-backend 47 (baseline).
+local-backend 2/2.
+
+De paso: `waitIdle` del harness solo drenaba `setImmediate`, y 100 turnos no
+alcanzan para un push completo contra Mongo real -- declaraba "no terminó
+nunca" algo que solo estaba tardando. Ahora cede tiempo real, con presupuesto
+acotado para que un cuelgue de verdad siga siendo un error.
+
+### Lo que la outbox todavía NO cubre
+
+- Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android
+  siguen usando el `DELETE` viejo, sin `operationId` ni `baseVersion`.
+- Sigue faltando la **outbox central** (paso 9): reparación de escrituras
+  parciales del lado del servidor.
+- Siguen faltando los **5 callers** del paso 1.3.

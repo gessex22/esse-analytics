@@ -156,6 +156,46 @@ db.exec(`
     updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     delivered_at TEXT
   );
+
+  -- Outbox de TRANSICIONES de plataforma (desvincular/descartar) --
+  -- ver transition-outbox.repo.ts. Mismo agujero que history_outbox tapó para
+  -- el historial, en otra ruta: reportUnlinkPlatform hacía el DELETE contra la
+  -- central y, si fallaba, el caller lo atrapaba y devolvía un aviso. La
+  -- SQLite local ya estaba desvinculada, la central nunca se enteraba, y no
+  -- quedaba NADA que reintentar -- así que el próximo pull podía resucitar el
+  -- link. Acá la intención queda guardada antes de intentar entregarla.
+  --
+  -- operation_id es lo que permite deduplicar: un reintento entrega la MISMA
+  -- operacion, no una nueva. base_version es la revision que el usuario vio
+  -- al decidir, congelada -- releerla al entregar aplicaría una decisión vieja
+  -- contra un estado nuevo.
+  CREATE TABLE IF NOT EXISTS transition_outbox (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_id TEXT    NOT NULL UNIQUE,
+    content_id   TEXT    NOT NULL,
+    platform     TEXT    NOT NULL,
+    action       TEXT    NOT NULL,
+    base_version INTEGER NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'pending', -- pending | delivered | conflict | failed
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    delivered_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_transition_outbox_pendientes
+    ON transition_outbox(status, id);
+
+  -- Última revisión conocida por ESTA PC para cada (content_id, plataforma) --
+  -- ver platform-revision.repo.ts. La emite la central; el cliente la necesita
+  -- para poder declarar baseVersion en una transicion.
+  CREATE TABLE IF NOT EXISTS platform_revisions (
+    content_id TEXT    NOT NULL,
+    platform   TEXT    NOT NULL,
+    version    INTEGER NOT NULL,
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (content_id, platform)
+  );
 `);
 
 // Migrations
