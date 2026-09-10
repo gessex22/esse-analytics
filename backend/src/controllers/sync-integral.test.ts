@@ -3782,7 +3782,9 @@ test('BOOTSTRAP — resolver dos veces devuelve siempre la misma identidad', asy
   await cargarCentral();
   await limpiarEstado();
 
-  const primera = await resolverIdentidad({ fileName: 'video nuevo del telefono.mp4' });
+  const primera = await resolverIdentidad({
+    fileName: 'video nuevo del telefono.mp4', deviceId: 'iphone-1', clientFileId: 'local-1',
+  });
   assert.equal(primera.status, 200);
   const cid = primera.body?.contentId;
   assert.match(
@@ -3790,7 +3792,9 @@ test('BOOTSTRAP — resolver dos veces devuelve siempre la misma identidad', asy
     'la central emite un UUID: es ella la autoridad de la identidad, no el cliente',
   );
 
-  const segunda = await resolverIdentidad({ fileName: 'video nuevo del telefono.mp4' });
+  const segunda = await resolverIdentidad({
+    fileName: 'video nuevo del telefono.mp4', deviceId: 'iphone-1', clientFileId: 'local-1',
+  });
   assert.equal(
     segunda.body?.contentId, cid,
     'Resolver es idempotente. Si cada llamada emitiera una identidad nueva, dos acciones del mismo ' +
@@ -3811,21 +3815,32 @@ test('BOOTSTRAP — un archivo viejo sin content_id recibe uno, sin duplicarlo',
   // Un documento de antes de que existiera `content_id`.
   await central.FileModel.create({
     userId: USER_ID, file_name: 'viejo sin identidad.mp4', file_path: 'viejo sin identidad.mp4',
-    status: 'PENDIENTE', platforms: ['instagram'], platforms_discarded: [],
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
   });
 
-  // Dos resoluciones a la vez: es el caso real de dos dispositivos abriendo el
-  // mismo video, o de un reintento que llega mientras el primero sigue en vuelo.
+  // El backfill NO pasa por `resolve-identity`: ese endpoint no busca por
+  // nombre a propósito, así que nunca se topa con un documento legado. Pasa por
+  // `resolveOrCreateFile`, que sí resuelve por nombre -- una publicación desde
+  // el celular de un archivo que el escritorio ya tenía.
+  //
+  // Dos a la vez: es el caso real de un reintento que llega mientras el primero
+  // sigue en vuelo.
+  const { resolveOrCreateFile } = await import('./backup.controller');
   const [a, b] = await Promise.all([
-    resolverIdentidad({ fileName: 'viejo sin identidad.mp4' }),
-    resolverIdentidad({ fileName: 'viejo sin identidad.mp4' }),
+    resolveOrCreateFile(USER_ID, { fileName: 'viejo sin identidad.mp4' }),
+    resolveOrCreateFile(USER_ID, { fileName: 'viejo sin identidad.mp4' }),
   ]);
 
-  assert.equal(a.body?.contentId, b.body?.contentId,
-    'Dos resoluciones concurrentes no pueden asignar identidades distintas al mismo documento: ' +
-    'la asignación tiene que ser atómica, no leer-decidir-escribir.');
-  const doc = await central.FileModel.findOne({ userId: USER_ID, file_name: 'viejo sin identidad.mp4' }).lean();
-  assert.equal(doc?.content_id, a.body?.contentId, 'y queda persistida en el documento');
+  assert.ok(a?.content_id, 'el documento legado tiene que salir con identidad');
+  assert.equal(
+    String(a?.content_id), String(b?.content_id),
+    'Dos resoluciones concurrentes no pueden asignar identidades distintas al mismo documento: la ' +
+    'asignación tiene que ser atómica, no leer-decidir-escribir.',
+  );
+  assert.equal(
+    await central.FileModel.countDocuments({ userId: USER_ID, file_name: 'viejo sin identidad.mp4' }), 1,
+    'y sin duplicar el documento',
+  );
 });
 
 test('BOOTSTRAP — identidad, estado y revisiones salen del MISMO documento', async (t) => {
@@ -3842,7 +3857,9 @@ test('BOOTSTRAP — identidad, estado y revisiones salen del MISMO documento', a
   });
   const revReal = await revisionDe(contentId);
 
-  const r = await resolverIdentidad({ fileName: 'video integral.mp4', contentId });
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-2',
+  });
 
   assert.equal(r.body?.contentId, contentId);
   assert.deepEqual(r.body?.platformsDiscarded, [PLATFORM], 'el estado, del mismo documento');
@@ -3867,7 +3884,7 @@ test('BOOTSTRAP — resolver NO aplica ningún estado', async (t) => {
   const revAntes = await revisionDe(contentId);
 
   await resolverIdentidad({
-    fileName: 'video integral.mp4', contentId,
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-3',
     // Un cliente podría mandar su estado local; la resolución tiene que
     // ignorarlo.
     platforms: [], platformsDiscarded: ['tiktok', 'youtube'],
@@ -3882,4 +3899,165 @@ test('BOOTSTRAP — resolver NO aplica ningún estado', async (t) => {
   );
   assert.deepEqual(despues.files.discarded, antes.files.discarded);
   assert.equal(await revisionDe(contentId), revAntes, 'y no mueve la revisión');
+});
+
+
+// ---------------------------------------------------------------------------
+// EL NOMBRE NO ES IDENTIDAD.
+//
+// `ImportUseCase` de iOS marca `isDuplicate` pero CREA el archivo igual, y su
+// dedup mira `(fileName, duracionSegundos, formato)`. O sea que dos videos
+// DISTINTOS con el mismo nombre coexisten en el teléfono como dos
+// `FileEntity`.
+//
+// Resolver por nombre les daría el MISMO `content_id`, y a partir de ahí toda
+// transición sobre uno afectaría al otro. Peor: el caso de idempotencia por
+// nombre consolidaría esa colisión como si fuera lo correcto.
+//
+// El vínculo determinístico es `(userId, deviceId, clientFileId)`. El nombre
+// queda como metadata.
+// ---------------------------------------------------------------------------
+
+test('BOOTSTRAP — dos archivos distintos con el mismo nombre reciben identidades distintas', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const a = await resolverIdentidad({
+    fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-A',
+  });
+  const b = await resolverIdentidad({
+    fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-B',
+  });
+
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200);
+  assert.notEqual(
+    a.body?.contentId, b.body?.contentId,
+    'Son dos videos distintos que casualmente comparten nombre. Darles la misma identidad hace que ' +
+    'toda transición sobre uno afecte al otro. Sin vínculo determinístico es más seguro crear dos ' +
+    'identidades reconciliables después que fusionar dos videos.',
+  );
+});
+
+test('BOOTSTRAP — el mismo vínculo del cliente devuelve siempre la misma identidad', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const primera = await resolverIdentidad({
+    fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-A',
+  });
+  // El mismo archivo, después de que el usuario lo renombró en el teléfono.
+  const segunda = await resolverIdentidad({
+    fileName: 'clip renombrado.mp4', deviceId: 'iphone-1', clientFileId: 'local-A',
+  });
+
+  assert.equal(
+    segunda.body?.contentId, primera.body?.contentId,
+    'El vínculo es (deviceId, clientFileId), no el nombre: renombrar un archivo en el teléfono no ' +
+    'puede cambiar su identidad ni inaugurar una nueva.',
+  );
+});
+
+test('BOOTSTRAP — un contentId ya conocido es la identidad canónica, no se crea otra', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const antes = await central.FileModel.countDocuments({ userId: USER_ID });
+
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-C',
+  });
+
+  assert.equal(r.body?.contentId, contentId, 'el vínculo apunta a la identidad que ya existía');
+  assert.equal(
+    await central.FileModel.countDocuments({ userId: USER_ID }), antes,
+    'y no se crea un documento nuevo: el cliente trajo la identidad canónica',
+  );
+});
+
+test('BOOTSTRAP — se rechaza lo que no permite construir un vínculo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const sinVinculo = await resolverIdentidad({ fileName: 'clip.mp4' });
+  assert.equal(
+    sinVinculo.status, 400,
+    'Sin `deviceId`/`clientFileId` la única forma de resolver sería por nombre, que es justo lo ' +
+    'que no puede hacerse.',
+  );
+
+  const idInvalido = await resolverIdentidad({
+    fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-A', contentId: 'no-es-un-uuid',
+  });
+  assert.equal(
+    idInvalido.status, 400,
+    'Un `contentId` que no es UUID no puede aceptarse: quedaría persistido como identidad y todo ' +
+    'lo que dependa del índice único se rompería en silencio.',
+  );
+});
+
+
+test('BOOTSTRAP — dos resoluciones simultáneas del mismo vínculo dan la misma identidad', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Sin `contentId` previo: las dos van por el camino de crear identidad nueva,
+  // que es donde una escritura no idempotente del vínculo pisaría a la otra.
+  const [a, b] = await Promise.all([
+    resolverIdentidad({ fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-A' }),
+    resolverIdentidad({ fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-A' }),
+  ]);
+
+  assert.equal(
+    a.body?.contentId, b.body?.contentId,
+    'Es el MISMO vínculo: dos identidades distintas harían que el teléfono creyera que su archivo ' +
+    'cambió de identidad entre dos llamadas, y toda transición encolada con la anterior quedaría ' +
+    'huérfana.',
+  );
+  const { FileIdentityBindingModel } = await import('../models/file-identity-binding.model');
+  assert.equal(
+    await FileIdentityBindingModel.countDocuments({ userId: USER_ID, clientFileId: 'local-A' }), 1,
+    'y un solo vínculo persistido',
+  );
+});
+
+test('BOOTSTRAP — si la relectura final no encuentra el documento, no responde 200', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Se rompe la relectura final: el documento "desaparece" entre que se asigna
+  // la identidad y que se lee el estado.
+  const original = central.FileModel.findOne.bind(central.FileModel);
+  let llamadas = 0;
+  (central.FileModel as any).findOne = (...args: any[]) => {
+    llamadas++;
+    const q = original(...args);
+    // En este camino (identidad nueva) la ÚNICA llamada a FileModel.findOne es
+    // la relectura final del estado.
+    if (llamadas >= 1) {
+      const leanOriginal = q.lean.bind(q);
+      q.lean = async () => { void leanOriginal; return null; };
+    }
+    return q;
+  };
+
+  let r: any;
+  try {
+    r = await resolverIdentidad({ fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-Z' });
+  } finally {
+    (central.FileModel as any).findOne = original;
+  }
+
+  assert.notEqual(
+    r.status, 200,
+    'Un 200 sin estado haría que el teléfono creyera que ya tiene identidad Y revisiones -- y sin ' +
+    'revisiones observadas encolaría con una base inventada.',
+  );
 });

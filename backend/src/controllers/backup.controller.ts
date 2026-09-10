@@ -2,6 +2,7 @@ import { Response } from 'express';
 import { AuthRequest, isOwner } from '../middleware/auth.middleware';
 import { BackupFileModel } from '../models/backup-file.model';
 import { TranscriptBackupModel } from '../models/transcript-backup.model';
+import { randomUUID } from 'crypto';
 import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideaCentral';
@@ -1123,6 +1124,28 @@ export async function resolveOrCreateFile(
       { upsert: true, new: true },
     );
   }
+
+  // Un documento de antes de que existiera `content_id` no tiene ninguno, y
+  // sin identidad no puede participar de ninguna transición causal: el
+  // endpoint de transiciones la exige.
+  //
+  // Se le asigna una ATÓMICAMENTE. El filtro exige que SIGA sin identidad, así
+  // que dos resoluciones concurrentes no pueden asignar dos distintas -- la
+  // segunda no matchea y relee la que quedó. Leer-decidir-escribir acá
+  // produciría dos identidades para el mismo documento.
+  //
+  // Va acá y no en `resolve-identity` porque este es el camino que resuelve
+  // POR NOMBRE, que es la única forma de toparse con un documento legado. Ese
+  // otro endpoint no busca por nombre a propósito.
+  if (!file.content_id) {
+    const conIdentidad = await FileModel.findOneAndUpdate(
+      { _id: file._id, $or: [{ content_id: { $exists: false } }, { content_id: null }] },
+      { $set: { content_id: stableContentId ?? randomUUID() } },
+      { new: true },
+    );
+    file = conIdentidad ?? (await FileModel.findById(file._id)) ?? file;
+  }
+
   return file;
 }
 

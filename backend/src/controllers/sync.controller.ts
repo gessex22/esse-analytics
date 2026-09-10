@@ -10,7 +10,8 @@ import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
-import { applyPlatformPublish, resolveOrCreateFile } from './backup.controller';
+import { applyPlatformPublish } from './backup.controller';
+import { FileIdentityBindingModel } from '../models/file-identity-binding.model';
 import { applyPlatformTransition } from '../services/platform-transition.service';
 import { dispararReparacionOportunista } from '../services/transition-repair.scheduler';
 import { recordAuditEvent } from '../services/audit.service';
@@ -374,51 +375,114 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
 export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { fileName, contentId, remoteLibraryVideoId } = (req.body ?? {}) as {
+    const { fileName, contentId, remoteLibraryVideoId, deviceId, clientFileId } = (req.body ?? {}) as {
       fileName?: string; contentId?: string; remoteLibraryVideoId?: string;
+      deviceId?: string; clientFileId?: string;
     };
+
     if (!fileName || typeof fileName !== 'string') {
       res.status(400).json({ message: 'fileName es requerido.' });
       return;
     }
-
-    const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId });
-    if (!file) {
-      res.status(404).json({ message: 'No se pudo resolver el archivo.' });
+    // Sin vínculo determinístico la única forma de resolver sería por nombre, y
+    // el nombre NO es identidad: dos videos distintos pueden compartirlo (iOS
+    // los crea igual, ver ImportUseCase). Resolverlos por nombre les daría la
+    // misma identidad y toda transición sobre uno afectaría al otro.
+    if (!deviceId || !clientFileId) {
+      res.status(400).json({
+        message: 'deviceId y clientFileId son obligatorios: el nombre no identifica un archivo.',
+      });
+      return;
+    }
+    // Un `contentId` que no es UUID quedaría persistido como identidad y
+    // rompería en silencio todo lo que depende del índice único.
+    if (contentId !== undefined && !CONTENT_ID_RE.test(String(contentId))) {
+      res.status(400).json({ message: 'contentId debe ser un UUID.' });
       return;
     }
 
-    // Un documento de antes de que existiera `content_id` no tiene ninguno.
-    // Se le asigna uno ATÓMICAMENTE: el filtro exige que siga sin identidad,
-    // así que dos resoluciones concurrentes no pueden asignar dos distintas --
-    // la segunda no matchea y relee la que quedó. Leer-decidir-escribir acá
-    // produciría dos identidades para el mismo documento, y la central trataría
-    // al video como dos.
-    let identidad = file.content_id;
+    // 1) ¿Este vínculo ya tiene identidad? Es la respuesta determinística:
+    //    renombrar el archivo en el teléfono no puede cambiarla.
+    const vinculo = await FileIdentityBindingModel
+      .findOne({ userId, deviceId, clientFileId }).select('contentId').lean();
+
+    let identidad: string | undefined = vinculo?.contentId;
+
+    // 2) Si no, ¿el cliente trae una identidad canónica? Un `contentId`
+    //    conocido, o el archivo de Biblioteca remota del que salió. Ahí NO se
+    //    inaugura nada: se apunta a la que ya existe.
     if (!identidad) {
-      const asignado = await FileModel.findOneAndUpdate(
-        { _id: file._id, $or: [{ content_id: { $exists: false } }, { content_id: null }] },
-        { $set: { content_id: randomUUID() } },
-        { new: true },
-      ).select('content_id').lean();
-      identidad = asignado?.content_id
-        ?? (await FileModel.findById(file._id).select('content_id').lean())?.content_id;
+      const remote = remoteLibraryVideoId
+        ? await RemoteLibraryVideoModel.findOne({ _id: remoteLibraryVideoId, userId })
+            .select('contentId').lean()
+        : null;
+      identidad = contentId ?? remote?.contentId ?? undefined;
     }
 
-    // Se RELEE el documento entero: la asignación de arriba pudo cambiarlo, y
-    // lo que se devuelve tiene que describir un solo estado coherente.
-    const doc = await FileModel.findById(file._id)
+    // 3) Y si tampoco, se crea una identidad NUEVA. A propósito no se busca por
+    //    nombre: unir dos archivos distintos es peor que tener dos identidades
+    //    que después se puedan reconciliar.
+    let file = identidad
+      ? await FileModel.findOne({ userId, content_id: identidad })
+      : null;
+
+    if (!file && identidad) {
+      // La identidad es conocida pero no hay documento -- puede pasar con un
+      // contentId que el cliente conserva de un archivo que la central perdió.
+      file = await FileModel.findOneAndUpdate(
+        { userId, content_id: identidad },
+        { $setOnInsert: { userId, content_id: identidad, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
+        { upsert: true, new: true },
+      );
+    }
+
+    if (!file) {
+      identidad = randomUUID();
+      file = await FileModel.create({
+        userId, content_id: identidad, file_name: fileName, file_path: fileName, status: 'PENDIENTE',
+      });
+    }
+
+    // Acá no hace falta backfillear identidad: este endpoint NO resuelve por
+    // nombre, así que nunca se topa con un documento legado sin `content_id`.
+    // Ese backfill vive en `resolveOrCreateFile`, que sí resuelve por nombre.
+    identidad = file.content_id ?? identidad;
+
+    if (!identidad) {
+      // Sin identidad no hay nada que devolver, y un 200 haría que el cliente
+      // creyera que ya la tiene.
+      res.status(500).json({ message: 'No se pudo asignar una identidad al archivo.' });
+      return;
+    }
+
+    // El vínculo se persiste con `$setOnInsert`: si otra resolución concurrente
+    // lo creó primero, gana la suya y esta relee -- no puede haber dos.
+    const vinculoFinal = await FileIdentityBindingModel.findOneAndUpdate(
+      { userId, deviceId, clientFileId },
+      { $setOnInsert: { userId, deviceId, clientFileId, contentId: identidad } },
+      { upsert: true, new: true },
+    ).select('contentId').lean();
+    identidad = vinculoFinal?.contentId ?? identidad;
+
+    // Se RELEE el documento entero por la identidad que quedó: lo que se
+    // devuelve tiene que describir un solo estado coherente.
+    const doc = await FileModel.findOne({ userId, content_id: identidad })
       .select('content_id platforms platforms_discarded platform_states platform_rev')
       .lean();
 
+    if (!doc) {
+      res.status(500).json({ message: 'La identidad quedó sin documento asociado.' });
+      return;
+    }
+
     res.json({
-      contentId: identidad ?? doc?.content_id ?? null,
-      platforms: doc?.platforms ?? [],
-      platformsDiscarded: doc?.platforms_discarded ?? [],
-      platformStates: doc?.platform_states ?? [],
+      contentId: identidad,
+      platforms: doc.platforms ?? [],
+      platformsDiscarded: doc.platforms_discarded ?? [],
+      platformStates: doc.platform_states ?? [],
       // El mapa COMPLETO. Una plataforma ausente de acá vale 0 conocido, no
       // "desconocida": el cliente lo materializa así (ver PlatformRevisionStore).
-      platformRev: doc?.platform_rev ?? {},
+      platformRev: doc.platform_rev ?? {},
     });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
