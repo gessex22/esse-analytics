@@ -1,6 +1,7 @@
 import './load-env';   // ⚠️ DEBE ir primero: carga .env antes de que otros módulos lean process.env
 import express from 'express';
 import mongoose from 'mongoose';
+import { asegurarIndicesCriticos } from './services/indices-criticos.service';
 import { iniciarReparacionDeTransiciones } from './services/transition-repair.scheduler';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -90,8 +91,17 @@ function scheduleRemoteLibraryRetentionSweep(): void {
 }
 
 mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 })
-  .then(() => {
+  .then(async () => {
     console.log('Conectado exitosamente a MongoDB Atlas');
+
+    // ANTES de escuchar. Mongoose construye los índices de forma asíncrona al
+    // inicializar el modelo, así que un server que empieza a atender apenas
+    // conecta responde requests durante una ventana en la que el índice único
+    // del vínculo de identidad todavía no existe -- y en esa ventana dos
+    // resoluciones concurrentes pueden reservar identidades distintas para el
+    // mismo archivo, que es justo lo que ese índice viene a impedir.
+    await asegurarIndicesCriticos();
+
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`API corriendo en http://0.0.0.0:${PORT}`);
     });
@@ -114,6 +124,9 @@ mongoose.connect(process.env.MONGO_URI || '', { serverSelectionTimeoutMS: 10000 
     iniciarReparacionDeTransiciones();
   })
   .catch((err) => {
-    console.error('Error de conexion a MongoDB:', err.message);
+    // Incluye el fallo de los índices críticos: un arranque que no puede
+    // garantizar la unicidad es peor que un arranque que no ocurre. Con el
+    // server caído se ve; con identidades duplicadas, no.
+    console.error('Error de arranque:', err.message);
     process.exit(1);
   });

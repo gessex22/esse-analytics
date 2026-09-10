@@ -4134,3 +4134,29 @@ test('BOOTSTRAP — una caída entre la reserva y la creación del documento se 
     'y el documento queda creado exactamente una vez',
   );
 });
+
+
+test('BOOTSTRAP — si el índice crítico no se puede crear, el arranque falla', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { asegurarIndicesCriticos } = await import('../services/indices-criticos.service');
+  const { FileIdentityBindingModel } = await import('../models/file-identity-binding.model');
+
+  // Con el índice sano, el gate pasa.
+  await asegurarIndicesCriticos();
+
+  const original = FileIdentityBindingModel.createIndexes.bind(FileIdentityBindingModel);
+  (FileIdentityBindingModel as any).createIndexes = async () => { throw new Error('Mongo dijo que no'); };
+  try {
+    await assert.rejects(
+      () => asegurarIndicesCriticos(),
+      /índice crítico/,
+      'Arrancar sin ese índice deja al server atendiendo requests que pueden reservar dos ' +
+      'identidades para el mismo archivo. Fallar el arranque se ve; identidades duplicadas, no.',
+    );
+  } finally {
+    (FileIdentityBindingModel as any).createIndexes = original;
+  }
+});
