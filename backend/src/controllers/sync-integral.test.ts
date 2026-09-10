@@ -4160,3 +4160,96 @@ test('BOOTSTRAP — si el índice crítico no se puede crear, el arranque falla'
     (FileIdentityBindingModel as any).createIndexes = original;
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// EL BADGE NO ALCANZA: hace falta la identidad del VÍNCULO.
+//
+// Este caso es el peligroso:
+//
+//     el teléfono observó Instagram confirmado con el link A
+//     la central tiene  Instagram confirmado con el link B
+//
+// Los dos se ven igual desde el badge -- `published(hasLink: true)` -- así que
+// una comparación por estado los daría por coincidentes, el bootstrap tomaría
+// la revisión actual, y el `unlink` que el usuario decidió sobre A borraría B,
+// que nunca vio.
+//
+// Por eso la resolución devuelve el `platformId` vinculado. Y solo lo declara
+// COHERENTE cuando puede demostrarlo: el vínculo lleva su propia `linkVersion`,
+// y si no coincide con la revisión de esa plataforma no hay forma de afirmar
+// que describen el mismo momento. Ahí el cliente tiene que tratar una intención
+// que elimina el vínculo como conflicto conservador.
+// ---------------------------------------------------------------------------
+
+test('BOOTSTRAP — la resolución devuelve el platformId vinculado, no solo el badge', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // El vínculo sellado con la revisión vigente: coherente.
+  await central.PlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID },
+    { $set: { linkVersion: await revisionDe(contentId) } },
+  );
+
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-V',
+  });
+
+  const links = (r.body?.platformLinks ?? []) as any[];
+  const ig = links.find(l => l.platform === PLATFORM);
+  assert.ok(
+    ig,
+    'Sin el `platformId` el cliente no puede distinguir "confirmado con el link que yo vi" de ' +
+    '"confirmado con otro link": los dos son `published(hasLink: true)`.',
+  );
+  assert.equal(ig.platformId, PLATFORM_ID);
+  assert.equal(ig.coherente, true, 'la linkVersion coincide con la revisión de la plataforma');
+});
+
+test('BOOTSTRAP — un vínculo que no se puede demostrar coherente se declara así', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // El vínculo quedó sellado con OTRA revisión: puede ser de antes o de un
+  // camino que no selló. No hay forma de afirmar que describe el mismo momento
+  // que `platform_rev`.
+  await central.PlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID },
+    { $set: { linkVersion: 99 } },
+  );
+
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-W',
+  });
+
+  const ig = ((r.body?.platformLinks ?? []) as any[]).find(l => l.platform === PLATFORM);
+  assert.ok(ig, 'el vínculo se informa igual');
+  assert.equal(
+    ig.coherente, false,
+    'Declararlo coherente sin poder demostrarlo es peor que no informarlo: el cliente compararía ' +
+    'contra un vínculo que quizá no corresponde a esa revisión, y borraría algo que nunca vio.',
+  );
+});
+
+test('BOOTSTRAP — una plataforma sin vínculo no inventa uno', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-X',
+  });
+
+  const links = (r.body?.platformLinks ?? []) as any[];
+  assert.equal(
+    links.filter(l => l.platform === 'youtube').length, 0,
+    'YouTube no tiene vínculo: informar uno vacío haría que el cliente creyera que hay algo que ' +
+    'comparar donde no hay nada.',
+  );
+});

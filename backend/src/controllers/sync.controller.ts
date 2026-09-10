@@ -459,7 +459,7 @@ export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): 
     // Se RELEE el documento entero por la identidad que quedó: lo que se
     // devuelve tiene que describir un solo estado coherente.
     const doc = await FileModel.findOne({ userId, content_id: identidad })
-      .select('content_id platforms platforms_discarded platform_states platform_rev')
+      .select('_id content_id platforms platforms_discarded platform_states platform_rev')
       .lean();
 
     if (!doc) {
@@ -467,11 +467,38 @@ export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): 
       return;
     }
 
+    // Los vínculos vivos de este archivo, con su coherencia DEMOSTRADA.
+    //
+    // El badge no alcanza: "confirmado con el link A" y "confirmado con el link
+    // B" son los dos `published(hasLink: true)`. Un cliente que compare solo
+    // por estado los daría por iguales, tomaría la revisión actual, y una
+    // desvinculación decidida sobre A borraría B -- que nunca vio.
+    //
+    // `coherente` no es decoración: dice si se puede AFIRMAR que el vínculo y
+    // la revisión describen el mismo momento. El vínculo lleva su propia
+    // `linkVersion` (la sella quien lo crea); si no coincide con la revisión de
+    // esa plataforma, no hay forma de demostrarlo, y el cliente tiene que
+    // tratar una intención que elimine ese vínculo como conflicto conservador.
+    const revisiones = (doc.platform_rev ?? {}) as Record<string, number>;
+    const vinculos = await PlatformVideoModel
+      .find({ userId, linkedFileId: doc._id })
+      .select('platform platformId linkVersion')
+      .lean();
+    const platformLinks = vinculos
+      .filter(v => v.platformId)
+      .map(v => ({
+        platform: v.platform,
+        platformId: v.platformId,
+        coherente: typeof (v as any).linkVersion === 'number'
+          && (v as any).linkVersion === (revisiones[v.platform] ?? 0),
+      }));
+
     res.json({
       contentId: identidad,
       platforms: doc.platforms ?? [],
       platformsDiscarded: doc.platforms_discarded ?? [],
       platformStates: doc.platform_states ?? [],
+      platformLinks,
       // El mapa COMPLETO. Una plataforma ausente de acá vale 0 conocido, no
       // "desconocida": el cliente lo materializa así (ver PlatformRevisionStore).
       platformRev: doc.platform_rev ?? {},
