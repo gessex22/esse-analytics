@@ -401,68 +401,60 @@ export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): 
       return;
     }
 
-    // 1) ¿Este vínculo ya tiene identidad? Es la respuesta determinística:
-    //    renombrar el archivo en el teléfono no puede cambiarla.
-    const vinculo = await FileIdentityBindingModel
-      .findOne({ userId, deviceId, clientFileId }).select('contentId').lean();
-
-    let identidad: string | undefined = vinculo?.contentId;
-
-    // 2) Si no, ¿el cliente trae una identidad canónica? Un `contentId`
-    //    conocido, o el archivo de Biblioteca remota del que salió. Ahí NO se
-    //    inaugura nada: se apunta a la que ya existe.
-    if (!identidad) {
-      const remote = remoteLibraryVideoId
-        ? await RemoteLibraryVideoModel.findOne({ _id: remoteLibraryVideoId, userId })
-            .select('contentId').lean()
-        : null;
-      identidad = contentId ?? remote?.contentId ?? undefined;
-    }
-
-    // 3) Y si tampoco, se crea una identidad NUEVA. A propósito no se busca por
-    //    nombre: unir dos archivos distintos es peor que tener dos identidades
-    //    que después se puedan reconciliar.
-    let file = identidad
-      ? await FileModel.findOne({ userId, content_id: identidad })
+    // ── LA RESERVA VA PRIMERO ────────────────────────────────────────────
+    //
+    // Antes se creaba el `FileModel` y recién después se insertaba el vínculo.
+    // Una caída entre esas dos escrituras dejaba un documento huérfano, y el
+    // reintento -- que a propósito NO busca por nombre -- creaba otra identidad
+    // para el mismo archivo del cliente.
+    //
+    // Reservando primero, el vínculo ES la identidad: si el proceso muere justo
+    // después, el reintento recupera la MISMA y solo le falta terminar de crear
+    // el documento. Sin transacciones, el orden es lo único que hace esto
+    // reanudable.
+    const remote = remoteLibraryVideoId
+      ? await RemoteLibraryVideoModel.findOne({ _id: remoteLibraryVideoId, userId })
+          .select('contentId').lean()
       : null;
+    // Si el cliente trae una identidad canónica -- un `contentId` conocido, o el
+    // archivo de Biblioteca remota del que salió -- el vínculo apunta a ESA en
+    // vez de inaugurar otra.
+    const canonica = contentId ?? remote?.contentId ?? undefined;
 
-    if (!file && identidad) {
-      // La identidad es conocida pero no hay documento -- puede pasar con un
-      // contentId que el cliente conserva de un archivo que la central perdió.
-      file = await FileModel.findOneAndUpdate(
-        { userId, content_id: identidad },
-        { $setOnInsert: { userId, content_id: identidad, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
-        { upsert: true, new: true },
-      );
-    }
+    const vinculo = await FileIdentityBindingModel.findOneAndUpdate(
+      { userId, deviceId, clientFileId },
+      { $setOnInsert: { userId, deviceId, clientFileId, contentId: canonica ?? randomUUID() } },
+      { upsert: true, new: true },
+    ).select('contentId').lean();
 
-    if (!file) {
-      identidad = randomUUID();
-      file = await FileModel.create({
-        userId, content_id: identidad, file_name: fileName, file_path: fileName, status: 'PENDIENTE',
-      });
-    }
-
-    // Acá no hace falta backfillear identidad: este endpoint NO resuelve por
-    // nombre, así que nunca se topa con un documento legado sin `content_id`.
-    // Ese backfill vive en `resolveOrCreateFile`, que sí resuelve por nombre.
-    identidad = file.content_id ?? identidad;
-
+    const identidad = vinculo?.contentId;
     if (!identidad) {
       // Sin identidad no hay nada que devolver, y un 200 haría que el cliente
       // creyera que ya la tiene.
-      res.status(500).json({ message: 'No se pudo asignar una identidad al archivo.' });
+      res.status(500).json({ message: 'No se pudo reservar una identidad para el archivo.' });
       return;
     }
 
-    // El vínculo se persiste con `$setOnInsert`: si otra resolución concurrente
-    // lo creó primero, gana la suya y esta relee -- no puede haber dos.
-    const vinculoFinal = await FileIdentityBindingModel.findOneAndUpdate(
-      { userId, deviceId, clientFileId },
-      { $setOnInsert: { userId, deviceId, clientFileId, contentId: identidad } },
+    // Y recién ahora el documento, por identidad. Idempotente: si ya existe --
+    // porque el cliente trajo la canónica, o porque un intento anterior llegó
+    // hasta acá -- no se toca.
+    //
+    // `file_path` lleva un placeholder derivado de la identidad, NO el nombre.
+    // Hay un índice único `(userId, file_path)`: dos archivos distintos que
+    // comparten nombre -- que es justo el caso que este vínculo existe para
+    // soportar -- chocarían con E11000 al crear el segundo.
+    await FileModel.findOneAndUpdate(
+      { userId, content_id: identidad },
+      {
+        $setOnInsert: {
+          userId, content_id: identidad,
+          file_name: fileName,
+          file_path: `bootstrap:${identidad}`,
+          status: 'PENDIENTE',
+        },
+      },
       { upsert: true, new: true },
-    ).select('contentId').lean();
-    identidad = vinculoFinal?.contentId ?? identidad;
+    );
 
     // Se RELEE el documento entero por la identidad que quedó: lo que se
     // devuelve tiene que describir un solo estado coherente.

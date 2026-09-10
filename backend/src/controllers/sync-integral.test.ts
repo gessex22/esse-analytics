@@ -247,6 +247,29 @@ async function conectarOSaltear(t: any): Promise<boolean> {
   return true;
 }
 
+/**
+ * Construye los índices de las colecciones que el harness usa.
+ *
+ * `dropDatabase()` se lleva los índices con los datos, y la conexión va con
+ * `autoIndex: false` -- así que sin esto los tests corrían SIN NINGÚN índice
+ * único. Todo guard que dependa de un `E11000` (la reserva atómica de
+ * operaciones, el upsert del tombstone, el del vínculo de identidad) no se
+ * estaba ejercitando: la escritura que debía chocar simplemente insertaba un
+ * duplicado, y el caso pasaba por otro motivo.
+ */
+async function construirIndices() {
+  const modelos = [
+    central.FileModel, central.BackupFileModel, central.PlatformVideoModel,
+    central.BackupPlatformVideoModel, central.RemoteLibraryVideoModel,
+    (await import('../models/platform-transition-op.model')).PlatformTransitionOpModel,
+    (await import('../models/file-identity-binding.model')).FileIdentityBindingModel,
+  ];
+  // `init()` NO sirve acá: está memoizado por modelo, así que tras el primer
+  // test no vuelve a construir nada y los índices se quedan caídos junto con la
+  // base. `createIndexes()` los crea de verdad cada vez.
+  await Promise.all(modelos.map((m: any) => m.createIndexes()));
+}
+
 /** Deja los dos lados en cero. Cada test parte de acá: sin herencia entre tests. */
 async function limpiarEstado() {
   const { db } = await import('../../../local-backend/src/db/database');
@@ -257,6 +280,7 @@ async function limpiarEstado() {
   try { db.prepare('DELETE FROM transition_outbox').run(); } catch {}
   try { db.prepare('DELETE FROM platform_revisions').run(); } catch {}
   await mongoose.connection.dropDatabase();
+  await construirIndices();
 }
 
 async function cargarCentral() {
@@ -4059,5 +4083,54 @@ test('BOOTSTRAP — si la relectura final no encuentra el documento, no responde
     r.status, 200,
     'Un 200 sin estado haría que el teléfono creyera que ya tiene identidad Y revisiones -- y sin ' +
     'revisiones observadas encolaría con una base inventada.',
+  );
+});
+
+
+test('BOOTSTRAP — una caída entre la reserva y la creación del documento se reanuda', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Se rompe la creación del documento, DESPUÉS de que el vínculo ya reservó
+  // la identidad.
+  const original = central.FileModel.findOneAndUpdate.bind(central.FileModel);
+  let rota = false;
+  (central.FileModel as any).findOneAndUpdate = (...args: any[]) => {
+    if (!rota) { rota = true; throw new Error('caída simulada tras reservar'); }
+    return original(...args);
+  };
+
+  let primera: any;
+  try {
+    primera = await resolverIdentidad({ fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-R' });
+  } finally {
+    (central.FileModel as any).findOneAndUpdate = original;
+  }
+  assert.ok(rota, 'precondición: se cortó donde se quería');
+  assert.notEqual(primera.status, 200, 'la primera llamada no puede decir que salió bien');
+
+  // El vínculo quedó reservado, sin documento.
+  const { FileIdentityBindingModel } = await import('../models/file-identity-binding.model');
+  const reservado = await FileIdentityBindingModel
+    .findOne({ userId: USER_ID, deviceId: 'iphone-1', clientFileId: 'local-R' }).lean();
+  assert.ok(reservado?.contentId, 'precondición: la identidad quedó reservada');
+  assert.equal(
+    await central.FileModel.countDocuments({ userId: USER_ID, content_id: reservado!.contentId }), 0,
+    'precondición: y el documento no llegó a crearse',
+  );
+
+  // El reintento recupera la MISMA identidad y termina el trabajo.
+  const segunda = await resolverIdentidad({ fileName: 'clip.mp4', deviceId: 'iphone-1', clientFileId: 'local-R' });
+  assert.equal(segunda.status, 200);
+  assert.equal(
+    segunda.body?.contentId, reservado!.contentId,
+    'Reservando el vínculo PRIMERO, una caída no puede producir una identidad nueva: el reintento ' +
+    'recupera la que ya existía y solo le falta terminar de crear el documento. Al revés -- crear ' +
+    'el documento y después vincular -- la caída dejaba un huérfano y el reintento inauguraba otra.',
+  );
+  assert.equal(
+    await central.FileModel.countDocuments({ userId: USER_ID, content_id: reservado!.contentId }), 1,
+    'y el documento queda creado exactamente una vez',
   );
 });
