@@ -5,7 +5,7 @@ import { transcriptRepo } from '../db/transcript.repo';
 import { publishingStatusRepo } from '../db/publishing-status.repo';
 import { platformVideoRepo } from '../db/platform-video.repo';
 import { pushFilesToCloudInBackground } from './backup-sync.controller';
-import { reportUploadEvent, encolarDesvinculacion, entregarDesvinculacion } from '../services/upload-history.service';
+import { reportUploadEvent, encolarDesvinculacion, encolarTransicion, entregarDesvinculacion, entregarTransiciones } from '../services/upload-history.service';
 import { db } from '../db/database';
 import { TransitionOutboxEntry } from '../db/transition-outbox.repo';
 import { syncNextVideoToCentral } from '../services/calendar-sync.service';
@@ -207,7 +207,7 @@ export const pushVideoToCloud = async (req: Request, res: Response): Promise<voi
 };
 
 // ── PATCH /api/videos/:fileId/platforms ──────────────────────────────────────
-export const updateVideoPlatforms = (req: Request, res: Response): void => {
+export const updateVideoPlatforms = async (req: Request, res: Response): Promise<void> => {
   const { fileId } = req.params;
   const { platforms, platforms_discarded } = req.body as { platforms?: string[]; platforms_discarded?: string[] };
   const valid = ['youtube', 'instagram', 'tiktok', 'facebook'];
@@ -218,9 +218,40 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
     res.status(400).json({ message: 'platforms_discarded inválido.' }); return;
   }
   const before = fileRepo.findById(fileId);
-  const data: Parameters<typeof fileRepo.update>[1] = { platforms: platforms as any };
-  if (platforms_discarded !== undefined) data.platforms_discarded = platforms_discarded as any;
-  const updated = fileRepo.update(fileId, data);
+  if (!before) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+  // Qué plataformas pasan a DESCARTADAS con este cambio. Solo las nuevas: si el
+  // usuario no tocó una que ya estaba descartada, no hay decisión nueva que
+  // propagar y encolarla sería inventar una operación.
+  const descartesNuevos = (platforms_discarded ?? [])
+    .filter(p => !(before.platforms_discarded ?? []).includes(p as Platform));
+
+  // MISMA TRANSACCIÓN que el cambio local, igual que la desvinculación.
+  //
+  // Antes el descarte viajaba como un badge dentro del push masivo del
+  // catálogo: sin `operationId` (así que un reintento era una operación nueva),
+  // sin `baseVersion` (así que no tenía precedencia causal) y sin nada que lo
+  // reintentara si el push fallaba. Es la misma familia de bugs que motivó todo
+  // esto, en la otra acción.
+  let filas: TransitionOutboxEntry[];
+  let updated: ReturnType<typeof fileRepo.update>;
+  try {
+    ({ updated, filas } = db.transaction(() => {
+      const data: Parameters<typeof fileRepo.update>[1] = { platforms: platforms as any };
+      if (platforms_discarded !== undefined) data.platforms_discarded = platforms_discarded as any;
+      const u = fileRepo.update(fileId, data);
+      return {
+        updated: u,
+        filas: descartesNuevos.map(p => encolarTransicion(before.content_id, String(p), 'discard')),
+      };
+    })());
+  } catch (err: any) {
+    console.error('[sync] no se pudo registrar el descarte:', err?.message);
+    res.status(500).json({
+      message: `No se pudo actualizar las plataformas: ${err?.message ?? 'error desconocido'}. No se cambió nada.`,
+    });
+    return;
+  }
   if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
   // Un cambio manual del badge también debe llegar al espejo central; de lo
   // contrario solo queda en SQLite hasta que el siguiente tick automático
@@ -240,7 +271,18 @@ export const updateVideoPlatforms = (req: Request, res: Response): void => {
       nextFile,
     }).catch(err => console.warn(`[calendar] precarga tras badge falló: ${err.message}`));
   }
-  res.json({ platforms, platforms_discarded });
+  // La entrega va DESPUÉS del commit y no revierte nada: el cambio local es la
+  // copia de esta PC y es lo que el usuario pidió. Lo que aporta es que el
+  // cliente se entere de que la central todavía no acompañó.
+  let syncWarning: string | undefined;
+  try {
+    await entregarTransiciones(req.headers.authorization, filas);
+  } catch (err: any) {
+    syncWarning = err?.message ?? 'No se pudo propagar el descarte a la central.';
+    console.warn('[sync]', syncWarning);
+  }
+
+  res.json({ platforms, platforms_discarded, ...(syncWarning ? { syncWarning } : {}) });
 };
 
 export const resolvePublicationSelection = (req: Request, res: Response): void => {

@@ -792,6 +792,66 @@ distingue "hay cola" de "hay cola TRABADA".
 59 tests en verde, 0 skips, exit 0, tres corridas completas seguidas. `tsc`
 backend 22 / local-backend 46. local-backend 2/2.
 
+---
+
+## Entrega 3 — migración de `discard` (escritorio)
+
+### El P1 de observabilidad, primero
+
+`pasadaConReporte` volvía apenas `revisadas === 0`, **antes** de medir. Y ese es
+exactamente el estado de una cola enferma: una `failed` no la toma nadie nunca,
+y una pendiente esperando su backoff tampoco, así que todos los barridos dan
+cero -- y la cola desaparecía de la vista justo cuando había algo para ver.
+Ahora se mide siempre; lo que está limitado es el **log** (una ventana de 15
+min), que es lo caro, no la medición.
+
+### El descarte
+
+`updateVideoPlatforms` escribía `platforms_discarded` en SQLite y confiaba en
+que el push del catálogo lo llevara: un badge dentro de un array dentro de un
+push masivo. **Sin `operationId`** (un reintento era una operación nueva), **sin
+`baseVersion`** (sin precedencia causal) y **sin nada que lo reintentara** si el
+push fallaba. La misma familia de bugs que motivó todo esto, en la otra acción.
+
+Ahora pasa por la misma maquinaria que el unlink: se encola dentro de la
+**misma `db.transaction()`** que el cambio local, y se entrega después del
+commit.
+
+Un detalle que sí es propio del descarte: se encola **por el cambio, no por el
+estado**. `updateVideoPlatforms` recibe el array completo de descartadas, así
+que encolar lo que llega generaría una operación por cada guardado -- un
+re-render, un doble clic -- cada una con su propia `baseVersion`, y todas menos
+la primera nacidas destinadas al conflicto. Solo se encolan las plataformas que
+*pasan* a descartadas.
+
+### Contrato verificado para el escritorio
+
+| Punto | Dónde |
+|---|---|
+| `operationId` estable entre reintentos | P12-2 (dos flushes fallidos, mismo id y misma base) |
+| `baseVersion` obtenida junto con el estado | P3 + P6-1 (viaja dentro de `GET /api/backup/files`) |
+| `200 + version` = entregada | P4-b |
+| `202` sigue pendiente | P4-a |
+| `409` refresca y no reintenta a ciegas | OUT-4 (guarda la revisión vigente y archiva) |
+| `422` terminal | flush: 4xx no-auth/no-rate-limit → `failed` |
+| Intención persistida antes del cambio local | P12-3 (si no se puede encolar, el badge no cambia) |
+
+El `DELETE` legado sigue en pie: se retira cuando no queden clientes viejos.
+
+### Verificación
+
+64 tests en verde, 0 skips, exit 0, tres corridas completas seguidas. `tsc`
+backend 22 / local-backend 46. local-backend 2/2.
+
+Dos casos que no probaban lo que decían, otra vez destapados por la mutación:
+
+- El de observabilidad llamaba a `observarCola` **a mano**, así que probaba que
+  la medición funciona -- no que alguien la esté llamando, que era justo lo que
+  fallaba. Ahora pasa por `pasadaDeMantenimiento`, el camino real del arranque,
+  el barrido y el disparo oportunista.
+- Faltaba el caso de repetir el mismo descarte, así que "encolar por estado" en
+  vez de "por cambio" no rompía nada.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android

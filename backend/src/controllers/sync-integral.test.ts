@@ -95,6 +95,8 @@ type ModoDeCorte = 'red' | 'tras-aplicar';
 
 interface Router {
   calls: string[];
+  /** Cuerpos enviados, para poder afirmar sobre el CONTRATO, no solo sobre la ruta. */
+  cuerpos: { path: string; body: any }[];
   /** Devuelve cómo cortar esa llamada, o null para dejarla pasar. */
   cortar: ((method: string, path: string) => ModoDeCorte | null) | null;
   /** Milisegundos de demora para esa llamada. Sirve para dejar algo EN VUELO. */
@@ -117,6 +119,7 @@ interface Router {
 function routeToCentral(): Router {
   const original = globalThis.fetch;
   const calls: string[] = [];
+  const cuerpos: { path: string; body: any }[] = [];
   const unknown: string[] = [];
   let pending = 0;
   const router: Partial<Router> = { cortar: null, demorar: null, tras: null, responder: null };
@@ -131,6 +134,7 @@ function routeToCentral(): Router {
       const p = url.pathname;
       const query = Object.fromEntries(url.searchParams.entries());
       calls.push(method + ' ' + p);
+      cuerpos.push({ path: p, body });
 
       const corte = router.cortar ? router.cortar(method, p) : null;
       // 'red' corta antes de despachar: la central no se entera de nada.
@@ -212,7 +216,7 @@ function routeToCentral(): Router {
     throw new Error('el push de fondo no terminó nunca: sigue habiendo fetch en vuelo');
   };
 
-  Object.assign(router, { calls, unknown, waitIdle, restore: () => { globalThis.fetch = original; } });
+  Object.assign(router, { calls, cuerpos, unknown, waitIdle, restore: () => { globalThis.fetch = original; } });
   return router as Router;
 }
 
@@ -3326,4 +3330,226 @@ test('P10 — las métricas reportan pendientes, fallidas y la edad de la más v
     m.edadMaximaMs >= 2 * 60 * 60 * 1000 - 60_000,
     'la edad de la más vieja es la señal que distingue "hay cola" de "hay cola TRABADA"',
   );
+});
+
+
+// ---------------------------------------------------------------------------
+// P11 — una cola trabada se ve JUSTAMENTE en los barridos vacíos.
+//
+// `pasadaConReporte` volvía apenas `revisadas === 0`, antes de consultar las
+// métricas. Y ese es exactamente el estado de una cola enferma: una operación
+// `failed` no la toma nadie nunca, y una pendiente esperando su backoff tampoco
+// -- así que todos los barridos dan cero, y la cola desaparece de la vista
+// precisamente cuando hay algo para ver.
+//
+// Medir es barato; loguear es lo que hay que limitar.
+// ---------------------------------------------------------------------------
+test('P11 — un barrido sin trabajo igual mide la cola', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+
+  // Nada que hacer: una fallida (no la toma nadie) y una pendiente cuyo turno
+  // todavía no llegó. Un barrido acá revisa cero.
+  await PlatformTransitionOpModel.create([
+    { userId: USER_ID, operationId: 'p11-fallida', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'failed' },
+    { userId: USER_ID, operationId: 'p11-esperando', contentId, platform: PLATFORM, action: 'unlink',
+      baseVersion: 0, status: 'pending', nextAttemptAt: new Date(Date.now() + 60 * 60_000) },
+  ]);
+
+  const scheduler = await import('../services/transition-repair.scheduler');
+  assert.equal((await scheduler.ejecutarPasadaDeReparacion())?.revisadas, 0,
+    'precondición: el barrido no tiene nada que hacer');
+
+  // Por el camino REAL: el que corren el arranque, el barrido y el disparo
+  // oportunista. Llamar a `observarCola` a mano probaría que la medición
+  // funciona, no que alguien la esté llamando -- que es justo lo que fallaba.
+  await scheduler.pasadaDeMantenimiento('barrido');
+  const m = scheduler.ultimaObservacion()!;
+  assert.ok(m, 'la pasada tiene que haber dejado una medición');
+  assert.equal(
+    m.fallidas, 1,
+    'El barrido volvió sin mirar la cola porque no tenía trabajo. Una `failed` no la toma nadie ' +
+    'nunca, así que TODOS los barridos van a dar cero -- y la cola desaparece de la vista justo ' +
+    'cuando hay algo para ver.',
+  );
+  assert.equal(m.pendientes, 1);
+});
+
+
+// ===========================================================================
+// P12 — MIGRACIÓN DE `discard` (escritorio).
+//
+// El unlink ya viaja como intención explícita, durable y causal. El descarte
+// NO: `updateVideoPlatforms` escribe `platforms_discarded` en SQLite y confía
+// en que el push del catálogo lo lleve. Eso es un badge dentro de un array
+// dentro de un push masivo -- sin `operationId` (así que un reintento es una
+// operación nueva), sin `baseVersion` (así que no tiene precedencia causal), y
+// sin nada que lo reintente si el push falla.
+//
+// Es la misma familia de bugs que motivó todo esto, en la otra acción.
+// ===========================================================================
+
+/** El descarte tal como lo dispara Electron: el toggle de badges. */
+async function descartarDesdeElectron(localId: number, router: Router, plataformas: string[] = []) {
+  const { updateVideoPlatforms } = await import('../../../local-backend/src/controllers/video.controller');
+  const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
+  const local = fileRepo.findById(localId)!;
+  const { res, captured } = fakeRes();
+  await updateVideoPlatforms(
+    {
+      params: { fileId: String(localId) },
+      body: { platforms: local.platforms.filter(p => !plataformas.includes(p)), platforms_discarded: plataformas },
+      headers: { authorization: AUTH },
+    } as any,
+    res as any,
+  );
+  await router.waitIdle();
+  return captured;
+}
+
+test('P12 — un descarte decidido con la central caída se entrega cuando vuelve', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+
+    // La intención tiene que estar guardada, igual que la de desvincular.
+    const encoladas = await pendientesEnOutbox(contentId);
+    assert.equal(
+      encoladas.length, 1,
+      'El descarte no dejó ninguna intención encolada: viaja como un badge dentro del push del ' +
+      'catálogo, sin operationId, sin baseVersion y sin nada que lo reintente si el push falla.',
+    );
+    assert.equal(encoladas[0].action, 'discard');
+    assert.equal(encoladas[0].platform, PLATFORM);
+    assert.ok(encoladas[0].operation_id);
+
+    // Vuelve la central y se entrega.
+    router.cortar = null;
+    const { entregadas } = await flushOutbox();
+    assert.equal(entregadas, 1);
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(foto.files.discarded.includes(PLATFORM), 'el descarte llega a files');
+    assert.ok(!foto.files.platforms.includes(PLATFORM), 'y saca la plataforma de publicadas');
+    assert.ok(foto.backupFiles.discarded.includes(PLATFORM), 'y a backup_files');
+    assert.ok(foto.remote.discarded.includes(PLATFORM), 'y a Nube');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P12 — el descarte declara operationId y baseVersion, y es estable entre reintentos', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+
+    const fila = (await pendientesEnOutbox(contentId))[0];
+    const opId = fila.operation_id;
+    const base = Number(fila.base_version);
+    assert.ok(Number.isInteger(base) && base >= 0, 'baseVersion tiene que ser la revisión que se vio');
+
+    // Dos reintentos fallidos más. La operación NO cambia de identidad: si
+    // cambiara, la central no podría deduplicar una respuesta perdida.
+    await flushOutbox();
+    await flushOutbox();
+    const trasReintentos = (await pendientesEnOutbox(contentId))[0];
+    assert.equal(trasReintentos.operation_id, opId, 'el operationId tiene que ser estable');
+    assert.equal(Number(trasReintentos.base_version), base, 'y la base también');
+    assert.ok(trasReintentos.attempts >= 2, 'con los intentos contados');
+
+    // Y al entregar, lo que sale por la ruta nueva declara las dos cosas.
+    router.cortar = null;
+    router.cuerpos.length = 0;
+    await flushOutbox();
+    const enviado = router.cuerpos.find((c: any) => c.path === '/api/sync/platform-transition');
+    assert.ok(enviado, 'el descarte tiene que salir por el contrato explícito, no como badge');
+    assert.equal(enviado.body.action, 'discard');
+    assert.equal(enviado.body.operationId, opId);
+    assert.equal(enviado.body.baseVersion, base);
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P12 — si no se puede encolar el descarte, el badge local tampoco cambia', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    const { transitionOutboxRepo } = await import('../../../local-backend/src/db/transition-outbox.repo');
+    const originalEnqueue = transitionOutboxRepo.enqueue;
+    (transitionOutboxRepo as any).enqueue = () => { throw new Error('caída simulada al encolar'); };
+
+    let captured: any;
+    try {
+      captured = await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    } catch { /* que reviente o que devuelva 500: importa qué quedó escrito */ }
+    finally {
+      (transitionOutboxRepo as any).enqueue = originalEnqueue;
+    }
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(
+      !foto.sqlite.discarded.includes(PLATFORM),
+      'El badge local se marcó como descartado aunque la intención no se pudo encolar: queda un ' +
+      'cambio local que nada va a propagar nunca.',
+    );
+    assert.deepEqual(await pendientesEnOutbox(contentId), [], 'no quedó nada encolado, que es la premisa');
+    assert.notEqual(captured?.status, 200, 'y el cliente no puede recibir un OK');
+  } finally {
+    router.restore();
+  }
+});
+
+
+test('P12 — repetir el mismo descarte no genera una operación nueva', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    const primera = await pendientesEnOutbox(contentId);
+    assert.equal(primera.length, 1, 'precondición: el primer descarte encola una operación');
+
+    // La UI vuelve a mandar el mismo estado (un re-render, un doble clic, un
+    // guardado repetido). No hay decisión NUEVA, así que no hay operación nueva.
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    const despues = await pendientesEnOutbox(contentId);
+    assert.equal(
+      despues.length, 1,
+      'Encolar por el ESTADO en vez de por el cambio genera una operación por cada guardado. Cada ' +
+      'una con su propia baseVersion, así que todas menos la primera nacen destinadas al conflicto.',
+    );
+    assert.equal(despues[0].operation_id, primera[0].operation_id);
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
 });

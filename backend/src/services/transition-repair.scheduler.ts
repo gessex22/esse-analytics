@@ -50,10 +50,10 @@ export function iniciarReparacionDeTransiciones(): void {
   if (temporizador) return;
 
   setTimeout(() => {
-    void pasadaConReporte('arranque');
+    void pasadaDeMantenimiento('arranque');
   }, RETRASO_INICIAL_MS);
 
-  temporizador = setInterval(() => { void pasadaConReporte('barrido'); }, INTERVALO_MS);
+  temporizador = setInterval(() => { void pasadaDeMantenimiento('barrido'); }, INTERVALO_MS);
   // No sostiene el proceso vivo solo por este timer.
   temporizador.unref?.();
 }
@@ -74,30 +74,63 @@ export function dispararReparacionOportunista(): void {
   const ahora = Date.now();
   if (ahora - ultimoOportunista < VENTANA_OPORTUNISTA_MS) return;
   ultimoOportunista = ahora;
-  void pasadaConReporte('oportunista');
+  void pasadaDeMantenimiento('oportunista');
 }
 
-async function pasadaConReporte(origen: string): Promise<void> {
+/** No repetir el mismo aviso de cola enferma más seguido que esto. */
+const VENTANA_AVISO_MS = 15 * 60_000;
+let ultimoAviso = 0;
+
+/**
+ * Mide la cola y avisa si está enferma. Se llama SIEMPRE, haya habido trabajo o
+ * no.
+ *
+ * Esto último es el punto. Antes se volvía apenas la pasada revisaba cero, y
+ * ese es exactamente el estado de una cola enferma: una `failed` no la toma
+ * nadie nunca, y una pendiente esperando su backoff tampoco, así que todos los
+ * barridos dan cero -- y la cola desaparecía de la vista justo cuando había algo
+ * para ver.
+ *
+ * Medir es barato (tres consultas contadas); lo que hay que limitar es el log,
+ * o un problema que dura una tarde llena el archivo con la misma línea.
+ */
+let ultima: Awaited<ReturnType<typeof metricasDeReparacion>> | null = null;
+
+/** La última medición de la cola. Es lo que expone el estado a quien lo mire. */
+export function ultimaObservacion() { return ultima; }
+
+export async function observarCola(origen: string) {
+  const m = await metricasDeReparacion();
+  ultima = m;
+  const enferma = m.fallidas > 0 || m.edadMaximaMs > 60 * 60_000;
+  if (enferma && Date.now() - ultimoAviso >= VENTANA_AVISO_MS) {
+    ultimoAviso = Date.now();
+    console.warn(
+      `[transition-repair] cola (${origen}): ${m.pendientes} pendiente(s), ` +
+      `${m.fallidas} fallida(s), la más vieja lleva ${Math.round(m.edadMaximaMs / 60_000)} min`,
+    );
+  }
+  return m;
+}
+
+/**
+ * Una pasada COMPLETA: repara y después mide, en ese orden y siempre.
+ *
+ * Exportada porque es el camino real -- el que corren el arranque, el barrido y
+ * el disparo oportunista. Un caso que llame a `observarCola` por su cuenta
+ * prueba que la medición funciona, no que alguien la esté llamando.
+ */
+export async function pasadaDeMantenimiento(origen: string): Promise<void> {
   try {
     const resumen = await ejecutarPasadaDeReparacion();
-    if (!resumen || resumen.revisadas === 0) return;
-    console.log(
-      `[transition-repair] ${origen}: ${resumen.revisadas} revisada(s), ` +
-      `${resumen.reanudadas} reanudada(s), ${resumen.superadas} superada(s), ` +
-      `${resumen.fallidas} fallida(s), ${resumen.pospuestas} pospuesta(s)`,
-    );
-
-    // La cola solo se puede operar si se la mide. `pendientes` sube y baja
-    // sola; lo que hay que mirar es `fallidas` (nadie las reintenta) y la EDAD
-    // de la más vieja, que es lo que distingue "hay cola" de "hay cola
-    // TRABADA".
-    const m = await metricasDeReparacion();
-    if (m.fallidas > 0 || m.edadMaximaMs > 60 * 60_000) {
-      console.warn(
-        `[transition-repair] cola: ${m.pendientes} pendiente(s), ${m.fallidas} fallida(s), ` +
-        `la más vieja lleva ${Math.round(m.edadMaximaMs / 60_000)} min`,
+    if (resumen && resumen.revisadas > 0) {
+      console.log(
+        `[transition-repair] ${origen}: ${resumen.revisadas} revisada(s), ` +
+        `${resumen.reanudadas} reanudada(s), ${resumen.superadas} superada(s), ` +
+        `${resumen.fallidas} fallida(s), ${resumen.pospuestas} pospuesta(s)`,
       );
     }
+    await observarCola(origen);
   } catch (err: any) {
     console.warn(`[transition-repair] pasada (${origen}) falló:`, err?.message);
   }

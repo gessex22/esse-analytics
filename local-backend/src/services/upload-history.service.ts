@@ -121,22 +121,31 @@ export async function reportUploadEvent(
  * `better-sqlite3` exige que el cuerpo de una transacción sea síncrono, así que
  * acá no puede haber ningún `await`: la entrega va después del commit.
  */
-export function encolarDesvinculacion(
+export function encolarTransicion(
   contentId: string | null | undefined,
   platform: string,
+  action: 'unlink' | 'discard',
 ): TransitionOutboxEntry {
   if (!contentId) {
     throw new Error(
-      `No se puede propagar la desvinculación de ${platform}: el archivo no tiene content_id. ` +
+      `No se puede propagar el cambio de ${platform}: el archivo no tiene content_id. ` +
       `Sin él la central no puede identificarlo (el id local no le sirve).`,
     );
   }
   return transitionOutboxRepo.enqueue({
     contentId,
     platform,
-    action: 'unlink',
+    action,
     knownVersion: platformRevisionRepo.get(contentId, platform),
   });
+}
+
+/** Azúcar para el caller de desvincular, que es el más común. */
+export function encolarDesvinculacion(
+  contentId: string | null | undefined,
+  platform: string,
+): TransitionOutboxEntry {
+  return encolarTransicion(contentId, platform, 'unlink');
 }
 
 /**
@@ -146,6 +155,46 @@ export function encolarDesvinculacion(
  * necesitando saber que la central no acompañó, aunque ahora eso ya no
  * signifique que la intención se haya perdido.
  */
+/**
+ * Entrega un grupo de intenciones ya encoladas y reporta la peor.
+ *
+ * Toma las FILAS, no un id suelto y un nombre de plataforma aparte: el mensaje
+ * de error tiene que nombrar la plataforma que efectivamente falló, y con un
+ * nombre pasado por separado terminaba nombrando cualquiera del lote.
+ */
+export async function entregarTransiciones(
+  authHeader: string | undefined,
+  filas: TransitionOutboxEntry[],
+): Promise<void> {
+  if (filas.length === 0) return;
+  const filaIds = filas.map(f => f.id);
+  if (!authHeader) {
+    throw new Error(
+      `El cambio de ${filas.map(f => f.platform).join(', ')} quedó pendiente: no hay sesión para ` +
+      `entregarlo. Se reintenta solo en la próxima sincronización.`,
+    );
+  }
+  await flushTransitionOutbox(authHeader);
+  const sinEntregar = filaIds
+    .map(id => transitionOutboxRepo.findById(id))
+    .filter(f => f && f.status !== 'delivered');
+  if (sinEntregar.length === 0) return;
+  const peor = sinEntregar[0]!;
+  if (peor.status === 'pending') {
+    throw new Error(
+      `El cambio de ${peor.platform} quedó pendiente de entregar a la central. ` +
+      `Se reintenta solo en la próxima sincronización.`,
+    );
+  }
+  if (peor.status === 'conflict') {
+    throw new Error(
+      `La central rechazó el cambio de ${peor.platform}: el estado de esa plataforma cambió desde ` +
+      `otro dispositivo después de que abrieras esta pantalla. Actualizá y volvé a intentar.`,
+    );
+  }
+  throw new Error(`La central rechazó el cambio de ${peor.platform}.`);
+}
+
 export async function entregarDesvinculacion(
   authHeader: string | undefined,
   filaId: number,
