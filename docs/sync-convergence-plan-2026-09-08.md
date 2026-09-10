@@ -852,6 +852,46 @@ Dos casos que no probaban lo que decían, otra vez destapados por la mutación:
 - Faltaba el caso de repetir el mismo descarte, así que "encolar por estado" en
   vez de "por cambio" no rompía nada.
 
+---
+
+## Entrega 3b — la otra dirección del toggle
+
+La migración anterior cubría solo lo que **entra** en `platforms_discarded`.
+Sacar una plataforma de descartadas no generaba ninguna transición: el cambio
+volvía a viajar como badge dentro del push, que es justo lo que estábamos
+retirando. Y ahí es peor que en el otro sentido, porque el snapshot del push
+saca la plataforma de los arrays pero **no toca `platform_states` ni mueve
+`platform_rev`**: la central se queda con `platform_states.instagram =
+discarded` mientras el escritorio muestra pendiente. Divergencia estable, no
+transitoria.
+
+### Las cuatro reglas del delta
+
+El endpoint recibe **estado** (los arrays completos), no acciones, así que hay
+que derivar qué pasó -- y las cuatro combinaciones significan cosas distintas:
+
+| Situación | Acción |
+|---|---|
+| Entra en descartadas | `discard` |
+| Sale de descartadas y **no** entra en publicadas | `unlink` -- "pendiente" es la AUSENCIA de la plataforma, que es exactamente lo que unlink deja (la saca de `platforms`, `platforms_discarded` **y** `platform_states`) |
+| Sale de descartadas **y** entra en publicadas | Nada: es una confirmación de publicación, con su propio camino. Mandar `unlink` acá borraría justo lo que el usuario acaba de afirmar |
+| `platforms_discarded` no vino en el request | Nada: un request parcial no es una decisión de vaciar el array |
+
+Y se deriva del **cambio**, no del estado: encolar lo que llega genera una
+operación por cada guardado, cada una con su propia `baseVersion`, y todas menos
+la primera nacidas destinadas al conflicto.
+
+### Verificación
+
+68 tests en verde, 0 skips, exit 0, tres corridas completas seguidas. `tsc`
+backend 22 / local-backend 46. local-backend 2/2. **Una mutación por regla**, y
+cada una rompe su caso.
+
+Dos de los cuatro casos nacieron **verdes** a propósito (el de publicación
+simultánea y el de request parcial): hoy pasaban porque no se encolaba nada, y
+existen para atrapar la sobre-implementación -- que es lo que efectivamente
+atraparon, las dos mutaciones correspondientes las rompen.
+
 ### Lo que la outbox todavía NO cubre
 
 - Solo el **unlink desde Electron** pasa por acá. `discard`, iOS y Android

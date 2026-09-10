@@ -220,11 +220,43 @@ export const updateVideoPlatforms = async (req: Request, res: Response): Promise
   const before = fileRepo.findById(fileId);
   if (!before) { res.status(404).json({ message: 'No encontrado.' }); return; }
 
-  // Qué plataformas pasan a DESCARTADAS con este cambio. Solo las nuevas: si el
-  // usuario no tocó una que ya estaba descartada, no hay decisión nueva que
-  // propagar y encolarla sería inventar una operación.
-  const descartesNuevos = (platforms_discarded ?? [])
-    .filter(p => !(before.platforms_discarded ?? []).includes(p as Platform));
+  // ── DELTA DEL TOGGLE ────────────────────────────────────────────────────
+  //
+  // Este endpoint recibe ESTADO (los arrays completos), no acciones. Hay que
+  // derivar qué pasó, y las cuatro combinaciones significan cosas distintas:
+  //
+  //   entra en descartadas                          -> `discard`
+  //   sale de descartadas y NO entra en publicadas  -> `unlink`
+  //   sale de descartadas Y entra en publicadas     -> confirmación de
+  //                                                    publicación, que tiene
+  //                                                    su propio camino
+  //   `platforms_discarded` no vino                 -> no inferir nada
+  //
+  // Se deriva del CAMBIO, no del estado: encolar lo que llega generaría una
+  // operación por cada guardado -- un re-render, un doble clic -- cada una con
+  // su propia `baseVersion`, y todas menos la primera nacidas destinadas al
+  // conflicto.
+  const antesDescartadas = (before.platforms_discarded ?? []) as string[];
+
+  // Regla 4: un request parcial NO es una decisión de vaciar el array. Inferir
+  // eliminaciones de lo que no vino convierte cada guardado parcial en
+  // desvinculaciones que nadie pidió.
+  const entranADescartadas = platforms_discarded === undefined ? []
+    : platforms_discarded.filter(p => !antesDescartadas.includes(p));
+  const salenDeDescartadas = platforms_discarded === undefined ? []
+    : antesDescartadas.filter(p => !platforms_discarded.includes(p));
+
+  // Regla 3: salir de descartadas ENTRANDO en publicadas es una confirmación de
+  // publicación. Mandar `unlink` acá borraría exactamente lo que el usuario
+  // acaba de afirmar.
+  //
+  // Regla 2: si sale y no entra en publicadas, vuelve a PENDIENTE -- y
+  // pendiente es la AUSENCIA de la plataforma, que es justo lo que deja
+  // `unlink` (saca de `platforms`, de `platforms_discarded` y de
+  // `platform_states`). El push por sí solo no alcanza: saca la plataforma de
+  // los arrays pero no toca `platform_states` ni mueve la revisión, así que la
+  // central se queda en `discarded` mientras el escritorio muestra pendiente.
+  const vuelvenAPendiente = salenDeDescartadas.filter(p => !platforms.includes(p));
 
   // MISMA TRANSACCIÓN que el cambio local, igual que la desvinculación.
   //
@@ -242,11 +274,14 @@ export const updateVideoPlatforms = async (req: Request, res: Response): Promise
       const u = fileRepo.update(fileId, data);
       return {
         updated: u,
-        filas: descartesNuevos.map(p => encolarTransicion(before.content_id, String(p), 'discard')),
+        filas: [
+          ...entranADescartadas.map(p => encolarTransicion(before.content_id, String(p), 'discard')),
+          ...vuelvenAPendiente.map(p => encolarTransicion(before.content_id, String(p), 'unlink')),
+        ],
       };
     })());
   } catch (err: any) {
-    console.error('[sync] no se pudo registrar el descarte:', err?.message);
+    console.error('[sync] no se pudo registrar el cambio de plataformas:', err?.message);
     res.status(500).json({
       message: `No se pudo actualizar las plataformas: ${err?.message ?? 'error desconocido'}. No se cambió nada.`,
     });
@@ -278,7 +313,7 @@ export const updateVideoPlatforms = async (req: Request, res: Response): Promise
   try {
     await entregarTransiciones(req.headers.authorization, filas);
   } catch (err: any) {
-    syncWarning = err?.message ?? 'No se pudo propagar el descarte a la central.';
+    syncWarning = err?.message ?? 'No se pudo propagar el cambio a la central.';
     console.warn('[sync]', syncWarning);
   }
 

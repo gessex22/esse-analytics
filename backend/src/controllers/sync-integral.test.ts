@@ -3553,3 +3553,196 @@ test('P12 — repetir el mismo descarte no genera una operación nueva', async (
     router.restore();
   }
 });
+
+
+// ===========================================================================
+// P13 — la OTRA dirección del toggle: `discarded` → `pending`.
+//
+// La migración anterior encola solo lo que ENTRA en `platforms_discarded`.
+// Cuando el usuario saca una plataforma de descartadas, desaparece del array y
+// no se genera ninguna transición: el cambio viaja otra vez como badge dentro
+// del push, que es justo lo que estábamos retirando.
+//
+// Y es peor que en el otro sentido, porque el snapshot del push puede sacarla
+// de los arrays pero NO toca `platform_states` ni mueve `platform_rev`: la
+// central se queda con `platform_states.instagram = discarded` mientras el
+// escritorio muestra pendiente. Divergencia estable, no transitoria.
+//
+// LAS CUATRO REGLAS DEL DELTA. Un toggle de badges manda ESTADO, no acciones,
+// así que hay que derivar qué pasó -- y las cuatro combinaciones significan
+// cosas distintas:
+//
+//   entra en discarded                        -> `discard`
+//   sale de discarded y NO entra en platforms -> `unlink` (queda ausente)
+//   sale de discarded Y entra en platforms    -> publicación/confirmación, que
+//                                                tiene su propio camino: mandar
+//                                                `unlink` acá sería borrar
+//                                                justo lo que se acaba de
+//                                                afirmar
+//   `platforms_discarded` no vino en el request -> no inferir NADA: un request
+//                                                parcial no es una decisión de
+//                                                vaciar el array
+// ===========================================================================
+
+test('P13 — sacar una plataforma de descartadas genera un `unlink` durable', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+
+  // Estado inicial: descartada en los dos lados.
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    router.cortar = null;
+    await flushOutbox();
+    const inicial = await fotoDelEstado(contentId);
+    assert.ok(inicial.files.discarded.includes(PLATFORM), 'precondición: arranca descartada');
+    assert.equal((inicial.files.states as any[]).find(e => e.platform === PLATFORM)?.state, 'discarded');
+
+    // Y ahora el usuario la vuelve a pendiente, con la central caída.
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, []);
+
+    const encoladas = (await pendientesEnOutbox(contentId)).filter(e => e.status === 'pending');
+    assert.equal(
+      encoladas.length, 1,
+      'Sacar una plataforma de descartadas no dejó ninguna intención. El cambio vuelve a viajar ' +
+      'como badge dentro del push -- y ese push saca la plataforma de los arrays pero no toca ' +
+      '`platform_states` ni mueve la revisión, así que la central se queda en `discarded` mientras ' +
+      'el escritorio muestra pendiente.',
+    );
+    assert.equal(
+      encoladas[0].action, 'unlink',
+      'y la acción es `unlink`: "pendiente" es la AUSENCIA de la plataforma, que es exactamente lo ' +
+      'que unlink deja',
+    );
+    const opId = encoladas[0].operation_id;
+    const base = Number(encoladas[0].base_version);
+    assert.ok(Number.isInteger(base) && base >= 0);
+
+    // Estable entre reintentos.
+    await flushOutbox();
+    const tras = (await pendientesEnOutbox(contentId)).find(e => e.operation_id === opId)!;
+    assert.equal(Number(tras.base_version), base, 'la base no puede moverse entre reintentos');
+
+    // Vuelve la central y converge a pendiente en todas partes.
+    router.cortar = null;
+    await flushOutbox();
+
+    const foto = await fotoDelEstado(contentId);
+    assert.ok(!foto.files.discarded.includes(PLATFORM), 'files: ya no descartada');
+    assert.ok(!foto.files.platforms.includes(PLATFORM), 'files: tampoco publicada -- pendiente es la ausencia');
+    assert.equal(
+      (foto.files.states as any[]).find(e => e.platform === PLATFORM), undefined,
+      'y `platform_states` tiene que soltarla: si queda en `discarded`, la central sigue diciendo ' +
+      'descartada aunque los arrays digan otra cosa',
+    );
+    assert.ok(!foto.backupFiles.discarded.includes(PLATFORM), 'backup_files converge');
+    assert.ok(!foto.remote.discarded.includes(PLATFORM), 'y Nube también');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P13 — repetir el mismo estado pendiente no genera otra operación', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    await descartarDesdeElectron(local.id, router, []);
+    const primera = await pendientesEnOutbox(contentId);
+    assert.equal(primera.length, 2, 'precondición: un discard y un unlink');
+
+    // El mismo estado otra vez: no hay decisión nueva.
+    await descartarDesdeElectron(local.id, router, []);
+    assert.equal(
+      (await pendientesEnOutbox(contentId)).length, 2,
+      'Derivar del ESTADO en vez del CAMBIO genera una operación por cada guardado, cada una con ' +
+      'su propia baseVersion -- todas menos la primera nacidas destinadas al conflicto.',
+    );
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P13 — sacar de descartadas Y publicar a la vez NO manda un unlink', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    const trasDescartar = (await pendientesEnOutbox(contentId)).length;
+
+    // El usuario marca la plataforma como PUBLICADA: sale de descartadas y
+    // entra en platforms en el mismo movimiento.
+    const { updateVideoPlatforms } = await import('../../../local-backend/src/controllers/video.controller');
+    const { res } = fakeRes();
+    await updateVideoPlatforms(
+      { params: { fileId: String(local.id) }, body: { platforms: [PLATFORM], platforms_discarded: [] },
+        headers: { authorization: AUTH } } as any,
+      res as any,
+    );
+    await router.waitIdle();
+
+    const todas = await pendientesEnOutbox(contentId);
+    assert.equal(
+      todas.length, trasDescartar,
+      'Salir de descartadas ENTRANDO en publicadas es una confirmación de publicación, no una ' +
+      'desvinculación. Mandar `unlink` acá borraría exactamente lo que el usuario acaba de afirmar.',
+    );
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
+
+test('P13 — un request sin `platforms_discarded` no infiere eliminaciones', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { local, contentId } = await sembrarConfirmado();
+  const router = routeToCentral();
+  try {
+    router.cortar = (m, p) => (p === '/api/sync/platform-transition' ? 'red' : null);
+    await descartarDesdeElectron(local.id, router, [PLATFORM]);
+    const trasDescartar = (await pendientesEnOutbox(contentId)).length;
+
+    // Un request que solo toca `platforms`. No dice nada sobre descartadas, así
+    // que no decidió nada sobre ellas.
+    const { updateVideoPlatforms } = await import('../../../local-backend/src/controllers/video.controller');
+    const { res } = fakeRes();
+    await updateVideoPlatforms(
+      { params: { fileId: String(local.id) }, body: { platforms: [] },
+        headers: { authorization: AUTH } } as any,
+      res as any,
+    );
+    await router.waitIdle();
+
+    assert.equal(
+      (await pendientesEnOutbox(contentId)).length, trasDescartar,
+      'Un request parcial no es una decisión de vaciar el array. Inferir eliminaciones de lo que ' +
+      'no vino convierte cada guardado parcial en desvinculaciones que nadie pidió.',
+    );
+    const { fileRepo } = await import('../../../local-backend/src/db/file.repo');
+    assert.ok(fileRepo.findById(local.id)!.platforms_discarded.includes(PLATFORM as any),
+      'y el descarte local sigue donde estaba');
+    assert.deepEqual(router.unknown, []);
+  } finally {
+    router.restore();
+  }
+});
