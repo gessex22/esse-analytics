@@ -4253,3 +4253,49 @@ test('BOOTSTRAP — una plataforma sin vínculo no inventa uno', async (t) => {
     'comparar donde no hay nada.',
   );
 });
+
+
+test('BOOTSTRAP — con dos vínculos vivos de la misma plataforma, ninguno se declara coherente', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const file = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const rev = await revisionDe(contentId);
+
+  // El primero, sellado con la revisión vigente: por sí solo sería coherente.
+  await central.PlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID },
+    { $set: { linkVersion: rev } },
+  );
+  // Y un SEGUNDO vínculo vivo de la misma plataforma para el mismo archivo.
+  // No debería existir -- applyPlatformPublish desvincula los otros -- pero eso
+  // es best-effort y hay más de un escritor.
+  await central.PlatformVideoModel.create({
+    userId: USER_ID, platform: PLATFORM, platformId: '17222222222222222',
+    platformUrl: 'https://www.instagram.com/reel/GGGGGGGGGGG/',
+    linkedFileId: file!._id, matchStatus: 'manual', linkVersion: rev,
+    publishedAt: new Date('2026-09-05T10:00:00.000Z'),
+  });
+
+  const r = await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-AMB',
+  });
+
+  const deInstagram = ((r.body?.platformLinks ?? []) as any[]).filter(l => l.platform === PLATFORM);
+  assert.ok(
+    deInstagram.length <= 1,
+    'Devolver dos entradas de la misma plataforma deja que el cliente elija una por el orden de ' +
+    'Mongo, y esa elección arbitraria sería una coherencia falsa.',
+  );
+  if (deInstagram.length === 1) {
+    assert.equal(
+      deInstagram[0].coherente, false,
+      'Con dos vínculos vivos no se puede afirmar cuál es EL vínculo, así que no hay coherencia ' +
+      'que demostrar -- aunque los dos estén sellados con la revisión vigente.',
+    );
+    assert.equal(deInstagram[0].platformId, null,
+      'y no puede ofrecer un platformId: sería el elegido arbitrariamente');
+  }
+});

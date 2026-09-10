@@ -484,14 +484,37 @@ export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): 
       .find({ userId, linkedFileId: doc._id })
       .select('platform platformId linkVersion')
       .lean();
-    const platformLinks = vinculos
-      .filter(v => v.platformId)
-      .map(v => ({
-        platform: v.platform,
+    // UNA entrada por plataforma, o ninguna. La consulta puede devolver varios
+    // vínculos vivos de la misma plataforma para el mismo archivo -- no debería
+    // (`applyPlatformPublish` desvincula los otros) pero eso es best-effort y
+    // hay más de un escritor.
+    //
+    // La regla es conservadora:
+    //   cero      -> se omite la plataforma
+    //   uno       -> coherente si su `linkVersion` es la revisión vigente
+    //   más de uno-> ambigua: se informa SIN `platformId` y no coherente
+    //
+    // Devolver dos entradas dejaría que el cliente eligiera una por el orden de
+    // Mongo, y esa elección arbitraria sería una coherencia falsa: compararía
+    // contra un vínculo que quizá no es el que el usuario vio.
+    const porPlataforma = new Map<string, typeof vinculos>();
+    for (const v of vinculos) {
+      if (!v.platformId) continue;
+      const lista = porPlataforma.get(v.platform) ?? [];
+      lista.push(v);
+      porPlataforma.set(v.platform, lista);
+    }
+    const platformLinks = [...porPlataforma.entries()].map(([platform, lista]) => {
+      if (lista.length > 1) {
+        return { platform, platformId: null, coherente: false, ambiguo: true };
+      }
+      const v = lista[0] as any;
+      return {
+        platform,
         platformId: v.platformId,
-        coherente: typeof (v as any).linkVersion === 'number'
-          && (v as any).linkVersion === (revisiones[v.platform] ?? 0),
-      }));
+        coherente: typeof v.linkVersion === 'number' && v.linkVersion === (revisiones[platform] ?? 0),
+      };
+    });
 
     res.json({
       contentId: identidad,
