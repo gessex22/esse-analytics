@@ -159,6 +159,9 @@ function routeToCentral(): Router {
       if (method === 'POST' && (p === '/api/sync/history' || p === '/api/sync/record-publish')) {
         return await dispatch(central.recordUploadEvent, { body });
       }
+      if (method === 'POST' && p === '/api/sync/resolve-identity') {
+        return await dispatch(central.resolveIdentityEndpoint, { body });
+      }
       if (method === 'POST' && p === '/api/sync/platform-transition') {
         const r = await dispatch(central.applyPlatformTransitionEndpoint, { body });
         // 'tras-aplicar': el efecto quedó, la respuesta se pierde.
@@ -3745,4 +3748,138 @@ test('P13 — un request sin `platforms_discarded` no infiere eliminaciones', as
   } finally {
     router.restore();
   }
+});
+
+
+// ===========================================================================
+// BOOTSTRAP DE IDENTIDAD — `POST /api/sync/resolve-identity`.
+//
+// Un cliente que importó un video localmente no tiene `content_id`: esa
+// identidad la emite la central. Sin ella no puede encolar ninguna transición,
+// porque no hay bajo qué identidad declararla -- y derivarla del nombre es
+// exactamente lo que esa clave vino a impedir.
+//
+// POR QUÉ UNA OPERACIÓN APARTE, y no ampliar `file-platforms` para que devuelva
+// la identidad: ese endpoint APLICA UN SNAPSHOT primero, sin base causal.
+// Devolver la identidad después no corrige esa primera escritura insegura --
+// dejaría intacto justo el hueco que venimos cerrando.
+//
+// La resolución no escribe estado: busca o crea, asegura la identidad, y
+// devuelve identidad + estado + revisiones DEL MISMO DOCUMENTO.
+// ===========================================================================
+
+async function resolverIdentidad(body: any) {
+  const { res, captured } = fakeRes();
+  await central.resolveIdentityEndpoint(
+    { user: USER, headers: { authorization: AUTH }, params: {}, query: {}, body } as any,
+    res as any,
+  );
+  return captured;
+}
+
+test('BOOTSTRAP — resolver dos veces devuelve siempre la misma identidad', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const primera = await resolverIdentidad({ fileName: 'video nuevo del telefono.mp4' });
+  assert.equal(primera.status, 200);
+  const cid = primera.body?.contentId;
+  assert.match(
+    String(cid), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    'la central emite un UUID: es ella la autoridad de la identidad, no el cliente',
+  );
+
+  const segunda = await resolverIdentidad({ fileName: 'video nuevo del telefono.mp4' });
+  assert.equal(
+    segunda.body?.contentId, cid,
+    'Resolver es idempotente. Si cada llamada emitiera una identidad nueva, dos acciones del mismo ' +
+    'teléfono sobre el mismo archivo declararían identidades distintas y la central las trataría ' +
+    'como dos videos.',
+  );
+  assert.equal(
+    await central.FileModel.countDocuments({ userId: USER_ID, file_name: 'video nuevo del telefono.mp4' }), 1,
+    'y no puede crear un segundo documento',
+  );
+});
+
+test('BOOTSTRAP — un archivo viejo sin content_id recibe uno, sin duplicarlo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Un documento de antes de que existiera `content_id`.
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'viejo sin identidad.mp4', file_path: 'viejo sin identidad.mp4',
+    status: 'PENDIENTE', platforms: ['instagram'], platforms_discarded: [],
+  });
+
+  // Dos resoluciones a la vez: es el caso real de dos dispositivos abriendo el
+  // mismo video, o de un reintento que llega mientras el primero sigue en vuelo.
+  const [a, b] = await Promise.all([
+    resolverIdentidad({ fileName: 'viejo sin identidad.mp4' }),
+    resolverIdentidad({ fileName: 'viejo sin identidad.mp4' }),
+  ]);
+
+  assert.equal(a.body?.contentId, b.body?.contentId,
+    'Dos resoluciones concurrentes no pueden asignar identidades distintas al mismo documento: ' +
+    'la asignación tiene que ser atómica, no leer-decidir-escribir.');
+  const doc = await central.FileModel.findOne({ userId: USER_ID, file_name: 'viejo sin identidad.mp4' }).lean();
+  assert.equal(doc?.content_id, a.body?.contentId, 'y queda persistida en el documento');
+});
+
+test('BOOTSTRAP — identidad, estado y revisiones salen del MISMO documento', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // Se mueve la revisión con una transición real, para que haya algo que leer.
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  await applyPlatformTransition(USER_ID, {
+    contentId, platform: PLATFORM as any, action: 'discard',
+    operationId: 'bootstrap-mueve-revision', baseVersion: 0,
+  });
+  const revReal = await revisionDe(contentId);
+
+  const r = await resolverIdentidad({ fileName: 'video integral.mp4', contentId });
+
+  assert.equal(r.body?.contentId, contentId);
+  assert.deepEqual(r.body?.platformsDiscarded, [PLATFORM], 'el estado, del mismo documento');
+  assert.equal(
+    (r.body?.platformRev ?? {})[PLATFORM], revReal,
+    'y la revisión también. Que vengan juntas es el punto: pedirlas por separado deja la ventana ' +
+    'en la que el teléfono se queda con el estado de antes y la revisión de después.',
+  );
+  assert.ok(
+    Array.isArray(r.body?.platformStates),
+    'con `platform_states`, que es lo que distingue publicado-con-link de badge manual',
+  );
+});
+
+test('BOOTSTRAP — resolver NO aplica ningún estado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const antes = await fotoDelEstado(contentId);
+  const revAntes = await revisionDe(contentId);
+
+  await resolverIdentidad({
+    fileName: 'video integral.mp4', contentId,
+    // Un cliente podría mandar su estado local; la resolución tiene que
+    // ignorarlo.
+    platforms: [], platformsDiscarded: ['tiktok', 'youtube'],
+  });
+
+  const despues = await fotoDelEstado(contentId);
+  assert.deepEqual(
+    despues.files.platforms, antes.files.platforms,
+    'Resolver es una LECTURA con efecto secundario de identidad, no un escritor de estado. Si ' +
+    'aplicara lo que el cliente manda, sería otro snapshot sin base causal -- exactamente lo que ' +
+    'esta operación existe para evitar.',
+  );
+  assert.deepEqual(despues.files.discarded, antes.files.discarded);
+  assert.equal(await revisionDe(contentId), revAntes, 'y no mueve la revisión');
 });

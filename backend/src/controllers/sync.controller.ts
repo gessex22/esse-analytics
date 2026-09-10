@@ -10,7 +10,7 @@ import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
-import { applyPlatformPublish } from './backup.controller';
+import { applyPlatformPublish, resolveOrCreateFile } from './backup.controller';
 import { applyPlatformTransition } from '../services/platform-transition.service';
 import { dispararReparacionOportunista } from '../services/transition-repair.scheduler';
 import { recordAuditEvent } from '../services/audit.service';
@@ -346,6 +346,79 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
       deduplicated: result.deduplicated ?? false,
       platforms: result.platforms,
       platformsDiscarded: result.platformsDiscarded,
+    });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/resolve-identity — bootstrap de identidad para un cliente que
+// todavía no tiene `content_id`.
+//
+// POR QUÉ ES UNA OPERACIÓN APARTE. Un teléfono que importó un video localmente
+// no tiene identidad: la emite la central. Sin ella no puede encolar ninguna
+// transición -- `POST /api/sync/platform-transition` exige `contentId`, y
+// derivarlo del nombre es exactamente lo que esa clave vino a impedir (dos
+// archivos pueden compartir nombre).
+//
+// La alternativa obvia sería que `file-platforms` devolviera la identidad de
+// paso. No sirve: ese endpoint APLICA UN SNAPSHOT primero, sin base causal.
+// Devolver la identidad después no corrige esa primera escritura insegura --
+// dejaría intacto el hueco que todo esto viene a cerrar. Inaugurar la identidad
+// tiene que poder hacerse SIN escribir estado.
+//
+// Y devuelve identidad, estado y revisiones DEL MISMO DOCUMENTO, por el mismo
+// motivo que `GET /api/backup/files`: pedirlos por separado deja la ventana en
+// la que el cliente se queda con el estado de antes y la revisión de después,
+// que es peor que estar desactualizado.
+export const resolveIdentityEndpoint = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { fileName, contentId, remoteLibraryVideoId } = (req.body ?? {}) as {
+      fileName?: string; contentId?: string; remoteLibraryVideoId?: string;
+    };
+    if (!fileName || typeof fileName !== 'string') {
+      res.status(400).json({ message: 'fileName es requerido.' });
+      return;
+    }
+
+    const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId });
+    if (!file) {
+      res.status(404).json({ message: 'No se pudo resolver el archivo.' });
+      return;
+    }
+
+    // Un documento de antes de que existiera `content_id` no tiene ninguno.
+    // Se le asigna uno ATÓMICAMENTE: el filtro exige que siga sin identidad,
+    // así que dos resoluciones concurrentes no pueden asignar dos distintas --
+    // la segunda no matchea y relee la que quedó. Leer-decidir-escribir acá
+    // produciría dos identidades para el mismo documento, y la central trataría
+    // al video como dos.
+    let identidad = file.content_id;
+    if (!identidad) {
+      const asignado = await FileModel.findOneAndUpdate(
+        { _id: file._id, $or: [{ content_id: { $exists: false } }, { content_id: null }] },
+        { $set: { content_id: randomUUID() } },
+        { new: true },
+      ).select('content_id').lean();
+      identidad = asignado?.content_id
+        ?? (await FileModel.findById(file._id).select('content_id').lean())?.content_id;
+    }
+
+    // Se RELEE el documento entero: la asignación de arriba pudo cambiarlo, y
+    // lo que se devuelve tiene que describir un solo estado coherente.
+    const doc = await FileModel.findById(file._id)
+      .select('content_id platforms platforms_discarded platform_states platform_rev')
+      .lean();
+
+    res.json({
+      contentId: identidad ?? doc?.content_id ?? null,
+      platforms: doc?.platforms ?? [],
+      platformsDiscarded: doc?.platforms_discarded ?? [],
+      platformStates: doc?.platform_states ?? [],
+      // El mapa COMPLETO. Una plataforma ausente de acá vale 0 conocido, no
+      // "desconocida": el cliente lo materializa así (ver PlatformRevisionStore).
+      platformRev: doc?.platform_rev ?? {},
     });
   } catch (err: any) {
     res.status(500).json({ message: err.message });

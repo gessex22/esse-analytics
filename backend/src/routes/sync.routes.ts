@@ -5,6 +5,7 @@ import {
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
   applyPlatformTransitionEndpoint,
+  resolveIdentityEndpoint,
   getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
 } from '../controllers/sync.controller';
 import { getPublishedCards, mirrorPublishedCards } from '../controllers/published-cards.controller';
@@ -45,6 +46,10 @@ router.delete('/api/sync/platform-link/:contentId/:platform', verifyToken, unlin
 // reanudación) y baseVersion (precedencia causal), cosas que el DELETE de arriba
 // no puede expresar. Ver applyPlatformTransitionEndpoint.
 router.post('/api/sync/platform-transition', verifyToken, applyPlatformTransitionEndpoint);
+// Bootstrap de identidad: lo que un cliente sin `content_id` necesita ANTES de
+// poder declarar una transición. Aparte de `file-platforms` a propósito -- ver
+// el comentario de resolveIdentityEndpoint.
+router.post('/api/sync/resolve-identity', verifyToken, resolveIdentityEndpoint);
 // (Acá vivió GET /api/sync/platform-revisions, retirado a propósito: pedir la
 // revisión aparte del estado abre una ventana en la que el cliente se queda con
 // el estado de antes y la revisión de después, y esa combinación hace que la
