@@ -4299,3 +4299,126 @@ test('BOOTSTRAP — con dos vínculos vivos de la misma plataforma, ninguno se d
       'y no puede ofrecer un platformId: sería el elegido arbitrariamente');
   }
 });
+
+// ---------------------------------------------------------------------------
+// `mark_published`: "publicado sin enlace" como transición CAUSAL.
+//
+// Era el último camino que seguía escribiendo estado por fuera del escritor
+// único: el toggle pendiente -> publicado de iOS mandaba el snapshot de badges
+// entero (a `file-platforms` y al video de Nube), sin revisión. Pasa a ser una
+// tercera acción con `operationId`, `baseVersion`, CAS y las mismas
+// proyecciones -- pero SIN crear `PlatformVideo`, sin tombstones y sin tocar el
+// historial: no hubo una publicación real, solo una marca manual.
+// ---------------------------------------------------------------------------
+
+const OTRA = 'youtube';
+
+async function marcarPublicado(contentId: string, op: string, baseVersion?: number) {
+  return postTransicion({
+    contentId, platform: OTRA, action: 'mark_published', operationId: op,
+    baseVersion: baseVersion ?? await revisionDe(contentId, OTRA),
+  });
+}
+
+test('MARK_PUBLISHED — el endpoint acepta la tercera acción', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const r = await marcarPublicado(contentId, 'op-mp-1');
+
+  assert.equal(
+    r.status, 200,
+    `Hoy responde ${r.status}: "publicado sin enlace" no tiene transición, y el cliente no tiene otra ` +
+    'forma de declararlo que el snapshot de badges -- el último escritor no causal.',
+  );
+  assert.equal(r.body?.version, 1, 'mueve la revisión de ESA plataforma, como cualquier transición');
+});
+
+test('MARK_PUBLISHED — deja badge_only en files, backup_files y Nube', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  await marcarPublicado(contentId, 'op-mp-2');
+
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(file.platforms.includes(OTRA), 'files: la plataforma queda publicada');
+  assert.deepEqual(
+    (file.platform_states ?? []).filter((s: any) => s.platform === OTRA).map((s: any) => s.state), ['badge_only'],
+    'Como badge_only, NO confirmed: no hay un link que lo respalde. Marcarlo confirmed haría que ' +
+    'Estadísticas y el Calendario lo trataran como una publicación real.',
+  );
+  const backup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(backup.platforms.includes(OTRA), 'backup_files también');
+  const nube: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  assert.ok(nube.platforms.includes(OTRA), 'y Nube, que es lo que hoy solo llega por el snapshot');
+  assert.deepEqual(
+    (nube.platformStates ?? []).filter((s: any) => s.platform === OTRA).map((s: any) => s.state), ['badge_only'],
+  );
+  assert.ok(file.platforms.includes(PLATFORM), 'y no toca las OTRAS plataformas');
+});
+
+test('MARK_PUBLISHED — desde descartado, saca la plataforma de descartadas', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  await postTransicion({
+    contentId, platform: OTRA, action: 'discard', operationId: 'op-mp-d', baseVersion: await revisionDe(contentId, OTRA),
+  });
+  await marcarPublicado(contentId, 'op-mp-3');
+
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(!(file.platforms_discarded ?? []).includes(OTRA), 'deja de estar descartada');
+  assert.ok(file.platforms.includes(OTRA));
+  const nube: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  assert.ok(!(nube.platformsDiscarded ?? []).includes(OTRA), 'también en Nube');
+});
+
+test('MARK_PUBLISHED — no fabrica una publicación real', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // `central` no carga este modelo: se importa directo, para que el caso falle
+  // por lo que declara y no por un `undefined`.
+  const { UploadHistoryModel } = await import('../models/upload-history.model');
+  const antes = await UploadHistoryModel.countDocuments({ userId: USER_ID });
+  const r = await marcarPublicado(contentId, 'op-mp-4');
+  assert.equal(r.status, 200, 'precondición: se aplicó');
+
+  assert.equal(
+    await central.PlatformVideoModel.countDocuments({ userId: USER_ID, platform: OTRA }), 0,
+    'Sin `PlatformVideo`: no hay platformId que vincular. Crear uno vacío lo haría aparecer como ' +
+    'candidato en Sincronizar y como publicación en Estadísticas.',
+  );
+  assert.equal(
+    await central.BackupPlatformVideoModel.countDocuments({ userId: USER_ID, platform: OTRA }), 0,
+    'ni fila en el espejo de vínculos que leen las PCs',
+  );
+  assert.equal(
+    await central.UploadHistoryModel.countDocuments({ userId: USER_ID }), antes,
+    'ni entrada de historial: el Calendario y el Historial no pueden contar una publicación que no ocurrió',
+  );
+});
+
+test('MARK_PUBLISHED — una base vieja no pisa un cambio posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const base = await revisionDe(contentId, OTRA);
+  await postTransicion({ contentId, platform: OTRA, action: 'discard', operationId: 'op-mp-otro', baseVersion: base });
+
+  const r = await marcarPublicado(contentId, 'op-mp-5', base);
+
+  assert.equal(r.status, 409, 'decidido sobre una revisión que ya no es la vigente: llega tarde');
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok((file.platforms_discarded ?? []).includes(OTRA), 'y el descarte posterior sigue en pie');
+});
