@@ -5707,7 +5707,7 @@ test('MARK_PUBLISHED — no fabrica una publicación real', async (t) => {
     'ni fila en el espejo de vínculos que leen las PCs',
   );
   assert.equal(
-    await central.UploadHistoryModel.countDocuments({ userId: USER_ID }), antes,
+    await UploadHistoryModel.countDocuments({ userId: USER_ID }), antes,
     'ni entrada de historial: el Calendario y el Historial no pueden contar una publicación que no ocurrió',
   );
 });
@@ -5726,4 +5726,302 @@ test('MARK_PUBLISHED — una base vieja no pisa un cambio posterior', async (t) 
   assert.equal(r.status, 409, 'decidido sobre una revisión que ya no es la vigente: llega tarde');
   const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
   assert.ok((file.platforms_discarded ?? []).includes(OTRA), 'y el descarte posterior sigue en pie');
+});
+
+// El alcance de `mark_published` es VACÍO por definición, no "los vinculados
+// de la base". Solo se nota si hay un vínculo vivo de esa plataforma cuando
+// llega -- y lo hay cuando la publicación entró por un camino que no mueve la
+// revisión: `PlatformVideoModel` directo, como todavía hacen los callers sin
+// migrar (el mismo camino que usa P1-2). El guard de revisión no la protege.
+test('MARK_PUBLISHED — no suelta un vínculo que entró por otro camino', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const ID_YT = 'yt-entro-por-otro-camino';
+  await central.PlatformVideoModel.create({
+    userId: USER_ID, platform: OTRA, platformId: ID_YT,
+    platformUrl: 'https://www.youtube.com/shorts/yt-entro-por-otro-camino',
+    linkedFileId: file._id, matchStatus: 'manual',
+    publishedAt: new Date('2026-09-08T12:00:00.000Z'),
+  });
+  const base = await revisionDe(contentId, OTRA);
+
+  const r = await marcarPublicado(contentId, 'op-mp-6', base);
+  assert.equal(r.status, 200, 'precondición: la base es la vigente, así que se aplica');
+
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platformId: ID_YT }).lean();
+  assert.ok(
+    pv?.linkedFileId,
+    'El vínculo real de YouTube fue soltado por una marca manual. "Publicado sin enlace" no tiene ' +
+    'ningún link en su alcance: tomar como alcance los vinculados de la base se lleva puesta una ' +
+    'publicación que la operación nunca vio.',
+  );
+  assert.equal(
+    await central.BackupPlatformVideoModel.countDocuments({
+      userId: USER_ID, platform: OTRA, platform_id: ID_YT, link_state: 'unlinked',
+    }), 0,
+    'ni le escribe un tombstone, que las PCs y los teléfonos aplicarían como un unlink',
+  );
+});
+
+test('MARK_PUBLISHED — sobre una plataforma confirmada conserva confirmed y sus vínculos', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Instagram está confirmado, con su link real, en todas las representaciones.
+  const { contentId } = await sembrarConfirmado();
+  const archivo: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const espejoAntes = await espejoDe(PLATFORM_ID);
+
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'mark_published', operationId: 'op-mp-confirmado',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: la base es la vigente, así que se aplica');
+
+  const estados = (doc: any, campo: string) =>
+    (doc?.[campo] ?? []).filter((s: any) => s.platform === PLATFORM).map((s: any) => s.state);
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(
+    [file.platforms.includes(PLATFORM), estados(file, 'platform_states')], [true, ['confirmed']],
+    'La marca manual degradó una publicación confirmada a badge_only. `confirmed` es el estado más ' +
+    'fuerte: "publicado sin enlace" sobre algo que ya tiene enlace no le quita nada.',
+  );
+  const backup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(backup.platforms.includes(PLATFORM), 'backup_files: sigue publicada');
+  const nube: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  assert.deepEqual(estados(nube, 'platformStates'), ['confirmed'], 'Nube: sigue confirmada');
+  assert.deepEqual(
+    (nube.platformLinks ?? []).filter((l: any) => l.platform === PLATFORM).map((l: any) => l.platformId), [PLATFORM_ID],
+    'y conserva el link real: una marca manual no tiene links que tocar',
+  );
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(String(pv?.linkedFileId), String(archivo._id), 'platformvideos: el vínculo sigue');
+  const espejo = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [espejo?.link_state, espejo?.content_id, espejo?.link_version],
+    [espejoAntes?.link_state ?? 'linked', contentId, espejoAntes?.link_version],
+    'y el espejo de vínculos no cambia',
+  );
+});
+
+test('MARK_PUBLISHED — desde descartado, también la saca de descartadas en backup_files', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const d = await postTransicion({
+    contentId, platform: OTRA, action: 'discard', operationId: 'op-mp-bd', baseVersion: await revisionDe(contentId, OTRA),
+  });
+  assert.equal(d.status, 200, 'precondición: el descarte se aplicó');
+  const antes: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok((antes.platforms_discarded ?? []).includes(OTRA), 'precondición: backup_files la tiene descartada');
+
+  const r = await marcarPublicado(contentId, 'op-mp-bd-2');
+  assert.equal(r.status, 200, 'precondición: se aplicó');
+
+  const backup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(
+    [(backup.platforms_discarded ?? []).includes(OTRA), backup.platforms.includes(OTRA)], [false, true],
+    'backup_files quedó publicada Y descartada a la vez: la marca la agregó a publicadas pero no la ' +
+    'sacó de descartadas. Es la proyección que empujan y leen las PCs.',
+  );
+});
+
+/**
+ * Como `conIntercaladoEn`, pero en la primera llamada cuyos argumentos cumplan
+ * `esEsta`: con varias escrituras del mismo modelo en la misma operación, hace
+ * falta elegir en cuál entra el otro escritor. La elección mira solo el cambio
+ * que se aplica, nunca el guard: si no, una mutante que saca el guard evitaría
+ * el intercalado en vez de perder contra él.
+ */
+function conIntercaladoCuando(
+  modelo: any, metodo: string, esEsta: (...args: any[]) => boolean, intercalar: () => Promise<void>,
+) {
+  const original = modelo[metodo];
+  let hecho = false;
+  modelo[metodo] = function (...args: any[]) {
+    if (!hecho && esEsta(...args)) {
+      hecho = true;
+      modelo[metodo] = original;   // el intercalado usa el método de verdad
+      return (async () => { await intercalar(); return original.apply(modelo, args); })();
+    }
+    return original.apply(modelo, args);
+  };
+  return {
+    restore: () => { modelo[metodo] = original; },
+    get hecho() { return hecho; },
+  };
+}
+
+/**
+ * `mark_published` ya pasó su CAS; justo antes de que escriba su alta en UNA
+ * proyección, el usuario descarta la plataforma con la revisión nueva.
+ */
+async function marcarConDescarteIntercalado(modelo: any, esEsta: (...args: any[]) => boolean, op: string) {
+  const { contentId } = await sembrarConfirmado();
+  const espia = conIntercaladoCuando(modelo, 'updateOne', esEsta, async () => {
+    const r = await postTransicion({
+      contentId, platform: OTRA, action: 'discard', operationId: `${op}-descarte`,
+      baseVersion: await revisionDe(contentId, OTRA),
+    });
+    assert.equal(r.status, 200, 'precondición: el descarte se aplicó');
+  });
+  try {
+    await marcarPublicado(contentId, op);
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el descarte se intercaló de verdad');
+  return contentId;
+}
+
+test('MARK_PUBLISHED — un descarte que entra antes de su alta en files no queda pisado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await marcarConDescarteIntercalado(
+    central.FileModel, (_f: any, u: any) => u?.$addToSet?.platform_states?.state === 'badge_only', 'op-mp-carrera-file',
+  );
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(
+    [file.platforms.includes(OTRA), (file.platforms_discarded ?? []).includes(OTRA)], [false, true],
+    'La marca escribió su alta en files sobre el descarte que entró después de su CAS: la plataforma ' +
+    'queda publicada y descartada a la vez. El alta tiene que ir contra la revisión que reclamó.',
+  );
+});
+
+test('MARK_PUBLISHED — un descarte que entra antes de su alta en backup_files no queda pisado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await marcarConDescarteIntercalado(
+    central.BackupFileModel, (_f: any, u: any) => u?.$addToSet?.platforms === OTRA, 'op-mp-carrera-backup',
+  );
+  const backup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.deepEqual(
+    [backup.platforms.includes(OTRA), (backup.platforms_discarded ?? []).includes(OTRA)], [false, true],
+    'La marca escribió su alta en backup_files sobre el descarte que entró después de su CAS. El alta ' +
+    'tiene que ir contra la revisión que reclamó.',
+  );
+});
+
+test('MARK_PUBLISHED — un descarte que entra antes de su alta en Nube no queda pisado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await marcarConDescarteIntercalado(
+    central.RemoteLibraryVideoModel, (_f: any, u: any) => u?.$addToSet?.platformStates?.state === 'badge_only',
+    'op-mp-carrera-nube',
+  );
+  const nube: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  assert.deepEqual(
+    [nube.platforms.includes(OTRA), (nube.platformsDiscarded ?? []).includes(OTRA)], [false, true],
+    'La marca escribió su alta en Nube sobre el descarte que entró después de su CAS. El alta tiene ' +
+    'que ir contra la revisión que reclamó.',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P0 — el espejo que escribe un publish: reasignación viva y timestamps.
+// ---------------------------------------------------------------------------
+
+test('P0 — publicar sobre B un vínculo vivo en A lo reasigna, sube su revisión y mueve su reloj', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  // Soltar y volver a publicar deja la fila con revisión propia y reloj.
+  const u = await postTransicion({
+    contentId: A, platform: PLATFORM, action: 'unlink', operationId: 'p0-reasigna-vivo', baseVersion: await revisionDe(A),
+  });
+  assert.equal(u.status, 200, 'precondición: el unlink se aplicó');
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: A, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+  });
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([antes?.link_state, antes?.content_id], ['linked', A], 'precondición: vivo en A');
+  assert.ok(typeof antes?.link_version === 'number' && antes?.link_updated_at, 'precondición: con revisión y reloj');
+
+  // Que un reloj movido se note aunque la máquina sea rápida.
+  await new Promise(r => setTimeout(r, 20));
+  const B = 'dddddddd-eeee-ffff-0000-111111111111';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([despues?.link_state, despues?.content_id], ['linked', B], 'precondición: vivo en B');
+  assert.ok(
+    (despues?.link_version ?? 0) > antes!.link_version!,
+    `El vínculo pasó de A a B sin subir su revisión (${despues?.link_version} contra ${antes?.link_version}): ` +
+    'un dispositivo que ya lo tiene en A compara, lo ve igual, y nunca se entera de la reasignación.',
+  );
+  assert.ok(
+    new Date(despues!.link_updated_at!).getTime() > new Date(antes!.link_updated_at!).getTime(),
+    'y su reloj no se movió: cambiar el vínculo es cambiar el vínculo, venga de A o de una lápida',
+  );
+});
+
+test('P0 — el espejo que escribe un publish cumple el contrato de timestamps del modelo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const NUEVO = '17555555555555551';
+  const publicar = () => central.applyPlatformPublish(USER_ID, {
+    contentId, platform: PLATFORM, platformId: NUEVO, platformUrl: 'https://www.instagram.com/reel/NUEVO/',
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+  await publicar();
+  const creada = await espejoDe(NUEVO);
+  assert.ok(
+    creada?.createdAt instanceof Date && creada?.updatedAt instanceof Date,
+    `El documento nuevo del espejo nace sin createdAt/updatedAt (${creada?.createdAt}, ${creada?.updatedAt}): ` +
+    'el modelo declara `timestamps: true`, y un documento que no lo cumple es otra variante legada ' +
+    'desde su primer día.',
+  );
+
+  await new Promise(r => setTimeout(r, 20));
+  await publicar();
+  const despues = await espejoDe(NUEVO);
+  assert.equal(despues?.createdAt?.getTime(), creada?.createdAt?.getTime(), 'una escritura posterior conserva createdAt');
+  assert.ok(despues!.updatedAt!.getTime() > creada!.updatedAt!.getTime(), 'y avanza updatedAt');
+});
+
+test('P0 — sellar el espejo en la reparación cumple el contrato de timestamps del modelo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-timestamps';
+  await transicionSuperadaAMitad(contentId, op);
+  await central.BackupPlatformVideoModel.deleteOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID });
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: contentId, platform_url: null, local_updated_at: '2026-09-09T15:00:00.000Z' });
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.ok(antes?.createdAt instanceof Date && antes?.updatedAt instanceof Date, 'precondición: la fila tiene timestamps');
+
+  await new Promise(r => setTimeout(r, 20));
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.equal(despues?.link_file_rev, await revisionDe(contentId), 'precondición: la reparación la selló');
+  assert.equal(despues?.createdAt?.getTime(), antes?.createdAt?.getTime(), 'sellar conserva createdAt');
+  assert.ok(despues!.updatedAt!.getTime() > antes!.updatedAt!.getTime(), 'y avanza updatedAt');
 });
