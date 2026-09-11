@@ -4696,7 +4696,7 @@ test('P0 — reparar un archivo no pisa un unlink que entra mientras repara', as
 // ---------------------------------------------------------------------------
 
 /** El push periódico de una PC, con la foto que tiene del vínculo. */
-async function pushDePC(fila: { platform_id: string; content_id: string; local_updated_at: string }) {
+async function pushDePC(fila: { platform_id: string; content_id: string; local_updated_at: string; platform_url?: string | null }) {
   const { res, captured } = fakeRes();
   await central.bulkUpsertBackupPlatformVideos(
     {
@@ -5106,6 +5106,425 @@ test('P0 — reparar un archivo cuyo espejo ya refleja el estado canónico no su
     (await espejoDe(PLATFORM_ID))?.link_version, antes?.link_version,
     'La reparación volvió a poner la lápida que ya estaba y le subió la revisión: un cambio que no ' +
     'ocurrió. Reproyectar tiene que escribir solo lo que difiere del estado canónico.',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P0 (revisión) — las dos revisiones del vínculo avanzan por motivos distintos.
+//
+//   cambio del vínculo                     → avanzan `link_file_rev` y `link_version`
+//   mismo vínculo, nueva revisión causal   → avanza solo `link_file_rev`
+//   reintento idéntico                     → no avanza ninguna
+// ---------------------------------------------------------------------------
+
+/**
+ * Como `conIntercaladoEn`, pero para una LECTURA encadenada
+ * (`find(...).select(...).lean()`): corre `intercalar` justo antes de que se
+ * ejecute la primera consulta cuyo filtro cumpla `esEsta`. El método envuelto
+ * tiene que seguir devolviendo la Query -- una promesa rompe el encadenado.
+ */
+function conIntercaladoAntesDeLeer(
+  modelo: any, metodo: string, esEsta: (filtro: any) => boolean, intercalar: () => Promise<void>,
+) {
+  const original = modelo[metodo];
+  let tomada = false;
+  let hecho = false;
+  modelo[metodo] = function (...args: any[]) {
+    const q = original.apply(modelo, args);
+    if (!tomada && esEsta(args[0])) {
+      tomada = true;
+      modelo[metodo] = original;   // el intercalado usa el método de verdad
+      const ejecutar = q.exec.bind(q);
+      q.exec = async (...a: any[]) => { await intercalar(); hecho = true; return ejecutar(...a); };
+    }
+    return q;
+  };
+  return {
+    restore: () => { modelo[metodo] = original; },
+    get hecho() { return hecho; },
+  };
+}
+
+test('P0 — reparar un archivo no pisa una reasignación que entra antes de leer el espejo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-entre-lecturas';
+  // Canónico: "publicado", con el vínculo en A. La operación vieja queda pendiente.
+  await transicionSuperadaAMitad(contentId, op);
+
+  // La reparación ya leyó en platformvideos que el vínculo es de A. Antes de que
+  // lea el espejo, la MISMA publicación se reasigna a B. Cuando lo lee ya ve la
+  // fila de B, con el `link_version` que dejó esa reasignación: un CAS contra lo
+  // leído matchea. Lo único que sabe que el vínculo ya no es de A es volver a
+  // mirar platformvideos DESPUÉS de leer el espejo.
+  const B = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+  const espia = conIntercaladoAntesDeLeer(
+    central.BackupPlatformVideoModel, 'find', (f: any) => !!f?.platform_id?.$in,
+    async () => {
+      await central.applyPlatformPublish(USER_ID, {
+        contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+        fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+      });
+    },
+  );
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la reasignación se intercaló antes de leer el espejo');
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [fila?.link_state, fila?.content_id], ['linked', B],
+    'La reparación de A trajo de vuelta un vínculo que ya es de B. La reasignación entró entre la ' +
+    'primera lectura de platformvideos y la del espejo: el CAS se hizo contra un `link_version` que ' +
+    'ya era el de B, y matcheó.',
+  );
+});
+
+test('P0 — dos PCs que completan a la vez el contenido de una fila vieja: gana una, y la revisión sube una vez', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  // Una fila del espejo de antes de `content_id`: las hay en producción.
+  await central.BackupPlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID },
+    { $unset: { content_id: '' } },
+  );
+  const N = (await espejoDe(PLATFORM_ID))?.link_version ?? 0;
+
+  // Dos PCs la completan, cada una con el contenido que tiene. La segunda entra
+  // entre que la primera lee el espejo y lo escribe.
+  const B = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  let segunda: any;
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'bulkWrite', async () => {
+    segunda = await pushDePC({ platform_id: PLATFORM_ID, content_id: B, local_updated_at: '2026-09-09T10:05:00.000Z' });
+  });
+  let primera: any;
+  try {
+    primera = await pushDePC({ platform_id: PLATFORM_ID, content_id: A, local_updated_at: '2026-09-09T10:00:00.000Z' });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la segunda PC se intercaló de verdad');
+  assert.equal(segunda?.updated, 1, 'precondición: la PC que escribió primero completó la fila');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [fila?.content_id, fila?.link_version], [B, N + 1],
+    'Las dos PCs superaron el CAS: completar el contenido no subía la revisión del vínculo, así que la ' +
+    'segunda escritura encontró el mismo número que había leído y pisó a la primera. Completar ES un ' +
+    'cambio del vínculo: sube su revisión, y con eso el CAS de la otra deja de matchear.',
+  );
+  assert.equal(primera?.updated, 0, 'y la PC que perdió no cuenta su foto como aplicada');
+});
+
+test('P0 — reparar un vínculo que ya está vivo adelanta su revisión de archivo y completa la URL, sin anunciar un cambio', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-vivo';
+  // Canónico: "publicado", con el vínculo en A. La operación vieja queda pendiente.
+  await transicionSuperadaAMitad(contentId, op);
+  const rev = await revisionDe(contentId);
+
+  // La fila del espejo no está (la versión anterior del servicio la borraba) y
+  // una PC la vuelve a crear con su push: viva y del mismo contenido, pero con
+  // la revisión de archivo en 0 -- la PC no la trae -- y sin URL, que esa PC no
+  // tenía.
+  await central.BackupPlatformVideoModel.deleteOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID });
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: contentId, platform_url: null, local_updated_at: '2026-09-09T15:00:00.000Z' });
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [antes?.link_state, antes?.content_id, antes?.link_file_rev, antes?.platform_url ?? null],
+    ['linked', contentId, 0, null],
+    'precondición: vivo en A, sin revisión de archivo y sin URL',
+  );
+  assert.ok(rev > 0, 'precondición: el estado vigente tiene revisión');
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [despues?.link_file_rev, despues?.platform_url], [rev, PLATFORM_URL],
+    'La reparación vio el vínculo vivo en su contenido y no escribió nada. La fila refleja el estado ' +
+    `de la revisión ${rev} pero sigue sellada con 0: una escritura atrasada de este mismo archivo -- ` +
+    'con una revisión menor -- todavía la supera. Y sigue sin la URL que tiene platformvideos, con ' +
+    'la que las PCs reconstruyen el link.',
+  );
+  assert.equal(
+    despues?.link_version, antes?.link_version,
+    'y sin subir la revisión del vínculo: es el mismo vínculo, vivo y en el mismo archivo. Un ' +
+    'dispositivo no puede distinguir ese número de un cambio real.',
+  );
+});
+
+/** Contrapeso: completar es completar, no reemplazar lo que el espejo ya tiene. */
+test('P0 — reparar un vínculo que ya está vivo no pisa la URL que tiene el espejo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-vivo-url';
+  await transicionSuperadaAMitad(contentId, op);
+  // Una PC empuja el mismo vínculo con la URL en otra forma.
+  const URL_DE_LA_PC = 'https://www.instagram.com/p/AAAAAAAAAAA/';
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: contentId, platform_url: URL_DE_LA_PC, local_updated_at: '2026-09-09T15:00:00.000Z' });
+  assert.equal((await espejoDe(PLATFORM_ID))?.platform_url, URL_DE_LA_PC, 'precondición');
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  assert.equal((await espejoDe(PLATFORM_ID))?.platform_url, URL_DE_LA_PC);
+});
+
+test('P0 — reparar un vínculo que ya está suelto adelanta su revisión de archivo, sin anunciar un cambio', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-suelto';
+  await transicionSuperadaAMitad(contentId, op);
+  // El usuario suelta el vínculo -- la transición deja la lápida -- y después
+  // descarta la plataforma. El descarte ya no alcanza la lápida: no queda ningún
+  // vínculo vivo en su alcance.
+  for (const [i, action] of ['unlink', 'discard'].entries()) {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action, operationId: `p0-lv-reparar-suelto-${i}`,
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, `precondición: ${action} se aplicó`);
+  }
+  const rev = await revisionDe(contentId);
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.equal(antes?.link_state, 'unlinked', 'precondición: la lápida está');
+  assert.ok(
+    typeof antes?.link_file_rev === 'number' && antes.link_file_rev < rev,
+    `precondición: la lápida quedó sellada con la revisión del unlink (${antes?.link_file_rev}), anterior a la vigente (${rev})`,
+  );
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.equal(
+    despues?.link_file_rev, rev,
+    'La reparación reproyectó el estado vigente y dejó la lápida sellada con la revisión del unlink: ' +
+    'como ya estaba suelta, no escribió nada. Una escritura atrasada de este mismo archivo, con una ' +
+    'revisión entre esas dos, todavía la supera.',
+  );
+  assert.deepEqual(
+    [despues?.link_state, despues?.link_version], ['unlinked', antes?.link_version],
+    'y sin subir la revisión del vínculo: sigue suelto, como estaba',
+  );
+});
+
+// Sellar una fila es escribirla, y las mismas carreras valen: no puede sellar
+// una fila que en el medio pasó a otro contenido, ni hacer retroceder la
+// revisión de archivo de una que en el medio escribió algo más nuevo.
+
+/** A acumula revisiones con decisiones reales: soltar y volver a publicar. */
+async function historiaEn(contentId: string, vueltas: number, prefijo: string) {
+  for (let i = 0; i < vueltas; i++) {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: `${prefijo}-${i}`,
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, 'precondición: la historia se aplicó');
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+      fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+    });
+  }
+}
+
+test('P0 — reparar un vínculo vivo no sella con su revisión una reasignación que entra mientras repara', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  await historiaEn(A, 2, 'p0-lv-sello-reasignado-historia');
+  const op = 'p0-lv-sello-reasignado';
+  // Canónico: "publicado", y el espejo ya lo refleja: a la reparación solo le
+  // queda sellar la fila. Justo antes de esa escritura, la publicación se
+  // reasigna a B.
+  await transicionSuperadaAMitad(A, op);
+  const B = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateOne', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+      fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+    });
+  });
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la reasignación se intercaló de verdad');
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  // Después, el usuario suelta el vínculo de B.
+  const revB = await revisionDe(B);
+  assert.ok(revB + 1 < (await revisionDe(A)), 'precondición: el unlink de B lleva una revisión menor que la de A');
+  const r = await postTransicion({
+    contentId: B, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-reasignado-b', baseVersion: revB,
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink de B se aplicó');
+
+  assert.equal(
+    (await espejoDe(PLATFORM_ID))?.link_state, 'unlinked',
+    'El unlink de B no dejó la lápida. La reparación de A selló la fila -- que ya era de B -- con la ' +
+    'revisión de A, y el guard del unlink, que compara revisiones de B, la vio más nueva. Sellar solo ' +
+    'vale sobre una fila del mismo contenido.',
+  );
+});
+
+test('P0 — reparar un vínculo vivo no hace retroceder la revisión de un unlink que entra mientras repara', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-sello-vivo-atrasado';
+  // Canónico: "publicado", y el espejo ya lo refleja: a la reparación solo le
+  // queda sellar la fila. Justo antes de esa escritura, el usuario lo suelta.
+  await transicionSuperadaAMitad(contentId, op);
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateOne', async () => {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-vivo-atrasado-2',
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, 'precondición: el unlink del usuario se aplicó');
+  });
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink se intercaló de verdad');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.equal(fila?.link_state, 'unlinked', 'precondición: la lápida del unlink sigue puesta');
+  assert.equal(
+    fila?.link_file_rev, await revisionDe(contentId),
+    'La reparación selló la lápida con la revisión del estado que había leído, anterior a la del ' +
+    'unlink: la revisión de archivo de la fila retrocedió, y una escritura de este archivo con una ' +
+    'revisión entre esas dos ya la supera.',
+  );
+});
+
+test('P0 — reparar un vínculo suelto no sella con su revisión uno que ya es de otro', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  const op = 'p0-lv-sello-suelto-otro';
+  // Queda una operación de A pendiente y superada, con este vínculo en su alcance.
+  await transicionSuperadaAMitad(A, op);
+  // El usuario suelta el vínculo de A, y lo publica sobre B.
+  const r = await postTransicion({
+    contentId: A, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-suelto-otro-2',
+    baseVersion: await revisionDe(A),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink de A se aplicó');
+  const B = 'cccccccc-dddd-eeee-ffff-000000000000';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+
+  // Recién ahora pasa el worker por la operación vieja de A: canónico "desvinculado".
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  // Después, el usuario suelta el vínculo de B.
+  const revB = await revisionDe(B);
+  assert.ok(revB + 1 < (await revisionDe(A)), 'precondición: el unlink de B lleva una revisión menor que la de A');
+  const r2 = await postTransicion({
+    contentId: B, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-suelto-otro-b', baseVersion: revB,
+  });
+  assert.equal(r2.status, 200, 'precondición: el unlink de B se aplicó');
+
+  assert.equal(
+    (await espejoDe(PLATFORM_ID))?.link_state, 'unlinked',
+    'El unlink de B no dejó la lápida. La reparación de A selló la fila -- que ya era de B -- con la ' +
+    'revisión de A, y el guard del unlink, que compara revisiones de B, la vio más nueva. Su alcance ' +
+    'viejo la incluía, pero sellarla no es trabajo de esta operación.',
+  );
+});
+
+test('P0 — reparar un vínculo suelto no hace retroceder la revisión de lo que entra mientras repara', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-sello-suelto-atrasado';
+  await transicionSuperadaAMitad(contentId, op);
+  // El usuario suelta el vínculo: el canónico pasa a "desvinculado".
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-suelto-atrasado-2',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+
+  // La reparación ya leyó ese estado. Justo antes de sellar la lápida, el
+  // usuario vuelve a publicar el vínculo en A y lo vuelve a soltar.
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateOne', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+      fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+    });
+    const r2 = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-sello-suelto-atrasado-3',
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r2.status, 200, 'precondición: el segundo unlink se aplicó');
+  });
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la vuelta se intercaló de verdad');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.equal(fila?.link_state, 'unlinked', 'precondición: la lápida del segundo unlink está');
+  assert.equal(
+    fila?.link_file_rev, await revisionDe(contentId),
+    'La reparación selló la lápida con la revisión del estado que había leído, anterior a la del ' +
+    'segundo unlink: la revisión de archivo de la fila retrocedió.',
   );
 });
 
