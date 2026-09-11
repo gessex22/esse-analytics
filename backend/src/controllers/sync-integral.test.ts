@@ -1924,6 +1924,15 @@ test('P1 — un alcance vacío no se recalcula al reanudar', async (t) => {
 // espejo no existía -- no compara nada: escribe `link_state: 'unlinked'` y su
 // propia `link_version` sobre lo que haya. Una transición vieja borra así un
 // re-vínculo más nuevo que ya había llegado.
+//
+// REESCRITO. La versión anterior inyectaba `link_version: 99` en el espejo como
+// "revisión posterior", pero ese 99 era una revisión de ARCHIVO: con una
+// revisión propia del vínculo, una transición que decide DESPUÉS de esa
+// escritura es la posterior, y tiene que ganar. La protección que el caso
+// buscaba -- que la lápida no tape un re-vínculo decidido después que la
+// transición -- se ejercita ahora con el camino real en el que se rompía: el
+// mismo platformId se publica sobre OTRO archivo mientras la transición de A
+// escribe el espejo. Los dos números del guard eran de archivos distintos.
 // ---------------------------------------------------------------------------
 test('P1 — el upsert del tombstone no puede pisar un link con revisión posterior', async (t) => {
   if (!(await conectarOSaltear(t))) return;
@@ -1932,29 +1941,41 @@ test('P1 — el upsert del tombstone no puede pisar un link con revisión poster
 
   const { contentId } = await sembrarConfirmado();
   const rev0 = await revisionDe(contentId);
-
-  // Otro dispositivo ya re-vinculó ese platformId, y su escritura -- con una
-  // revisión muy posterior -- ya está en el espejo.
-  await central.BackupPlatformVideoModel.updateOne(
-    { userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID },
-    { $set: { link_state: 'linked', link_updated_at: new Date('2026-09-08T20:00:00.000Z'), link_version: 99 } },
-  );
-
   const { applyPlatformTransition } = await import('../services/platform-transition.service');
-  await applyPlatformTransition(USER_ID, {
-    contentId, platform: PLATFORM as any, action: 'unlink',
-    operationId: 'p1-tombstone-sin-guard', baseVersion: rev0,
+
+  // La transición en A ya decidió: congeló su alcance con este vínculo adentro.
+  // Mientras escribe el espejo, la MISMA publicación se vincula a OTRO archivo.
+  const OTRO = '22222222-3333-4444-5555-666666666666';
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateMany', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId: OTRO, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, fileName: 'otro video.mp4', matchStatus: 'manual',
+      publishedAt: new Date('2026-09-09T12:00:00.000Z'),
+    });
   });
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink',
+      operationId: 'p1-tombstone-sobre-reasignado', baseVersion: rev0,
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la publicación sobre el otro archivo se intercaló de verdad');
+
+  const otro = await central.FileModel.findOne({ userId: USER_ID, content_id: OTRO }).lean();
+  const pv = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(String(pv?.linkedFileId), String(otro?._id), 'precondición: platformvideos ya lo tiene en el otro archivo');
 
   const mirror = await central.BackupPlatformVideoModel
     .findOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID }).lean();
-
-  assert.equal(
-    mirror?.link_state, 'linked',
-    'El tombstone pisó un re-vínculo posterior. El updateMany compara link_version pero el upsert ' +
-    'que viene después no compara nada, así que escribe igual.',
+  assert.deepEqual(
+    [mirror?.link_state, mirror?.content_id], ['linked', OTRO],
+    'La lápida de A tapó la publicación sobre el otro archivo. El guard comparaba la revisión de A con ' +
+    'la que el publish selló, que era la revisión del OTRO archivo: números de dominios distintos, que ' +
+    'acá empataban -- y ante el empate la transición vieja ganaba.',
   );
-  assert.equal(mirror?.link_version, 99, 'y no puede bajarle la revisión');
 });
 
 // ---------------------------------------------------------------------------
@@ -4298,6 +4319,165 @@ test('BOOTSTRAP — con dos vínculos vivos de la misma plataforma, ninguno se d
     assert.equal(deInstagram[0].platformId, null,
       'y no puede ofrecer un platformId: sería el elegido arbitrariamente');
   }
+});
+
+// ---------------------------------------------------------------------------
+// P0 — la revisión del VÍNCULO no es la revisión del archivo.
+//
+// `link_version` en el espejo (y `linkVersion` en platformvideos) se sellaban
+// con `files.platform_rev`: la revisión de ESTADO del archivo. Sirve para
+// ordenar cambios dentro de un mismo archivo, y es lo que tiene que seguir
+// siendo el CAS de ese estado. Pero un vínculo puede cambiar de archivo, y ahí
+// esos números dejan de ser comparables: soltarlo de A en su revisión 4 y
+// publicarlo después sobre B -- cuya revisión empieza de cero -- hace que la
+// central, y cualquier teléfono que ya aplicó la lápida, rechacen el 1 de B
+// por no superar el 4 de A.
+//
+// Hace falta una revisión propia del vínculo `(userId, platform, platformId)`,
+// emitida por el servidor y monotónica sin importar de qué archivo venga.
+// ---------------------------------------------------------------------------
+
+async function espejoDe(platformId: string) {
+  return central.BackupPlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platform_id: platformId }).lean();
+}
+
+/** Lo que reciben los teléfonos y las PCs: el GET real del espejo. */
+async function filasDelPull(): Promise<any[]> {
+  const { res, captured } = fakeRes();
+  await central.getBackupPlatformVideos(
+    { user: USER, headers: { authorization: AUTH }, params: {}, query: {}, body: {} } as any, res as any,
+  );
+  return captured.body?.videos ?? [];
+}
+
+test('P0 — un vínculo reasignado a otro archivo supera su lápida aunque ese archivo tenga una revisión menor', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const transicion = async (action: string, op: string) => {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action, operationId: op, baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, `precondición: ${op} se aplicó`);
+  };
+
+  // A acumula revisiones con decisiones reales del usuario...
+  await transicion('discard', 'p0-lv-1');
+  await transicion('unlink', 'p0-lv-2');
+  await central.applyPlatformPublish(USER_ID, {
+    contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+  });
+  // ...y la publicación se suelta de A.
+  await transicion('unlink', 'p0-lv-3');
+  const lapida = await espejoDe(PLATFORM_ID);
+  assert.equal(lapida?.link_state, 'unlinked', 'precondición: la lápida de A está puesta');
+
+  // Después, la MISMA publicación se vincula legítimamente a otro archivo.
+  const OTRO = '33333333-4444-5555-6666-777777777777';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: OTRO, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+  const otro = await central.FileModel.findOne({ userId: USER_ID, content_id: OTRO }).lean();
+  assert.ok(otro, 'precondición: el otro archivo existe');
+  assert.ok(
+    (await revisionDe(OTRO)) < (await revisionDe(contentId)),
+    'precondición: el otro archivo tiene una revisión MENOR que la de A',
+  );
+
+  const pv = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(
+    String(pv?.linkedFileId), String(otro?._id),
+    'La central rechazó la reasignación: el guard de platformvideos comparó la revisión del OTRO ' +
+    'archivo contra la que dejó la lápida de A, que es de otro dominio. El E11000 del upsert se ' +
+    'traga en silencio y el vínculo queda suelto para siempre.',
+  );
+
+  const fila = (await filasDelPull()).find((v: any) => v.platform === PLATFORM && v.platform_id === PLATFORM_ID);
+  assert.deepEqual(
+    [fila?.link_state, fila?.content_id], ['linked', OTRO],
+    'y el espejo que leen los teléfonos y las PCs tampoco lo reasigna',
+  );
+  assert.ok(
+    (fila?.link_version ?? 0) > (lapida?.link_version ?? 0),
+    `con una revisión MAYOR que la de la lápida (${fila?.link_version} contra ${lapida?.link_version}): ` +
+    'si no, un dispositivo que ya aplicó la lápida no lo revive nunca',
+  );
+});
+
+test('P0 — una PC que vuelve a vincular después de la lápida deja una revisión mayor', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-push',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+  const lapida = await espejoDe(PLATFORM_ID);
+  assert.equal(lapida?.link_state, 'unlinked', 'precondición: la lápida está puesta');
+
+  // Una PC volvió a vincular DESPUÉS del unlink, y lo manda en su push periódico.
+  const despues = new Date(new Date(lapida.link_updated_at).getTime() + 60_000);
+  const { res, captured } = fakeRes();
+  await central.bulkUpsertBackupPlatformVideos(
+    {
+      user: USER, headers: { authorization: AUTH }, params: {}, query: {},
+      body: { videos: [{
+        platform: PLATFORM, platform_id: PLATFORM_ID, platform_url: PLATFORM_URL,
+        content_id: contentId, file_name: 'video integral.mp4', match_status: 'manual',
+        local_updated_at: despues.toISOString(),
+      }] },
+    } as any,
+    res as any,
+  );
+  assert.equal(captured.body?.updated, 1, 'precondición: el push es posterior a la lápida, así que gana');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.equal(fila?.link_state, 'linked', 'precondición: el vínculo revivió');
+  assert.ok(
+    (fila?.link_version ?? 0) > (lapida?.link_version ?? 0),
+    `El push revivió el vínculo sin mover su revisión (${fila?.link_version} contra ${lapida?.link_version}). ` +
+    'Un teléfono que ya aplicó la lápida la compara y la ve igual: no lo revive nunca, y queda distinto ' +
+    'de las PCs.',
+  );
+});
+
+test('P0 — corregir el link de un archivo le deja la lápida al anterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const NUEVO = '17888888888888888';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId, platform: PLATFORM, platformId: NUEVO, platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/',
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+  });
+  const viejo = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.ok(!viejo?.linkedFileId, 'precondición: platformvideos ya soltó el link anterior');
+
+  const vivos = (await filasDelPull())
+    .filter((v: any) => v.platform === PLATFORM && v.content_id === contentId && v.link_state !== 'unlinked')
+    .map((v: any) => v.platform_id);
+  assert.deepEqual(
+    vivos, [NUEVO],
+    'Corregir el link suelta el anterior en platformvideos pero no en el espejo: los dispositivos ' +
+    'reciben DOS vínculos vivos para el mismo archivo y plataforma. Un pull que trate bien esa ' +
+    'ambigüedad termina sin mostrar ninguno -- por una corrección normal del usuario.',
+  );
+  assert.ok(
+    ((await espejoDe(PLATFORM_ID))?.link_version ?? 0) > 0,
+    'y la lápida del anterior lleva su revisión, para que un dispositivo pueda ordenarla',
+  );
 });
 
 // ---------------------------------------------------------------------------
