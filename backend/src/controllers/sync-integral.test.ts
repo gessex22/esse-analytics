@@ -5528,6 +5528,83 @@ test('P0 — reparar un vínculo suelto no hace retroceder la revisión de lo qu
   );
 });
 
+test('P0 — repetir el mismo publish no mueve la revisión ni el reloj del vínculo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const publicar = () => central.applyPlatformPublish(USER_ID, {
+    contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+  });
+  // El primero deja el vínculo como lo describe este publish. Los que siguen son
+  // reintentos idénticos: recordUploadEvent reintentado, el outbox de
+  // local-backend reenviando el mismo evento.
+  await publicar();
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([antes?.link_state, antes?.content_id], ['linked', contentId], 'precondición');
+  // Que un reloj movido se note aunque la máquina sea rápida.
+  await new Promise(r => setTimeout(r, 20));
+  await publicar();
+  await publicar();
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [despues?.link_version, despues?.link_file_rev, despues?.link_updated_at?.getTime()],
+    [antes?.link_version, antes?.link_file_rev, antes?.link_updated_at?.getTime()],
+    'Repetir el MISMO publish movió la revisión o el reloj del vínculo: el espejo sube `link_version` ' +
+    'y pone `link_updated_at` en ahora sin mirar si algo cambió. Un dispositivo no puede distinguir ' +
+    'ese número de un cambio real, y el reloj movido hace que el guard de tombstone del push de PC ' +
+    'descarte pushes legítimos.',
+  );
+});
+
+test('P0 — reparar un vínculo vivo no pisa una URL que otro completa mientras repara', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-url-carrera';
+  // Canónico: "publicado", con el vínculo en A. La operación vieja queda pendiente.
+  await transicionSuperadaAMitad(contentId, op);
+  const rev = await revisionDe(contentId);
+  // Una PC recrea la fila del espejo sin URL (la versión anterior del servicio
+  // la borraba): viva, del mismo contenido, sellada en 0.
+  await central.BackupPlatformVideoModel.deleteOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID });
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: contentId, platform_url: null, local_updated_at: '2026-09-09T15:00:00.000Z' });
+  assert.equal((await espejoDe(PLATFORM_ID))?.platform_url ?? null, null, 'precondición: el espejo no tiene URL');
+
+  // La reparación ya leyó el espejo sin URL. Justo antes de sellarlo, otra PC
+  // lo empuja con la suya.
+  const URL_DE_LA_PC = 'https://www.instagram.com/p/AAAAAAAAAAA/';
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateOne', async () => {
+    const r = await pushDePC({
+      platform_id: PLATFORM_ID, content_id: contentId, platform_url: URL_DE_LA_PC, local_updated_at: '2026-09-09T15:05:00.000Z',
+    });
+    assert.equal(r?.updated, 1, 'precondición: el push de la otra PC se aplicó');
+  });
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el push se intercaló de verdad');
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.equal(
+    fila?.platform_url, URL_DE_LA_PC,
+    'La reparación decidió completar la URL mirando la foto que había leído -- vacía -- y la escribió ' +
+    'encima de la que otra PC completó mientras tanto. Completar tiene que ser una condición de la ' +
+    'propia escritura: solo si la URL sigue vacía.',
+  );
+  assert.equal(fila?.link_file_rev, rev, 'y el sello se aplica igual');
+});
+
 // ---------------------------------------------------------------------------
 // `mark_published`: "publicado sin enlace" como transición CAUSAL.
 //
