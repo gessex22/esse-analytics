@@ -32,6 +32,12 @@ export interface IPlatformVideo extends Document {
    * vínculo que ocupa el mismo lugar".
    */
   linkVersion?: number;
+  /**
+   * El archivo al que pertenece el sello `linkVersion`. El sello es una revisión
+   * de ESE archivo: comparar el de A contra la revisión de B mezcla dominios, y
+   * rechazaba la reasignación del vínculo a otro archivo.
+   */
+  linkVersionFileId?: Types.ObjectId;
   matchStatus?: 'auto_duration' | 'auto_text' | 'auto_code' | 'manual' | 'revisar_manual' | 'sin_match' | 'remote';
   matchScore?: number;
   matchCandidates?: string[];  // IDs de archivos locales candidatos (guardados por el script Python)
@@ -75,6 +81,7 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   status:         { type: String, enum: ['public', 'private', 'unlisted', 'deleted'], default: 'public' },
   linkedFileId:   { type: Schema.Types.ObjectId, ref: 'File', default: null },
   linkVersion:    { type: Number },
+  linkVersionFileId: { type: Schema.Types.ObjectId, default: undefined },
   matchStatus:      { type: String, enum: ['auto_duration','auto_text','auto_code','manual','revisar_manual','sin_match','remote'] },
   matchScore:       { type: Number },
   matchCandidates:  { type: [String], default: undefined },

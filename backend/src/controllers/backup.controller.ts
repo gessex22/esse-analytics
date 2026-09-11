@@ -7,7 +7,7 @@ import { FileModel } from '../models/file.model';
 import { UserModel } from '../models/user.model';
 import { IdeaCentral } from '../models/ideaCentral';
 import { BackupConfigModel } from '../models/backup-config.model';
-import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
+import { BackupPlatformVideoModel, noEsMasNuevaEnEsteArchivo } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
@@ -885,6 +885,15 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
         .map((e: any) => [`${e.platform}:${e.platform_id}`, e.link_updated_at ? new Date(e.link_updated_at).getTime() : 0]),
     );
 
+    // Crear o revivir un vínculo es un cambio de estado: sube su revisión. Sin
+    // eso, un teléfono que ya aplicó la lápida la compara, la ve igual, y no lo
+    // revive nunca. Refrescar una fila que ya estaba viva no cambia nada.
+    const existentesPorClave = new Set(existentes.map((e: any) => `${e.platform}:${e.platform_id}`));
+    const cambiaElVinculo = (v: any) => {
+      const clave = `${v.platform}:${v.platform_id}`;
+      return !existentesPorClave.has(clave) || tombstonePorClave.has(clave);
+    };
+
     let ignoradosPorTombstone = 0;
     const ops = validos
       .filter(v => {
@@ -919,7 +928,11 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
               // `as const`: sin esto TS ensancha el literal a `string` y no
               // cierra contra el enum del schema.
               link_state:       'linked' as const,
+              // Una PC no trae revisión de archivo: el sello queda en 0, así
+              // que cualquier decisión posterior sobre ese archivo lo supera.
+              ...(cambiaElVinculo(v) ? { link_file_rev: 0 } : {}),
             },
+            ...(cambiaElVinculo(v) ? { $inc: { link_version: 1 } } : {}),
           },
           upsert: true,
         },
@@ -940,8 +953,9 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
 // badge en FileModel.platforms (eso sí llega al PC vía pullFromCloud), pero el link
 // real nunca aparecía ahí: el PC solo consulta backup_platform_videos. Usado por
 // recordUploadEvent y por los uploadToX de youtube/instagram/tiktok-upload.controller.
-// NOTA: el upsert de acá abajo va guardado por `link_version` cuando el caller
-// declara una. Sin eso, un publish rezagado escribía `link_state: 'linked'`
+// NOTA: el upsert de acá abajo va guardado por la revisión de ARCHIVO
+// (`link_file_rev`) cuando el caller declara una, y solo contra el mismo
+// contenido. Sin eso, un publish rezagado escribía `link_state: 'linked'`
 // sobre el tombstone que una transición POSTERIOR acababa de dejar, y el
 // vínculo resucitaba en todas las PCs en su próximo pull.
 export async function mirrorPlatformVideoToBackup(userId: string, data: {
@@ -956,16 +970,24 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   contentId?: string | null;
   matchStatus?: string;
   title?: string | null;
-  /** Revisión de plataforma que respalda este vínculo. Ver el $set de abajo. */
-  linkVersion?: number;
+  /** Revisión de ESTADO del archivo que produjo este publish. Ver el guard de abajo. */
+  revDelArchivo?: number;
 }): Promise<void> {
   if (!data.platformId) return;
   try {
     await BackupPlatformVideoModel.updateOne(
     {
       userId, platform: data.platform, platform_id: data.platformId,
-      ...(typeof data.linkVersion === 'number'
-        ? { $or: [{ link_version: { $exists: false } }, { link_version: { $lte: data.linkVersion } }] }
+      // De OTRO contenido: es una reasignación del vínculo, y un publish es una
+      // decisión nueva sobre él -- la revisión de A no dice nada sobre B. Del
+      // MISMO contenido: decide la revisión de estado de ese archivo, como
+      // siempre, para que un publish rezagado no reviva lo que una transición
+      // posterior soltó.
+      ...(typeof data.revDelArchivo === 'number' && data.contentId
+        ? { $or: [
+            { content_id: { $ne: data.contentId } },
+            { content_id: data.contentId, ...noEsMasNuevaEnEsteArchivo(data.revDelArchivo) },
+          ] }
         : {}),
     },
     {
@@ -992,8 +1014,11 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
         // Y la revisión, que es lo que compara el guard del tombstone en
         // applyPlatformTransition. Sin ella, ese guard mira un campo ausente y
         // una transición vieja tapa un re-vínculo nuevo.
-        ...(typeof data.linkVersion === 'number' ? { link_version: data.linkVersion } : {}),
+        ...(typeof data.revDelArchivo === 'number' ? { link_file_rev: data.revDelArchivo } : {}),
       },
+      // La revisión propia del vínculo sube en la misma operación que lo
+      // cambia. Es lo que ordenan los dispositivos.
+      $inc: { link_version: 1 },
     },
     { upsert: true },
     );
@@ -1302,6 +1327,9 @@ export async function applyPlatformPublish(userId: string, data: {
   publishedAtDate = publishedAtDate ?? new Date();
 
   let linkedFileId: any = null;
+  // El contenido del archivo que recibe el vínculo: es contra él que se decide
+  // si una fila del espejo es del mismo archivo o una reasignación.
+  let contentIdDelArchivo: string | null = contentId ?? null;
   let publishedFile: { _id: any; file_name: string; fecha_creacion?: Date | null } | null = null;
   /**
    * La revisión de esta plataforma que ESTE publish produjo.
@@ -1321,6 +1349,7 @@ export async function applyPlatformPublish(userId: string, data: {
     const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId: data.remoteLibraryVideoId });
     if (file) {
       linkedFileId = file._id;
+      contentIdDelArchivo = (file as any).content_id ?? contentIdDelArchivo;
       // BUG-2026-08-15-03: acá SIEMPRE hay un platformId real (se corta arriba
       // si no lo hay), así que esto es 'confirmed' -- incluso si `platform` ya
       // estaba en `file.platforms` como marca manual ('badge_only', ver
@@ -1409,6 +1438,13 @@ export async function applyPlatformPublish(userId: string, data: {
     // resolveCrossMatchSlot para el cross-match manual -- acá faltaba para el
     // resto de los callers (recordUploadEvent, uploaders directos).
     if (linkedFileId) {
+      // Los que se sueltan acá también cambian de estado. Sin lápida en el
+      // espejo, los dispositivos seguían recibiendo el anterior vivo junto al
+      // nuevo: dos vínculos para el mismo archivo y plataforma, que un pull que
+      // trate bien la ambigüedad termina sin mostrar.
+      const reemplazados = await PlatformVideoModel
+        .find({ userId, platform, linkedFileId, platformId: { $ne: platformId } })
+        .select('platformId').lean();
       const desvinculados = await PlatformVideoModel.updateMany(
         { userId, platform, linkedFileId, platformId: { $ne: platformId } },
         { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
@@ -1436,6 +1472,31 @@ export async function applyPlatformPublish(userId: string, data: {
         ).lean();
         revGanada = ((trasRelink?.platform_rev ?? {}) as Record<string, number>)[platform];
       }
+      if (contentIdDelArchivo) {
+        for (const r of reemplazados) {
+          if (!r.platformId) continue;
+          try {
+            await BackupPlatformVideoModel.updateOne(
+              {
+                userId, platform, platform_id: r.platformId, content_id: contentIdDelArchivo,
+                ...(revGanada !== undefined ? noEsMasNuevaEnEsteArchivo(revGanada) : {}),
+              },
+              {
+                $set: {
+                  link_state: 'unlinked', link_updated_at: new Date(), content_id: contentIdDelArchivo,
+                  ...(revGanada !== undefined ? { link_file_rev: revGanada } : {}),
+                },
+                $inc: { link_version: 1 },
+                $setOnInsert: { local_updated_at: new Date(), match_status: 'sin_match' },
+              },
+              { upsert: true },
+            );
+          } catch (err: any) {
+            // Hay una fila de otro archivo, o más nueva, para ese platformId.
+            if (err?.code !== 11000) throw err;
+          }
+        }
+      }
     }
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
     // platform+platformId no debe volver a pisarse por una llamada repetida
@@ -1460,8 +1521,16 @@ export async function applyPlatformPublish(userId: string, data: {
       await PlatformVideoModel.updateOne(
       {
         userId, platform, platformId,
+        // El sello `linkVersion` es una revisión del archivo AL QUE PERTENECE:
+        // solo se compara contra ese archivo. Contra otro, esto es una
+        // reasignación, y el número de A no dice nada sobre B.
         ...(revGanada !== undefined
-          ? { $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: revGanada } }] }
+          ? { $or: [
+              { linkVersion: { $exists: false } },
+              { linkVersion: { $lte: revGanada } },
+              { linkVersionFileId: { $exists: true, $ne: linkedFileId } },
+              { linkVersionFileId: { $exists: false }, linkedFileId: { $ne: linkedFileId } },
+            ] }
           : {}),
       },
       {
@@ -1472,7 +1541,7 @@ export async function applyPlatformPublish(userId: string, data: {
           linkedFileId,
           matchStatus,
           lastSyncedAt: new Date(),
-          ...(revDelVinculo !== undefined ? { linkVersion: revDelVinculo } : {}),
+          ...(revDelVinculo !== undefined ? { linkVersion: revDelVinculo, linkVersionFileId: linkedFileId } : {}),
         },
         $setOnInsert: { publishedAt: publishedAtDate },
       },
@@ -1513,11 +1582,11 @@ export async function applyPlatformPublish(userId: string, data: {
   // deja pasar la lápida sobre un re-vínculo posterior.
 
   await mirrorPlatformVideoToBackup(userId, {
-    platform, platformId, platformUrl, fileName, contentId, title,
+    platform, platformId, platformUrl, fileName, contentId: contentIdDelArchivo, title,
     remoteLibraryVideoId: data.remoteLibraryVideoId,
     deviceId: data.deviceId, source: data.source,
     publishedAt: publishedAtDate, matchStatus,
-    linkVersion: revParaEspejoBackup,
+    revDelArchivo: revParaEspejoBackup,
   });
 
   await syncCalendarAfterPublish(userId, platform, publishedFile, publishedAtDate);

@@ -4480,6 +4480,212 @@ test('P0 — corregir el link de un archivo le deja la lápida al anterior', asy
   );
 });
 
+test('P0 — reparar un archivo no le pone la lápida a un vínculo que ya es de otro', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar';
+  // Queda una operación de A pendiente y superada, con este vínculo en su alcance.
+  await transicionSuperadaAMitad(contentId, op);
+
+  // Después el usuario suelta el vínculo de A de verdad...
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-reparar-2',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+  // ...y lo publica sobre otro archivo.
+  const OTRO = '44444444-5555-6666-7777-888888888888';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: OTRO, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([antes?.link_state, antes?.content_id], ['linked', OTRO], 'precondición: el espejo lo tiene en el otro archivo');
+
+  // Recién ahora pasa el worker por la operación vieja de A.
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [despues?.link_state, despues?.content_id], ['linked', OTRO],
+    'La reparación de A le puso la lápida a un vínculo que ya es del otro archivo. Su alcance viejo ' +
+    'lo incluía, pero la fila ya no es de A: repararlo no es trabajo de esta operación.',
+  );
+});
+
+test('P0 — cada cambio de estado del vínculo sube su revisión', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const versiones: [string, number][] = [];
+  const anotar = async () => {
+    const f = await espejoDe(PLATFORM_ID);
+    versiones.push([f?.link_state ?? 'linked', f?.link_version ?? 0]);
+  };
+  await anotar();
+  for (const [i, accion] of (['unlink', 'publish', 'unlink'] as const).entries()) {
+    if (accion === 'publish') {
+      await central.applyPlatformPublish(USER_ID, {
+        contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+        fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+      });
+    } else {
+      const r = await postTransicion({
+        contentId, platform: PLATFORM, action: 'unlink', operationId: `p0-lv-contrato-${i}`,
+        baseVersion: await revisionDe(contentId),
+      });
+      assert.equal(r.status, 200, 'precondición: la transición se aplicó');
+    }
+    await anotar();
+  }
+
+  assert.deepEqual(versiones.map(v => v[0]), ['linked', 'unlinked', 'linked', 'unlinked'], 'precondición');
+  for (let i = 1; i < versiones.length; i++) {
+    assert.ok(
+      versiones[i][1] > versiones[i - 1][1],
+      `El paso ${i} (${versiones[i][0]}) no subió la revisión del vínculo: ${JSON.stringify(versiones)}. ` +
+      'Es lo que ordenan los dispositivos: dos estados distintos con el mismo número solo se resuelven ' +
+      'por una regla de desempate, y cada cliente puede tener la suya.',
+    );
+  }
+});
+
+test('P0 — los push periódicos de una PC no traban un unlink posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Una fila del espejo de ANTES de la revisión propia del vínculo: sin sello de
+  // archivo. Así quedan todas las que ya existen en producción.
+  const { contentId } = await sembrarConfirmado();
+  const refresco = async (minutos: number) => {
+    const { res, captured } = fakeRes();
+    await central.bulkUpsertBackupPlatformVideos(
+      {
+        user: USER, headers: { authorization: AUTH }, params: {}, query: {},
+        body: { videos: [{
+          platform: PLATFORM, platform_id: PLATFORM_ID, platform_url: PLATFORM_URL,
+          content_id: contentId, file_name: 'video integral.mp4', match_status: 'manual',
+          local_updated_at: new Date(Date.parse('2026-09-09T10:00:00.000Z') + minutos * 60_000).toISOString(),
+        }] },
+      } as any,
+      res as any,
+    );
+    assert.equal(captured.body?.updated, 1, 'precondición: el push se aplicó');
+  };
+  // La PC sigue con el vínculo, y lo empuja en cada tick.
+  await refresco(5);
+  await refresco(10);
+
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-tras-refrescos',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+
+  assert.equal(
+    (await espejoDe(PLATFORM_ID))?.link_state, 'unlinked',
+    'Los refrescos de la PC subieron la revisión del vínculo, y en una fila sin sello de archivo esa ' +
+    'revisión es la que se compara contra la del archivo: el unlink la vio "más nueva" y no dejó lápida.',
+  );
+});
+
+test('P0 — un vínculo que vuelve a su archivo después de reasignarse no queda bloqueado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+
+  // B tiene su propia historia: varias decisiones del usuario sobre ese archivo.
+  const B = '55555555-6666-7777-8888-999999999999';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: B, platform: PLATFORM, platformId: '17777777777777777',
+    platformUrl: 'https://www.instagram.com/reel/CCCCCCCCCCC/', fileName: 'otro video.mp4',
+    matchStatus: 'manual', publishedAt: new Date('2026-09-08T10:00:00.000Z'),
+  });
+  for (const [i, action] of ['discard', 'unlink', 'discard', 'unlink'].entries()) {
+    const r = await postTransicion({
+      contentId: B, platform: PLATFORM, action, operationId: `p0-lv-ida-b-${i}`,
+      baseVersion: await revisionDe(B),
+    });
+    assert.equal(r.status, 200, 'precondición: la historia de B se aplicó');
+  }
+
+  // La publicación se suelta de A, se vincula a B por error...
+  const r = await postTransicion({
+    contentId: A, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-ida-a',
+    baseVersion: await revisionDe(A),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink de A se aplicó');
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+  });
+  assert.ok((await revisionDe(B)) > (await revisionDe(A)), 'precondición: B tiene una revisión MAYOR que A');
+
+  // ...y el usuario lo corrige: vuelve a A.
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: A, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-09T10:00:00.000Z'),
+  });
+
+  const archivoA = await central.FileModel.findOne({ userId: USER_ID, content_id: A }).lean();
+  const pv = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(
+    String(pv?.linkedFileId), String(archivoA?._id),
+    'La vuelta a A quedó bloqueada: el sello de platformvideos seguía diciendo que era de A -- lo dejó ' +
+    'la transición de A -- con el número que puso el publish sobre B. Comparado contra la revisión de ' +
+    'A, parecía más nuevo. Cada escritura del sello tiene que decir de qué archivo es.',
+  );
+  const espejo = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([espejo?.link_state, espejo?.content_id], ['linked', A], 'y el espejo también vuelve a A');
+});
+
+test('P0 — reparar un archivo no pisa un unlink que entra mientras repara', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-carrera';
+  // Canónico: "publicado", con el vínculo. La operación vieja queda pendiente.
+  await transicionSuperadaAMitad(contentId, op);
+
+  // La reparación ya leyó el estado canónico; justo antes de escribir el espejo,
+  // el usuario suelta el vínculo.
+  const espia = await conIntercaladoEn(central.BackupPlatformVideoModel, 'updateOne', async () => {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-reparar-carrera-2',
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, 'precondición: el unlink del usuario se aplicó');
+  });
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  try {
+    await vencerLease(op);
+    await repararTransicionesPendientes();
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink se intercaló de verdad');
+
+  assert.equal(
+    (await espejoDe(PLATFORM_ID))?.link_state, 'unlinked',
+    'La reparación volvió a poner `linked` sobre la lápida de un unlink posterior: escribió el estado ' +
+    'canónico que había leído, que ya no lo era. El sello de archivo de la fila es el único que sabe ' +
+    'que entró algo más nuevo.',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // `mark_published`: "publicado sin enlace" como transición CAUSAL.
 //

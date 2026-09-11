@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { FileModel } from '../models/file.model';
 import { BackupFileModel } from '../models/backup-file.model';
 import { PlatformVideoModel } from '../models/platform-video.model';
-import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
+import { BackupPlatformVideoModel, noEsMasNuevaEnEsteArchivo } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { PlatformTransitionOpModel } from '../models/platform-transition-op.model';
 import { applyPlatformTransition, TRANSITION_PLATFORMS } from './platform-transition.service';
@@ -354,9 +354,12 @@ export async function reproyectarPlataforma(
       await BackupPlatformVideoModel.updateOne(
         {
           userId, platform, platform_id: v.platformId,
-          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: rev } }],
+          ...noEsMasNuevaEnEsteArchivo(rev),
         },
-        { $set: { link_state: 'linked', link_updated_at: new Date(), link_version: rev, content_id: contentId } },
+        {
+          $set: { link_state: 'linked', link_updated_at: new Date(), link_file_rev: rev, content_id: contentId },
+          $inc: { link_version: 1 },
+        },
       );
     }
     return;
@@ -384,21 +387,24 @@ export async function reproyectarPlataforma(
       userId, platform, linkedFileId: file._id,
       $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: rev } }],
     } as any,
-    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: rev } },
+    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: rev, linkVersionFileId: file._id } },
   );
 
   for (const platformId of ids) {
     try {
       await BackupPlatformVideoModel.updateOne(
         {
-          userId, platform, platform_id: platformId,
-          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: rev } }],
+          // Solo una fila de ESTE contenido: si el vínculo ya es de otro
+          // archivo, reparar este no puede ponerle una lápida.
+          userId, platform, platform_id: platformId, content_id: contentId,
+          ...noEsMasNuevaEnEsteArchivo(rev),
         },
         {
           $set: {
             link_state: 'unlinked', link_updated_at: new Date(),
-            link_version: rev, content_id: contentId,
+            link_file_rev: rev, content_id: contentId,
           },
+          $inc: { link_version: 1 },
           $setOnInsert: { local_updated_at: new Date(), match_status: 'sin_match' },
         },
         { upsert: true },

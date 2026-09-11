@@ -22,7 +22,7 @@
 import { FileModel } from '../models/file.model';
 import { BackupFileModel } from '../models/backup-file.model';
 import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model';
-import { BackupPlatformVideoModel } from '../models/backup-platform-video.model';
+import { BackupPlatformVideoModel, noEsMasNuevaEnEsteArchivo } from '../models/backup-platform-video.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { randomUUID } from 'crypto';
 import { PlatformTransitionOpModel } from '../models/platform-transition-op.model';
@@ -591,7 +591,8 @@ export async function applyPlatformTransition(
       userId, linkedFileId: file._id, platform, platformId: { $in: idsVinculados },
       $or: [{ linkVersion: { $exists: false } }, { linkVersion: { $lte: versionResultante } }],
     },
-    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: versionResultante } },
+    // El sello dice de QUÉ archivo es: solo se compara contra ese.
+    { $set: { linkedFileId: null, matchStatus: 'sin_match', linkVersion: versionResultante, linkVersionFileId: file._id } },
   );
 
   // 4) backup_platform_videos — el espejo desde el que CADA escritorio
@@ -619,17 +620,20 @@ export async function applyPlatformTransition(
 
   if (!(await sigueVigente())) return cortadaPorConflicto();
 
+  // La revisión del ARCHIVO decide quién escribe, y solo entre escrituras del
+  // mismo contenido. La del vínculo (`link_version`) la sube el upsert por id de
+  // abajo, que pasa por todas estas filas: subirla también acá la movía dos veces.
   await BackupPlatformVideoModel.updateMany(
     {
       userId, platform, content_id: contentId,
       platform_id: { $in: idsVinculados },
-      $or: [{ link_version: { $exists: false } }, { link_version: { $lte: versionResultante } }],
+      ...noEsMasNuevaEnEsteArchivo(versionResultante),
     },
     {
       $set: {
         link_state: 'unlinked',
         link_updated_at: ahora,
-        link_version: versionResultante,
+        link_file_rev: versionResultante,
         content_id: contentId,
         ...(operationId ? { operation_id: operationId } : {}),
       },
@@ -649,17 +653,22 @@ export async function applyPlatformTransition(
     try {
       await BackupPlatformVideoModel.updateOne(
         {
-          userId, platform, platform_id: platformId,
-          $or: [{ link_version: { $exists: false } }, { link_version: { $lte: versionResultante } }],
+          // Solo una fila de ESTE contenido. Si el vínculo ya se reasignó a otro
+          // archivo, la fila es de ese archivo: esta transición no la vio así, y
+          // su revisión no se puede comparar contra la de él. El filtro no
+          // matchea, el upsert choca contra el índice único y se la deja.
+          userId, platform, platform_id: platformId, content_id: contentId,
+          ...noEsMasNuevaEnEsteArchivo(versionResultante),
         },
         {
         $set: {
           link_state: 'unlinked',
           link_updated_at: ahora,
-          link_version: versionResultante,
+          link_file_rev: versionResultante,
           content_id: contentId,
           ...(operationId ? { operation_id: operationId } : {}),
         },
+          $inc: { link_version: 1 },
           // El índice único es {userId, platform, platform_id}, así que el
           // tombstone se crea por platformId. `local_updated_at` es requerido por
           // el schema y solo se fija al insertar: si la fila ya existía, su valor

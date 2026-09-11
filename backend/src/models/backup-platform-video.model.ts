@@ -35,8 +35,25 @@ export interface IBackupPlatformVideo extends Document {
   // cualquier campo). Es contra este timestamp que se decide si el push de una
   // PC atrasada puede pisar un tombstone más nuevo.
   link_updated_at?: Date;
-  /** Versión de la transición que dejó este estado de vínculo. */
+  /**
+   * Revisión PROPIA del vínculo (userId, platform, platform_id). La emite el
+   * servidor con `$inc`, en la misma escritura que cambia el vínculo: es
+   * monotónica sin importar de qué archivo venga el cambio, y es lo que comparan
+   * los dispositivos para ordenar dos estados del mismo vínculo.
+   *
+   * Antes era la revisión de ESTADO del archivo que lo escribió, y eso no se
+   * puede comparar cuando el vínculo se reasigna: soltarlo de A en su revisión 4
+   * y publicarlo en B -- que empieza de cero -- dejaba el 1 de B por debajo del
+   * 4 de A, y la reasignación se rechazaba en la central y en los teléfonos.
+   */
   link_version?: number;
+  /**
+   * Revisión de ESTADO del archivo (`content_id`) que escribió este vínculo.
+   * Solo se compara contra escrituras del MISMO contenido: ahí sí ordena, y es lo
+   * que impide que una transición vieja pise una publicación posterior sobre ese
+   * archivo. Un push de PC la deja en 0: no trae revisión de archivo.
+   */
+  link_file_rev?: number;
   // Idempotencia: repetir la misma operación no cambia el resultado, y permite
   // reanudar una que quedó a medias sin duplicar efectos.
   operation_id?: string;
@@ -59,10 +76,31 @@ const BackupPlatformVideoSchema = new Schema<IBackupPlatformVideo>({
   link_state:       { type: String, enum: ['linked', 'unlinked'], default: 'linked' },
   link_updated_at:  { type: Date },
   link_version:     { type: Number },
+  link_file_rev:    { type: Number },
   operation_id:     { type: String },
 }, { timestamps: true });
 
 BackupPlatformVideoSchema.index({ userId: 1, platform: 1, platform_id: 1 }, { unique: true });
+
+/**
+ * Guard de una escritura sobre una fila del MISMO contenido: pasa si la
+ * revisión de archivo que la selló no es posterior a la de quien escribe.
+ *
+ * Una fila de antes de `link_file_rev` todavía tiene en `link_version` la
+ * revisión de archivo de entonces: mientras nadie la vuelva a escribir, se
+ * compara esa.
+ */
+export function noEsMasNuevaEnEsteArchivo(revDelArchivo: number) {
+  return {
+    $or: [
+      { link_file_rev: { $lte: revDelArchivo } },
+      {
+        link_file_rev: { $exists: false },
+        $or: [{ link_version: { $exists: false } }, { link_version: { $lte: revDelArchivo } }],
+      },
+    ],
+  };
+}
 
 export const BackupPlatformVideoModel = model<IBackupPlatformVideo>(
   'BackupPlatformVideo', BackupPlatformVideoSchema, 'backup_platform_videos',
