@@ -4687,6 +4687,197 @@ test('P0 — reparar un archivo no pisa un unlink que entra mientras repara', as
 });
 
 // ---------------------------------------------------------------------------
+// P0 (revisión) — exactamente una vez, el push de PC y la reparación positiva.
+// ---------------------------------------------------------------------------
+
+/** El push periódico de una PC, con la foto que tiene del vínculo. */
+async function pushDePC(fila: { platform_id: string; content_id: string; local_updated_at: string }) {
+  const { res, captured } = fakeRes();
+  await central.bulkUpsertBackupPlatformVideos(
+    {
+      user: USER, headers: { authorization: AUTH }, params: {}, query: {},
+      body: { videos: [{
+        platform: PLATFORM, platform_url: PLATFORM_URL, file_name: 'video integral.mp4',
+        match_status: 'manual', ...fila,
+      }] },
+    } as any,
+    res as any,
+  );
+  return captured.body;
+}
+
+test('P0 — una transición sube la revisión del vínculo exactamente una vez, aunque se reanude', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const rev0 = await revisionDe(contentId);
+  const N = (await espejoDe(PLATFORM_ID))?.link_version ?? 0;
+  const op = 'p0-lv-una-vez';
+
+  // El primer intento escribe el espejo y se cae en la proyección siguiente.
+  const { applyPlatformTransition } = await import('../services/platform-transition.service');
+  const original = central.RemoteLibraryVideoModel.updateOne.bind(central.RemoteLibraryVideoModel);
+  let rota = false;
+  (central.RemoteLibraryVideoModel as any).updateOne = (...args: any[]) => {
+    if (!rota) { rota = true; throw new Error('caída simulada después del espejo'); }
+    return original(...args);
+  };
+  try {
+    await applyPlatformTransition(USER_ID, {
+      contentId, platform: PLATFORM as any, action: 'unlink', operationId: op, baseVersion: rev0,
+    });
+    assert.fail('la caída simulada tenía que interrumpir la operación');
+  } catch (err: any) {
+    if (!/caída simulada/.test(err.message)) throw err;
+  } finally {
+    (central.RemoteLibraryVideoModel as any).updateOne = original;
+  }
+  const trasCaida = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [trasCaida?.link_state, trasCaida?.link_version], ['unlinked', N + 1],
+    'Una transición es UN cambio de estado del vínculo: N -> N+1. El updateMany y el upsert por id ' +
+    'alcanzan la misma fila, y cada uno no puede subirla por su cuenta.',
+  );
+
+  // Pasa el tiempo del lease, y la MISMA operación se reanuda y termina.
+  await vencerLease(op);
+  const r = await postTransicion({ contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0 });
+  assert.equal(r.status, 200, 'precondición: la reanudación terminó');
+  assert.equal(
+    (await espejoDe(PLATFORM_ID))?.link_version, N + 1,
+    'La reanudación volvió a subir la revisión del vínculo: repetir la escritura de la MISMA operación ' +
+    'la hace parecer un cambio nuevo, y un dispositivo no puede distinguirlo de uno real.',
+  );
+
+  // Y una entrega más, con la operación ya completada, tampoco la mueve.
+  await postTransicion({ contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: rev0 });
+  assert.equal((await espejoDe(PLATFORM_ID))?.link_version, N + 1, 'ni la entrega duplicada');
+});
+
+test('P0 — el push viejo de una PC no mueve un vínculo vivo a otro archivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  // El vínculo se suelta de A y se publica en B: decisiones causales.
+  const r = await postTransicion({
+    contentId: A, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-push-viejo',
+    baseVersion: await revisionDe(A),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+  const B = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+  await central.applyPlatformPublish(USER_ID, {
+    contentId: B, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: 'otro video.mp4', matchStatus: 'manual', publishedAt: new Date('2026-09-10T10:00:00.000Z'),
+  });
+  const antes = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([antes?.link_state, antes?.content_id], ['linked', B], 'precondición: el vínculo es de B');
+
+  // Una PC que todavía no hizo pull lo tiene en A, y empuja su foto con la hora
+  // en que lo vinculó.
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: A, local_updated_at: '2026-09-01T10:00:00.000Z' });
+
+  const despues = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [despues?.link_state, despues?.content_id, despues?.link_version],
+    ['linked', B, antes?.link_version],
+    'El push de una foto vieja reasignó un vínculo VIVO a otro archivo, sin ningún contrato causal: ' +
+    'la PC no decidió nada, solo no se había enterado. Reasignar es trabajo de un publish o una ' +
+    'transición, que sí traen revisión.',
+  );
+});
+
+/** Contrapeso: revivir una lápida para otro archivo sí es una reasignación real. */
+test('P0 — una PC que revive una lápida para otro archivo lo reasigna y sube la revisión', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: A } = await sembrarConfirmado();
+  const r = await postTransicion({
+    contentId: A, platform: PLATFORM, action: 'unlink', operationId: 'p0-lv-push-revive-otro',
+    baseVersion: await revisionDe(A),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+  const lapida = await espejoDe(PLATFORM_ID);
+
+  const B = '77777777-8888-9999-aaaa-bbbbbbbbbbbb';
+  const despues = new Date(new Date(lapida.link_updated_at).getTime() + 60_000).toISOString();
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: B, local_updated_at: despues });
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([fila?.link_state, fila?.content_id], ['linked', B]);
+  assert.ok((fila?.link_version ?? 0) > (lapida?.link_version ?? 0), 'y sube la revisión');
+});
+
+/** Contrapeso: completar el contenido de una fila vieja no es mover el vínculo. */
+test('P0 — una PC completa el contenido de una fila vieja que no lo tenía', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // Filas del espejo de antes de `content_id`: las hay en producción.
+  await central.BackupPlatformVideoModel.updateOne(
+    { userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID },
+    { $unset: { content_id: '' } },
+  );
+  await pushDePC({ platform_id: PLATFORM_ID, content_id: contentId, local_updated_at: '2026-09-09T10:00:00.000Z' });
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.deepEqual([fila?.link_state, fila?.content_id], ['linked', contentId]);
+});
+
+/** Contrapeso: repetir un push idéntico no es un cambio. */
+test('P0 — repetir el mismo push de PC no sube la revisión del vínculo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const NUEVO = '17666666666666661';
+  const fila = { platform_id: NUEVO, content_id: contentId, local_updated_at: '2026-09-09T10:00:00.000Z' };
+  await pushDePC(fila);
+  const creada = await espejoDe(NUEVO);
+  assert.ok((creada?.link_version ?? 0) > 0, 'precondición: crearla sí subió la revisión');
+
+  await pushDePC(fila);
+  await pushDePC(fila);
+  assert.equal((await espejoDe(NUEVO))?.link_version, creada?.link_version, 'la misma foto no es un cambio');
+});
+
+test('P0 — reparar un archivo publicado recrea el espejo que falta', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const op = 'p0-lv-reparar-ausente';
+  // Una operación superada a mitad: el estado canónico es "publicado", con el vínculo.
+  await transicionSuperadaAMitad(contentId, op);
+
+  // Y la fila del espejo de ese vínculo no está. La versión anterior del
+  // servicio de transiciones la borraba con deleteMany: las hay así.
+  await central.BackupPlatformVideoModel.deleteOne({ userId: USER_ID, platform: PLATFORM, platform_id: PLATFORM_ID });
+
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await vencerLease(op);
+  await repararTransicionesPendientes();
+  assert.equal((await registroDe(op))?.status, 'superseded', 'precondición: la reparación se cerró');
+
+  const fila = await espejoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [fila?.link_state, fila?.content_id, fila?.platform_url], ['linked', contentId, PLATFORM_URL],
+    'La reparación dio por cerrada la operación sin recrear la proyección que falta: el updateOne ' +
+    'del vínculo vivo no tenía upsert. Las PCs reconstruyen sus links desde este espejo -- con la ' +
+    'URL --, así que para ellas el vínculo sigue sin existir.',
+  );
+});
+
+// ---------------------------------------------------------------------------
 // `mark_published`: "publicado sin enlace" como transición CAUSAL.
 //
 // Era el último camino que seguía escribiendo estado por fuera del escritor
