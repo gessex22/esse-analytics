@@ -876,7 +876,7 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
     const existentes = claves.length
       ? await BackupPlatformVideoModel.find(
           { userId, $or: claves },
-          { platform: 1, platform_id: 1, link_state: 1, link_updated_at: 1 },
+          { platform: 1, platform_id: 1, link_state: 1, link_updated_at: 1, content_id: 1, link_version: 1 },
         ).lean()
       : [];
     const tombstonePorClave = new Map(
@@ -888,15 +888,29 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
     // Crear o revivir un vínculo es un cambio de estado: sube su revisión. Sin
     // eso, un teléfono que ya aplicó la lápida la compara, la ve igual, y no lo
     // revive nunca. Refrescar una fila que ya estaba viva no cambia nada.
-    const existentesPorClave = new Set(existentes.map((e: any) => `${e.platform}:${e.platform_id}`));
+    const existentePorClave = new Map(existentes.map((e: any) => [`${e.platform}:${e.platform_id}`, e]));
+    // Completar el contenido de una fila vieja que no lo tenía también: dos PCs
+    // que la completan a la vez leen el mismo número, y si no sube, las dos
+    // pasan el CAS y la segunda pisa a la primera.
     const cambiaElVinculo = (v: any) => {
       const clave = `${v.platform}:${v.platform_id}`;
-      return !existentesPorClave.has(clave) || tombstonePorClave.has(clave);
+      const e: any = existentePorClave.get(clave);
+      return !e || tombstonePorClave.has(clave) || (!e.content_id && !!v.content_id);
+    };
+    // Una foto que intenta llevar un vínculo VIVO a otro contenido no es una
+    // decisión: la PC solo no se enteró de que se reasignó. Reasignar es trabajo
+    // de un publish o una transición, que traen revisión. Completar el contenido
+    // de una fila vieja que no lo tenía no es mover nada.
+    const mueveUnVinculoVivo = (v: any) => {
+      const e: any = existentePorClave.get(`${v.platform}:${v.platform_id}`);
+      return !!e && e.link_state !== 'unlinked' && !!e.content_id && e.content_id !== (v.content_id ?? null);
     };
 
     let ignoradosPorTombstone = 0;
+    let ignoradosPorContenido = 0;
     const ops = validos
       .filter(v => {
+        if (mueveUnVinculoVivo(v)) { ignoradosPorContenido++; return false; }
         const tomb = tombstonePorClave.get(`${v.platform}:${v.platform_id}`);
         if (tomb === undefined) return true;
         const empuje = v.local_updated_at ? new Date(v.local_updated_at).getTime() : 0;
@@ -906,41 +920,71 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
         if (empuje <= tomb) { ignoradosPorTombstone++; return false; }
         return true;
       })
-      .map(v => ({
-        updateOne: {
-          filter: { userId, platform: v.platform, platform_id: v.platform_id },
-          update: {
-            $set: {
-              userId,
-              platform:         v.platform,
-              platform_id:      v.platform_id,
-              platform_url:     v.platform_url    ?? null,
-              device_id:        v.device_id       ?? null,
-              source:           v.source           ?? null,
-              published_at:     v.published_at    ?? null,
-              file_name:        v.file_name       ?? null,
-              content_id:       v.content_id      ?? null,
-              match_status:     v.match_status    ?? 'sin_match',
-              title:            v.title           ?? null,
-              description:      v.description     ?? null,
-              local_updated_at: new Date(v.local_updated_at),
-              // Un push que SÍ gana vuelve a dejar el vínculo vivo.
-              // `as const`: sin esto TS ensancha el literal a `string` y no
-              // cierra contra el enum del schema.
-              link_state:       'linked' as const,
-              // Una PC no trae revisión de archivo: el sello queda en 0, así
-              // que cualquier decisión posterior sobre ese archivo lo supera.
-              ...(cambiaElVinculo(v) ? { link_file_rev: 0 } : {}),
+      .map(v => {
+        const campos = {
+          userId,
+          platform:         v.platform,
+          platform_id:      v.platform_id,
+          platform_url:     v.platform_url    ?? null,
+          device_id:        v.device_id       ?? null,
+          source:           v.source           ?? null,
+          published_at:     v.published_at    ?? null,
+          file_name:        v.file_name       ?? null,
+          content_id:       v.content_id      ?? null,
+          match_status:     v.match_status    ?? 'sin_match',
+          title:            v.title           ?? null,
+          description:      v.description     ?? null,
+          local_updated_at: new Date(v.local_updated_at),
+          // Un push que SÍ gana vuelve a dejar el vínculo vivo.
+          // `as const`: sin esto TS ensancha el literal a `string` y no
+          // cierra contra el enum del schema.
+          link_state:       'linked' as const,
+        };
+        // Leer y escribir son dos pasos, y lo que entre en el medio no puede
+        // quedar pisado por esta foto. Una fila que no estaba es un INSERT: si
+        // otro la creó mientras tanto, el E11000 dice que ganó. Una que estaba
+        // se escribe con CAS contra el `link_version` que se leyó: si alguien la
+        // cambió, no matchea.
+        const e: any = existentePorClave.get(`${v.platform}:${v.platform_id}`);
+        if (!e) {
+          // Una PC no trae revisión de archivo: el sello queda en 0, así que
+          // cualquier decisión posterior sobre ese archivo lo supera.
+          return { insertOne: { document: { ...campos, link_file_rev: 0, link_version: 1 } } };
+        }
+        return {
+          updateOne: {
+            filter: {
+              userId, platform: v.platform, platform_id: v.platform_id,
+              link_version: typeof e.link_version === 'number' ? e.link_version : { $exists: false },
             },
-            ...(cambiaElVinculo(v) ? { $inc: { link_version: 1 } } : {}),
+            update: {
+              $set: { ...campos, ...(cambiaElVinculo(v) ? { link_file_rev: 0 } : {}) },
+              ...(cambiaElVinculo(v) ? { $inc: { link_version: 1 } } : {}),
+            },
           },
-          upsert: true,
-        },
-      }));
+        };
+      });
 
-    if (ops.length > 0) await BackupPlatformVideoModel.bulkWrite(ops);
+    // `ordered: false`: una escritura que perdió no frena a las demás. Perder es
+    // un CAS que no matchea (alguien cambió la fila) o un E11000 (alguien la
+    // creó); cualquier otro error sigue siendo un error. `updated` cuenta lo que
+    // de verdad se aplicó.
+    let aplicados = 0;
+    if (ops.length > 0) {
+      try {
+        const r: any = await BackupPlatformVideoModel.bulkWrite(ops as any, { ordered: false });
+        aplicados = (r?.matchedCount ?? 0) + (r?.insertedCount ?? 0);
+      } catch (err: any) {
+        const errores: any[] = Array.isArray(err?.writeErrors)
+          ? err.writeErrors
+          : err?.writeErrors ? [err.writeErrors] : err?.code === 11000 ? [err] : [];
+        if (!errores.length || errores.some((w: any) => (w?.code ?? w?.err?.code) !== 11000)) throw err;
+        const r: any = err?.result ?? {};
+        aplicados = (r.matchedCount ?? r.nMatched ?? 0) + (r.insertedCount ?? r.nInserted ?? 0);
+      }
+    }
 
-    res.json({ ok: true, updated: ops.length, ignoradosPorTombstone });
+    res.json({ ok: true, updated: aplicados, ignoradosPorTombstone, ignoradosPorContenido });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

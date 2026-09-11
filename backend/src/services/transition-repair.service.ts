@@ -343,24 +343,86 @@ export async function reproyectarPlataforma(
 
   // ── Vínculos ────────────────────────────────────────────────────────────
   const vinculos = await PlatformVideoModel
-    .find({ userId, platform, linkedFileId: file._id } as any).select('platformId linkVersion').lean();
+    .find({ userId, platform, linkedFileId: file._id } as any)
+    .select('platformId linkVersion platformUrl title publishedAt matchStatus').lean();
 
   if (publicado) {
     // Estado canónico positivo: los vínculos vivos son la verdad y el espejo
     // tiene que reflejarlos. Si quedó una lápida de una transición superada, se
     // levanta.
+    //
+    // Se escribe con CAS contra el `link_version` de cada fila, leído ANTES de
+    // volver a mirar platformvideos: lo que se reasigne entre la primera lectura
+    // y esa ya no aparece en la segunda, y lo que se reasigne después mueve el
+    // `link_version` y el CAS no matchea. Comparar el sello de archivo acá no
+    // sirve: si la fila se reasignó, es la revisión de OTRO archivo.
+    const idsVivos = vinculos.map(v => v.platformId).filter(Boolean) as string[];
+    const observadas = new Map((await BackupPlatformVideoModel
+      .find({ userId, platform, platform_id: { $in: idsVivos } })
+      .select('platform_id link_version link_state content_id platform_url').lean())
+      .map((e: any) => [e.platform_id, e]));
+    const siguenVivos = new Set((await PlatformVideoModel
+      .find({ userId, platform, linkedFileId: file._id, platformId: { $in: idsVivos } } as any)
+      .select('platformId').lean()).map((v: any) => v.platformId));
     for (const v of vinculos) {
-      if (!v.platformId) continue;
-      await BackupPlatformVideoModel.updateOne(
-        {
-          userId, platform, platform_id: v.platformId,
-          ...noEsMasNuevaEnEsteArchivo(rev),
-        },
-        {
-          $set: { link_state: 'linked', link_updated_at: new Date(), link_file_rev: rev, content_id: contentId },
-          $inc: { link_version: 1 },
-        },
-      );
+      if (!v.platformId || !siguenVivos.has(v.platformId)) continue;
+      const e: any = observadas.get(v.platformId);
+      if (e && e.link_state === 'linked' && e.content_id === contentId) {
+        // El mismo vínculo, vivo y en este archivo: no hay cambio que anunciar,
+        // así que `link_version` no se mueve -- tampoco al repetir una reparación
+        // que se cayó antes de cerrar. Pero la fila tiene que llevar la revisión
+        // del estado que refleja: sellada con una menor, una escritura atrasada
+        // de este mismo archivo todavía la supera. Y la URL, si le falta, sale
+        // de platformvideos: es con lo que las PCs reconstruyen el link. Lo que
+        // el espejo ya tiene no se pisa.
+        //
+        // Si en el medio la fila se soltó o se reasignó, no matchea: soltarla es
+        // una escritura de este archivo con una revisión mayor, y reasignarla la
+        // lleva a otro contenido.
+        await BackupPlatformVideoModel.updateOne(
+          {
+            userId, platform, platform_id: v.platformId, content_id: contentId,
+            ...noEsMasNuevaEnEsteArchivo(rev),
+          },
+          {
+            $set: {
+              link_file_rev: rev,
+              ...(e.platform_url == null && (v as any).platformUrl ? { platform_url: (v as any).platformUrl } : {}),
+            },
+          },
+        );
+        continue;
+      }
+      try {
+        await BackupPlatformVideoModel.updateOne(
+          {
+            userId, platform, platform_id: v.platformId,
+            // Existía: CAS contra lo que se leyó. No existía: el filtro solo
+            // matchea "sigue sin revisión", así que si otro la creó en el medio
+            // el upsert choca contra el índice único, y se la deja.
+            link_version: e && typeof e.link_version === 'number' ? e.link_version : { $exists: false },
+          },
+          {
+            $set: { link_state: 'linked', link_updated_at: new Date(), link_file_rev: rev, content_id: contentId },
+            $inc: { link_version: 1 },
+            // Si la fila no está -- la versión anterior del servicio de
+            // transiciones la borraba --, se recrea. Sin ella las PCs no
+            // reconstruyen el vínculo, aunque la reparación se dé por cerrada.
+            $setOnInsert: {
+              local_updated_at: new Date(),
+              match_status: (v as any).matchStatus ?? 'manual',
+              platform_url: (v as any).platformUrl ?? null,
+              title: (v as any).title ?? null,
+              published_at: (v as any).publishedAt ?? null,
+              file_name: (file as any).file_name ?? null,
+            },
+          },
+          { upsert: true },
+        );
+      } catch (err: any) {
+        // Otro la creó o la cambió en el medio: se la deja como está.
+        if (err?.code !== 11000) throw err;
+      }
     }
     return;
   }
@@ -391,6 +453,18 @@ export async function reproyectarPlataforma(
   );
 
   for (const platformId of ids) {
+    // Toda fila de este contenido queda sellada con la revisión del estado que se
+    // reproyecta: con una menor, una escritura atrasada de este mismo archivo
+    // todavía la supera. Una lápida que ya está se queda así -- sigue suelta, y
+    // `link_version` no se mueve: volver a ponerla anunciaría un cambio que no
+    // ocurrió. Las que siguen vivas reciben la suya abajo.
+    await BackupPlatformVideoModel.updateOne(
+      {
+        userId, platform, platform_id: platformId, content_id: contentId,
+        ...noEsMasNuevaEnEsteArchivo(rev),
+      },
+      { $set: { link_file_rev: rev } },
+    );
     try {
       await BackupPlatformVideoModel.updateOne(
         {
@@ -398,6 +472,9 @@ export async function reproyectarPlataforma(
           // archivo, reparar este no puede ponerle una lápida.
           userId, platform, platform_id: platformId, content_id: contentId,
           ...noEsMasNuevaEnEsteArchivo(rev),
+          // La lápida que ya está no se vuelve a poner: subiría la revisión sin
+          // ningún cambio. El upsert choca contra el índice único y se la deja.
+          link_state: { $ne: 'unlinked' },
         },
         {
           $set: {

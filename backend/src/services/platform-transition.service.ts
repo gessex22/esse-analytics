@@ -621,13 +621,18 @@ export async function applyPlatformTransition(
   if (!(await sigueVigente())) return cortadaPorConflicto();
 
   // La revisión del ARCHIVO decide quién escribe, y solo entre escrituras del
-  // mismo contenido. La del vínculo (`link_version`) la sube el upsert por id de
-  // abajo, que pasa por todas estas filas: subirla también acá la movía dos veces.
+  // mismo contenido. La del vínculo (`link_version`) sube UNA vez por
+  // transición: la marca de escritura hace que ni el upsert por id de abajo --
+  // que alcanza las mismas filas -- ni una reanudación de esta MISMA operación
+  // la vuelvan a subir. Sin `operationId` la marca es propia de esta llamada.
+  const marcaDeEscritura = operationId ?? `sin-op:${randomUUID()}`;
+  const noEscritaPorEsta = { operation_id: { $ne: marcaDeEscritura } };
   await BackupPlatformVideoModel.updateMany(
     {
       userId, platform, content_id: contentId,
       platform_id: { $in: idsVinculados },
       ...noEsMasNuevaEnEsteArchivo(versionResultante),
+      ...noEscritaPorEsta,
     },
     {
       $set: {
@@ -635,8 +640,9 @@ export async function applyPlatformTransition(
         link_updated_at: ahora,
         link_file_rev: versionResultante,
         content_id: contentId,
-        ...(operationId ? { operation_id: operationId } : {}),
+        operation_id: marcaDeEscritura,
       },
+      $inc: { link_version: 1 },
     },
   );
 
@@ -659,6 +665,10 @@ export async function applyPlatformTransition(
           // matchea, el upsert choca contra el índice único y se la deja.
           userId, platform, platform_id: platformId, content_id: contentId,
           ...noEsMasNuevaEnEsteArchivo(versionResultante),
+          // La que ya marcó el updateMany -- o un intento anterior de esta misma
+          // operación -- no matchea: el upsert choca contra el índice único y no
+          // la vuelve a subir. Solo crea las que faltan.
+          ...noEscritaPorEsta,
         },
         {
         $set: {
@@ -666,7 +676,7 @@ export async function applyPlatformTransition(
           link_updated_at: ahora,
           link_file_rev: versionResultante,
           content_id: contentId,
-          ...(operationId ? { operation_id: operationId } : {}),
+          operation_id: marcaDeEscritura,
         },
           $inc: { link_version: 1 },
           // El índice único es {userId, platform, platform_id}, así que el
@@ -678,8 +688,8 @@ export async function applyPlatformTransition(
         { upsert: true },
       );
     } catch (err: any) {
-      // 11000 = ya hay una fila para ese platformId, con una revisión posterior
-      // a la de esta operación. Se la deja como está, a propósito.
+      // 11000 = ya hay una fila para ese platformId: de otro archivo, con una
+      // revisión posterior, o ya escrita por esta operación. Se la deja.
       if (err?.code !== 11000) throw err;
     }
   }
