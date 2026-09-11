@@ -967,8 +967,12 @@ export async function bulkUpsertBackupPlatformVideos(req: AuthRequest, res: Resp
 
     // `ordered: false`: una escritura que perdió no frena a las demás. Perder es
     // un CAS que no matchea (alguien cambió la fila) o un E11000 (alguien la
-    // creó); cualquier otro error sigue siendo un error. `updated` cuenta lo que
-    // de verdad se aplicó.
+    // creó); cualquier otro error sigue siendo un error.
+    //
+    // `updated` = filas que el CAS ACEPTÓ (matcheadas + insertadas), no
+    // documentos materialmente modificados: una foto idéntica a lo que ya había
+    // cuenta aunque no cambie nada. Lo que dice es "esta foto no perdió contra
+    // nadie", que es lo que la PC necesita saber; las que perdieron no cuentan.
     let aplicados = 0;
     if (ops.length > 0) {
       try {
@@ -1018,6 +1022,22 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
   revDelArchivo?: number;
 }): Promise<void> {
   if (!data.platformId) return;
+  // Un valor, no una expresión: dentro de un pipeline, un string que empieza con
+  // `$` (una URL o un título cualquiera) se leería como un campo.
+  const lit = (v: unknown) => ({ $literal: v });
+  const contentId = data.contentId ?? null;
+  // ¿Esta escritura CAMBIA el vínculo? Se decide contra la fila tal como está en
+  // el momento de escribir, no contra una lectura previa: una fila nueva (sin
+  // `link_state`), una lápida, u otro contenido. Repetir el mismo publish no
+  // cambia nada: ni `link_version` ni el reloj del vínculo se mueven. (Una fila
+  // de antes de `link_state` o de `content_id` cuenta como cambio una vez, la
+  // primera que se escribe: un número de más, nunca uno de menos.)
+  const cambia = {
+    $or: [
+      { $ne: ['$link_state', 'linked'] },
+      { $ne: ['$content_id', contentId] },
+    ],
+  };
   try {
     await BackupPlatformVideoModel.updateOne(
     {
@@ -1034,37 +1054,45 @@ export async function mirrorPlatformVideoToBackup(userId: string, data: {
           ] }
         : {}),
     },
-    {
+    // Pipeline de UNA etapa: todas las expresiones leen la fila como estaba antes
+    // de esta escritura, así que `cambia` no ve los valores que se ponen acá.
+    [{
       $set: {
-        userId, platform: data.platform, platform_id: data.platformId,
-        platform_url:     data.platformUrl ?? null,
-        device_id:        data.deviceId ?? null,
-        source:           data.source ?? null,
-        published_at:     data.publishedAt ?? new Date(),
-        file_name:        data.fileName  ?? null,
-        content_id:       data.contentId ?? null,
-        match_status:     data.matchStatus ?? 'manual',
-        title:            data.title ?? null,
-        local_updated_at: new Date(),
+        userId: lit(userId), platform: lit(data.platform), platform_id: lit(data.platformId),
+        platform_url:     lit(data.platformUrl ?? null),
+        device_id:        lit(data.deviceId ?? null),
+        source:           lit(data.source ?? null),
+        published_at:     lit(data.publishedAt ?? new Date()),
+        file_name:        lit(data.fileName  ?? null),
+        content_id:       lit(contentId),
+        match_status:     lit(data.matchStatus ?? 'manual'),
+        title:            lit(data.title ?? null),
+        local_updated_at: '$$NOW',
+        // `timestamps: true` del modelo: con un pipeline Mongoose avanza
+        // `updatedAt`, pero no pone `createdAt` al insertar. Se conserva el que
+        // ya tenía; una fila nueva lo recibe ahora.
+        createdAt:        { $ifNull: ['$createdAt', '$$NOW'] },
         // Resucita el vínculo explícitamente. Sin esto, desvincular y volver a
         // vincular EXACTAMENTE la misma publicación dejaba la fila con el
         // tombstone puesto (`unlinked`): el upsert la actualizaba pero nunca
         // limpiaba ese campo, y el siguiente pull la volvía a desvincular sola.
-        link_state:       'linked' as const,
-        // Reloj del vínculo: si no se mueve, el guard de tombstone en
-        // bulkUpsertBackupPlatformVideos sigue comparando contra el instante
-        // del unlink y descarta pushes legítimos posteriores.
-        link_updated_at:  new Date(),
-        // Y la revisión, que es lo que compara el guard del tombstone en
-        // applyPlatformTransition. Sin ella, ese guard mira un campo ausente y
-        // una transición vieja tapa un re-vínculo nuevo.
-        ...(typeof data.revDelArchivo === 'number' ? { link_file_rev: data.revDelArchivo } : {}),
+        link_state:       lit('linked'),
+        // Reloj del vínculo: si no se mueve al revivirlo, el guard de tombstone
+        // en bulkUpsertBackupPlatformVideos sigue comparando contra el instante
+        // del unlink y descarta pushes legítimos posteriores. Si el vínculo no
+        // cambió, tampoco se mueve: moverlo descartaría esos mismos pushes.
+        link_updated_at:  { $cond: [cambia, '$$NOW', '$link_updated_at'] },
+        // La revisión propia del vínculo sube en la misma operación que lo
+        // cambia, y solo si lo cambia. Es lo que ordenan los dispositivos.
+        link_version:     { $cond: [cambia, { $add: [{ $ifNull: ['$link_version', 0] }, 1] }, '$link_version'] },
+        // Y la revisión de archivo, que es lo que compara el guard del tombstone
+        // en applyPlatformTransition. Sin ella, ese guard mira un campo ausente
+        // y una transición vieja tapa un re-vínculo nuevo. Avanza aunque el
+        // vínculo sea el mismo: es la revisión causal que trae este publish.
+        ...(typeof data.revDelArchivo === 'number' ? { link_file_rev: lit(data.revDelArchivo) } : {}),
       },
-      // La revisión propia del vínculo sube en la misma operación que lo
-      // cambia. Es lo que ordenan los dispositivos.
-      $inc: { link_version: 1 },
-    },
-    { upsert: true },
+    }],
+    { upsert: true, updatePipeline: true } as any,
     );
   } catch (err: any) {
     // Ídem: hay una fila más nueva para ese platformId.

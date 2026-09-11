@@ -359,7 +359,7 @@ export async function reproyectarPlataforma(
     const idsVivos = vinculos.map(v => v.platformId).filter(Boolean) as string[];
     const observadas = new Map((await BackupPlatformVideoModel
       .find({ userId, platform, platform_id: { $in: idsVivos } })
-      .select('platform_id link_version link_state content_id platform_url').lean())
+      .select('platform_id link_version link_state content_id').lean())
       .map((e: any) => [e.platform_id, e]));
     const siguenVivos = new Set((await PlatformVideoModel
       .find({ userId, platform, linkedFileId: file._id, platformId: { $in: idsVivos } } as any)
@@ -373,23 +373,27 @@ export async function reproyectarPlataforma(
         // que se cayó antes de cerrar. Pero la fila tiene que llevar la revisión
         // del estado que refleja: sellada con una menor, una escritura atrasada
         // de este mismo archivo todavía la supera. Y la URL, si le falta, sale
-        // de platformvideos: es con lo que las PCs reconstruyen el link. Lo que
-        // el espejo ya tiene no se pisa.
+        // de platformvideos: es con lo que las PCs reconstruyen el link.
+        //
+        // "Si le falta" se decide en la propia escritura (`$ifNull`), no con la
+        // foto que se leyó: si otro la completó en el medio, la suya se queda.
         //
         // Si en el medio la fila se soltó o se reasignó, no matchea: soltarla es
         // una escritura de este archivo con una revisión mayor, y reasignarla la
         // lleva a otro contenido.
+        const url = (v as any).platformUrl;
         await BackupPlatformVideoModel.updateOne(
           {
             userId, platform, platform_id: v.platformId, content_id: contentId,
             ...noEsMasNuevaEnEsteArchivo(rev),
           },
-          {
+          [{
             $set: {
-              link_file_rev: rev,
-              ...(e.platform_url == null && (v as any).platformUrl ? { platform_url: (v as any).platformUrl } : {}),
+              link_file_rev: { $literal: rev },
+              ...(url ? { platform_url: { $ifNull: ['$platform_url', { $literal: url }] } } : {}),
             },
-          },
+          }],
+          { updatePipeline: true } as any,
         );
         continue;
       }

@@ -244,7 +244,7 @@ export const unlinkPlatform = async (req: AuthRequest, res: Response): Promise<v
 //
 // `confirm` con link real NO entra por acá: sigue por applyPlatformPublish, que
 // tiene toda la lógica de resolución de ids y fechas reales de cada plataforma.
-const TRANSITION_ACTIONS = ['unlink', 'discard'] as const;
+const TRANSITION_ACTIONS = ['unlink', 'discard', 'mark_published'] as const;
 
 export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -292,7 +292,7 @@ export const applyPlatformTransitionEndpoint = async (req: AuthRequest, res: Res
     const result = await applyPlatformTransition(userId, {
       contentId,
       platform: platform as SyncPlatform,
-      action: action as 'unlink' | 'discard',
+      action: action as (typeof TRANSITION_ACTIONS)[number],
       operationId,
       baseVersion,
     });

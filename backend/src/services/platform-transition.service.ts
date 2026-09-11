@@ -41,7 +41,13 @@ const LEASE_REQUEST_MS = 120_000;
 export const TRANSITION_PLATFORMS = ['youtube', 'instagram', 'tiktok'] as const;
 export type TransitionPlatform = (typeof TRANSITION_PLATFORMS)[number];
 
-export type PlatformTransitionAction = 'unlink' | 'discard';
+/**
+ * `mark_published` es "publicado sin enlace": la marca manual de que un video
+ * salió en esa plataforma sin que haya un platformId que vincular. Su resultado
+ * es `badge_only`, y NO toca vínculos, tombstones ni historial -- no hubo una
+ * publicación real que registrar.
+ */
+export type PlatformTransitionAction = 'unlink' | 'discard' | 'mark_published';
 
 export interface PlatformTransitionResult {
   ok: boolean;
@@ -219,9 +225,16 @@ export async function applyPlatformTransition(
   // recalcular al reanudar, y se llevaba puesto cualquier vínculo aparecido
   // mientras tanto -- incluidos los que entran por los callers que todavía no
   // pasan por acá y por eso ni siquiera mueven la revisión.
+  //
+  // `mark_published` no suelta ningún vínculo: su alcance es VACÍO por
+  // definición. Con eso los pasos de `platformvideos`, de los tombstones y el
+  // `$pull` de links en Nube no matchean nada -- que es exactamente lo que
+  // tiene que pasar cuando no hubo una publicación real.
   let idsVinculados: string[] = Array.isArray(opPrevia?.platformIds)
     ? opPrevia.platformIds
-    : pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
+    : action === 'mark_published'
+      ? []
+      : pvsDesvinculados.map(pv => pv.platformId).filter(Boolean);
 
   const revs = (file.platform_rev ?? {}) as Record<string, number>;
   const revActual: number | undefined = revs[platform];
@@ -476,7 +489,13 @@ export async function applyPlatformTransition(
   // `platform_states` necesita dos pasos (no se puede `$pull` y `$addToSet` el
   // mismo campo en una sola actualización), y está bien: el CAS garantiza que
   // nadie más está tocando esta plataforma en el medio.
-  const quitarDeFile: any = { platforms: platform, platform_states: { platform } };
+  // `mark_published` saca la plataforma de descartadas y de estados (para
+  // volver a escribir el suyo), pero no de publicadas: es justo donde va. Un
+  // `confirmed` no se toca: es el estado más fuerte, y "publicado sin enlace"
+  // sobre algo que ya tiene enlace no le quita nada.
+  const quitarDeFile: any = action === 'mark_published'
+    ? { platforms_discarded: platform, platform_states: { platform, state: { $ne: 'confirmed' } } }
+    : { platforms: platform, platform_states: { platform } };
   if (action === 'unlink') quitarDeFile.platforms_discarded = platform;
 
   // P0-2: TODAS las escrituras van condicionadas a que la revisión de esta
@@ -509,6 +528,16 @@ export async function applyPlatformTransition(
     await FileModel.updateOne(
       siSigueVigente,
       { $addToSet: { platforms_discarded: platform, platform_states: { platform, state: 'discarded' } } },
+    );
+  }
+  if (action === 'mark_published') {
+    // `badge_only`, no `confirmed`: no hay un link que lo respalde, y
+    // confirmarlo haría que Estadísticas y el Calendario lo trataran como una
+    // publicación real. Y si ya está `confirmed`, se queda así: no se le suma
+    // un segundo estado más débil.
+    await FileModel.updateOne(
+      { ...siSigueVigente, platform_states: { $not: { $elemMatch: { platform, state: 'confirmed' } } } },
+      { $addToSet: { platforms: platform, platform_states: { platform, state: 'badge_only' } } },
     );
   }
 
@@ -553,7 +582,9 @@ export async function applyPlatformTransition(
   //    puede servir el estado viejo desde la colección equivocada.
   if (!(await sigueVigente())) return cortadaPorConflicto();
 
-  const quitarDeBackup: any = { platforms: platform };
+  const quitarDeBackup: any = action === 'mark_published'
+    ? { platforms_discarded: platform }
+    : { platforms: platform };
   if (action === 'unlink') quitarDeBackup.platforms_discarded = platform;
   await BackupFileModel.updateOne(
     { userId, content_id: contentId, ...noPisarMasNuevo },
@@ -569,6 +600,12 @@ export async function applyPlatformTransition(
     await BackupFileModel.updateOne(
       { userId, content_id: contentId, ['platform_rev.' + platform]: versionResultante },
       { $addToSet: { platforms_discarded: platform } },
+    );
+  }
+  if (action === 'mark_published') {
+    await BackupFileModel.updateOne(
+      { userId, content_id: contentId, ['platform_rev.' + platform]: versionResultante },
+      { $addToSet: { platforms: platform } },
     );
   }
 
@@ -701,14 +738,18 @@ export async function applyPlatformTransition(
   if ((TRANSITION_PLATFORMS as readonly string[]).includes(platform)) {
     // Mismo criterio atómico que arriba: operadores acotados a esta plataforma,
     // nunca reescribir los arrays enteros.
-    const quitarDeNube: any = {
-      platforms: platform,
-      platformStates: { platform },
-      // El link real también se va: es lo que distingue esta acción de un
-      // simple cambio de badge. Acotado a los ids del alcance -- si entró una
-      // publicación nueva, su link no es de esta operación.
-      platformLinks: { platform, platformId: { $in: idsVinculados } },
-    };
+    const quitarDeNube: any = action === 'mark_published'
+      // Ni `platforms` (es donde va) ni `platformLinks` (no hay link que tocar),
+      // ni un `confirmed` (es el estado más fuerte).
+      ? { platformsDiscarded: platform, platformStates: { platform, state: { $ne: 'confirmed' } } }
+      : {
+        platforms: platform,
+        platformStates: { platform },
+        // El link real también se va: es lo que distingue esta acción de un
+        // simple cambio de badge. Acotado a los ids del alcance -- si entró una
+        // publicación nueva, su link no es de esta operación.
+        platformLinks: { platform, platformId: { $in: idsVinculados } },
+      };
     if (action === 'unlink') quitarDeNube.platformsDiscarded = platform;
 
     const nubeNoPisarMasNuevo = {
@@ -725,6 +766,15 @@ export async function applyPlatformTransition(
       await RemoteLibraryVideoModel.updateOne(
         { userId, contentId, ['platformRev.' + platform]: versionResultante },
         { $addToSet: { platformsDiscarded: platform, platformStates: { platform, state: 'discarded' } } },
+      );
+    }
+    if (action === 'mark_published') {
+      await RemoteLibraryVideoModel.updateOne(
+        {
+          userId, contentId, ['platformRev.' + platform]: versionResultante,
+          platformStates: { $not: { $elemMatch: { platform, state: 'confirmed' } } },
+        },
+        { $addToSet: { platforms: platform, platformStates: { platform, state: 'badge_only' } } },
       );
     }
   }
