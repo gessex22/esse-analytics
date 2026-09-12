@@ -1663,20 +1663,33 @@ export async function applyPlatformPublish(userId: string, data: {
 
   await syncCalendarAfterPublish(userId, platform, publishedFile, publishedAtDate);
 
-  // E: si el mismo video (por fileName o contentId) también vive en Biblioteca
-  // remota, refleja la plataforma ahí también -- solo altas, nunca desvincula
-  // ni descarta desde acá (mismo criterio conservador que bulkUpsertBackupFiles
-  // usa para no pisar decisiones tomadas directamente en Nube). RemoteLibraryVideoModel
-  // no tiene 'facebook' en su enum de plataformas (solo youtube/instagram/tiktok).
-  if ((fileName || contentId) && ['youtube', 'instagram', 'tiktok'].includes(platform)) {
+  // E: si el mismo video también vive en Biblioteca remota, refleja la
+  // plataforma ahí también -- solo altas, nunca desvincula ni descarta desde
+  // acá (mismo criterio conservador que bulkUpsertBackupFiles usa para no pisar
+  // decisiones tomadas directamente en Nube). RemoteLibraryVideoModel no tiene
+  // 'facebook' en su enum de plataformas (solo youtube/instagram/tiktok).
+  //
+  // Se busca EL video, en este orden: el id remoto que mandó el cliente (de
+  // ESTA cuenta), el `contentId` ya resuelto por `resolveOrCreateFile`, y el
+  // nombre solo como último recurso -- el nombre no es identidad: el teléfono
+  // puede tener el archivo con otro, y otro video puede llamarse igual. Antes
+  // se buscaba por el `contentId` del request, que iOS no manda, y se caía al
+  // nombre.
+  if (['youtube', 'instagram', 'tiktok'].includes(platform)) {
     try {
-      const remoteQuery = contentId ? { userId, contentId } : { userId, fileName };
-      const remote = await RemoteLibraryVideoModel.findOne(remoteQuery as any);
-      // Mismo criterio de promoción que arriba para FileModel: un badge_only
-      // puesto antes en Nube (marca manual) se promueve a 'confirmed' apenas
-      // hay un platformId real, no solo cuando la plataforma era nueva.
-      const remoteState = (remote?.platformStates ?? []).find((s) => s.platform === platform)?.state;
-      if (remote && (!remote.platforms.includes(platform as any) || remoteState !== 'confirmed')) {
+      const remote =
+        (data.remoteLibraryVideoId
+          ? await RemoteLibraryVideoModel.findOne({ _id: data.remoteLibraryVideoId, userId })
+          : null)
+        ?? (contentIdDelArchivo
+          ? await RemoteLibraryVideoModel.findOne({ userId, contentId: contentIdDelArchivo })
+          : null)
+        ?? (fileName ? await RemoteLibraryVideoModel.findOne({ userId, fileName }) : null);
+      // Siempre que haya video: una publicación real es la decisión vigente
+      // sobre esa plataforma -- en platformvideos ya soltó al vínculo anterior
+      // --, así que Nube la refleja aunque ya estuviera `confirmed` con otro
+      // link. Si ya tenía este mismo, reescribirlo deja el mismo estado.
+      if (remote) {
         // ESCRITURA ATÓMICA en dos pasos, igual que arriba para FileModel.
         // Antes esto calculaba `platformStates` y `platformLinks` completos
         // desde una FOTO previa (`upsertConfirmed` + filter) y los escribía con
