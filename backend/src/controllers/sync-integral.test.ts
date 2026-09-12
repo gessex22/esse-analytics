@@ -6321,3 +6321,156 @@ test('NUBE — un publish sin revisión nueva no reescribe Nube si el estado can
     'el suyo. El guard solo no alcanza: la revisión que hay para comparar ya es la del unlink.',
   );
 });
+
+test('NUBE — un publish sin revisión nueva no pisa en Nube el link de otra publicación que entró después', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Se repite el publish de PLATFORM_ID, ya confirmado: sin revisión nueva.
+  const { contentId } = await sembrarConfirmado();
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const OTRO = '17900000000000012';
+
+  // Antes de que su proyección busque el video de Nube, entra una publicación
+  // REAL de otro link en la misma plataforma: el archivo sigue confirmado --
+  // ahora con OTRO -- y PLATFORM_ID quedó suelto. Solo mirar el badge diría que
+  // el estado canónico sigue siendo el del primer publish.
+  let busquedas = 0;
+  const espia = conIntercaladoAntesDeLeer(
+    central.RemoteLibraryVideoModel, 'findOne', (f: any) => !!f?._id && ++busquedas === 2,
+    async () => {
+      const r = await publicarDesdeElTelefono({
+        fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+        platformId: OTRO, platformUrl: `https://www.instagram.com/reel/${OTRO}/`,
+      });
+      assert.equal(r.status, 200, 'precondición: la otra publicación se registró');
+    },
+  );
+  try {
+    const r = await publicarDesdeElTelefono({
+      fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+      platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    });
+    assert.equal(r.status, 200, 'precondición: la publicación repetida se registró');
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la otra publicación se intercaló antes de la búsqueda en Nube');
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual(
+    nube.links, [OTRO],
+    'El publish repetido pisó en Nube el link de la publicación que entró después. El archivo seguía ' +
+    'confirmado, pero con OTRO vínculo: la prueba del estado canónico tiene que mirar que el vínculo de ' +
+    'ESTE publish siga puesto, no solo el badge.',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// NUBE — el estado negativo de una plataforma no deja ningún link en Nube.
+//
+// Con el guard, un unlink posterior bloquea la proyección del publish -- y con
+// ella el `$pull` del link que ese publish reemplazaba. El unlink solo retiraba
+// de Nube los links de su alcance congelado, así que el reemplazado quedaba
+// huérfano: sin badge ni estado, pero con link. En Nube, "desvinculado" o
+// "descartado" implica que no queda ningún link de esa plataforma. El alcance
+// sigue valiendo para platformvideos y los otros espejos.
+// ---------------------------------------------------------------------------
+
+test('NUBE — un unlink que bloquea la proyección de un publish no deja en Nube el link que ese publish reemplazaba', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Nube tiene el link viejo A (PLATFORM_ID). Un publish intenta reemplazarlo
+  // por B, y un unlink posterior entra antes de su primera escritura en Nube.
+  const contentId = await publicarConUnlinkAntesDe(
+    (_f: any, u: any) => u?.$addToSet?.platforms === PLATFORM, 'op-nube-huerfano',
+  );
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.estados], [false, []], 'precondición: el unlink ganó el badge y el estado');
+  assert.ok(!nube.links.includes('17900000000000011'), 'y el link B del publish bloqueado no volvió');
+  assert.ok(
+    !nube.links.includes(PLATFORM_ID),
+    'Nube quedó con el link VIEJO A: el publish que lo reemplazaba quedó bloqueado -- bien --, y el unlink ' +
+    'solo retiró los links de su alcance congelado, donde A ya no estaba. Desvinculado en Nube es sin ' +
+    'ningún link de esa plataforma.',
+  );
+});
+
+/** Contrapeso: el guard de revisión sigue protegiendo a una publicación causalmente posterior. */
+test('NUBE — una publicación posterior al unlink sobrevive aunque llegue a Nube antes que él', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const C = '17900000000000013';
+
+  // El unlink ya pasó su CAS. Justo antes de su escritura en Nube -- la que no
+  // agrega nada: solo retira --, entra una publicación REAL de C: causalmente
+  // posterior, y que llega a Nube antes que él.
+  const espia = conIntercaladoCuando(
+    central.RemoteLibraryVideoModel, 'updateOne', (_f: any, u: any) => !!u?.$pull?.platformLinks && !u?.$addToSet,
+    async () => {
+      const r = await publicarDesdeElTelefono({
+        fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+        platformId: C, platformUrl: `https://www.instagram.com/reel/${C}/`,
+      });
+      assert.equal(r.status, 200, 'precondición: la publicación posterior se registró');
+    },
+  );
+  try {
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: 'op-nube-posterior',
+      baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la publicación entró entre el CAS del unlink y su escritura en Nube');
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual(
+    [nube.publicada, nube.links, nube.estados], [true, [C], ['confirmed']],
+    'El unlink le borró a Nube una publicación causalmente POSTERIOR: su escritura tiene que ir contra su ' +
+    'propia revisión, y la publicación ya dejó una mayor.',
+  );
+});
+
+/** Contrapeso: "todos los links" es de ESA plataforma, no de todas. */
+test('NUBE — un unlink de Instagram no le retira a Nube el link de YouTube', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  await central.applyPlatformPublish(USER_ID, {
+    platform: 'youtube', platformId: 'YTNUBEYTNUB',
+    platformUrl: 'https://www.youtube.com/shorts/YTNUBEYTNUB',
+    contentId, fileName: 'video integral.mp4', matchStatus: 'manual',
+    publishedAt: new Date('2026-09-01T10:00:00.000Z'),
+  });
+  const linksDe = async (platform: string) => {
+    const doc: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+    return (doc?.platformLinks ?? []).filter((l: any) => l.platform === platform).map((l: any) => l.platformId);
+  };
+  assert.deepEqual(await linksDe('youtube'), ['YTNUBEYTNUB'], 'precondición: Nube tiene el link de YouTube');
+
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: 'op-nube-otra-plataforma',
+    baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, 'precondición: el unlink de Instagram se aplicó');
+
+  assert.deepEqual(await linksDe(PLATFORM), [], 'Instagram queda sin links en Nube');
+  assert.deepEqual(
+    await linksDe('youtube'), ['YTNUBEYTNUB'],
+    'El unlink de Instagram le retiró a Nube el link de YouTube: retirar todos los links es de ESA ' +
+    'plataforma, no del video entero.',
+  );
+});
