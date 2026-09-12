@@ -6025,3 +6025,170 @@ test('P0 — sellar el espejo en la reparación cumple el contrato de timestamps
   assert.equal(despues?.createdAt?.getTime(), antes?.createdAt?.getTime(), 'sellar conserva createdAt');
   assert.ok(despues!.updatedAt!.getTime() > antes!.updatedAt!.getTime(), 'y avanza updatedAt');
 });
+
+// ---------------------------------------------------------------------------
+// NUBE — la proyección de una publicación encuentra EL video correcto.
+//
+// `resolveOrCreateFile` ya resuelve la identidad con el `remoteLibraryVideoId`,
+// pero la proyección final a Nube de `applyPlatformPublish` volvía a buscar el
+// video por el `contentId` del request -- que iOS no manda -- o por el nombre.
+// Y si esa plataforma ya estaba `confirmed`, no tocaba el link. Por eso iOS
+// todavía le escribe el link a Nube por su cuenta: un escritor duplicado.
+// ---------------------------------------------------------------------------
+
+const PUBLICADO_EL = '2026-09-10T10:00:00.000Z';
+
+/** `POST /api/sync/record-publish`, como lo manda iOS después de una subida real. */
+async function publicarDesdeElTelefono(body: Record<string, any>) {
+  const { res, captured } = fakeRes();
+  await central.recordUploadEvent(
+    {
+      user: USER, headers: { authorization: AUTH }, params: {}, query: {},
+      body: { source: 'ios', platform: PLATFORM, publishedAt: PUBLICADO_EL, ...body },
+    } as any,
+    res as any,
+  );
+  return captured;
+}
+
+async function videoDeNube(fileName: string, extra: Record<string, any> = {}) {
+  return central.RemoteLibraryVideoModel.create({
+    userId: USER_ID, fileName, storedFileName: 'stored.mp4', sizeBytes: 1,
+    platforms: [], platformsDiscarded: [], ...extra,
+  });
+}
+
+async function linksEnNube(id: any): Promise<string[]> {
+  const doc: any = await central.RemoteLibraryVideoModel.findById(id).lean();
+  return (doc?.platformLinks ?? []).filter((l: any) => l.platform === PLATFORM).map((l: any) => l.platformId);
+}
+
+async function estadosEnNube(id: any): Promise<string[]> {
+  const doc: any = await central.RemoteLibraryVideoModel.findById(id).lean();
+  return (doc?.platformStates ?? []).filter((s: any) => s.platform === PLATFORM).map((s: any) => s.state);
+}
+
+test('NUBE — una publicación encuentra el video de Nube por su id remoto aunque el nombre difiera', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El teléfono bajó el video de Nube y lo tiene con otro nombre. Y hay OTRO
+  // video en Nube que se llama justo como el archivo local.
+  const correcto = await videoDeNube('subido desde el celular.mp4');
+  const homonimo = await videoDeNube('clip renombrado.mp4');
+  const ID = '17900000000000001';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'clip renombrado.mp4', remoteLibraryVideoId: String(correcto._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  assert.deepEqual(
+    await linksEnNube(correcto._id), [ID],
+    'La proyección a Nube buscó el video por nombre. El teléfono mandó el id remoto -- que es la ' +
+    'identidad, y que `resolveOrCreateFile` ya usa --, y el link no llegó al video que se publicó.',
+  );
+  assert.deepEqual(await estadosEnNube(correcto._id), ['confirmed'], 'y queda confirmado ahí');
+  assert.deepEqual(
+    await linksEnNube(homonimo._id), [],
+    'y no le escribe el link a otro video que solo comparte el nombre',
+  );
+});
+
+test('NUBE — sin id remoto, la encuentra por el contentId ya resuelto antes que por el nombre', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const C = 'ffffffff-0000-1111-2222-333333333333';
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'local.mp4', file_path: 'local.mp4', content_id: C,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const correcto = await videoDeNube('en la nube.mp4', { contentId: C });
+  const homonimo = await videoDeNube('local.mp4');
+  const ID = '17900000000000002';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'local.mp4', platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  assert.deepEqual(
+    await linksEnNube(correcto._id), [ID],
+    'El archivo se resolvió a su contentId, y la proyección a Nube lo ignoró: buscó por el `contentId` ' +
+    'del request -- que no vino -- y cayó al nombre.',
+  );
+  assert.deepEqual(await linksEnNube(homonimo._id), [], 'y el homónimo queda como estaba');
+});
+
+test('NUBE — una publicación nueva actualiza el link aunque la plataforma ya estuviera confirmada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  assert.deepEqual(
+    [await linksEnNube(video._id), await estadosEnNube(video._id)], [[PLATFORM_ID], ['confirmed']],
+    'precondición: Nube ya tiene Instagram confirmado, con su link',
+  );
+
+  // Se republica en Instagram: una publicación real, con otro platformId.
+  const NUEVO = '17900000000000003';
+  for (let i = 0; i < 2; i++) {
+    const r = await publicarDesdeElTelefono({
+      fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+      platformId: NUEVO, platformUrl: `https://www.instagram.com/reel/${NUEVO}/`,
+    });
+    assert.equal(r.status, 200, 'precondición: la publicación se registró');
+  }
+
+  assert.deepEqual(
+    await linksEnNube(video._id), [NUEVO],
+    'Nube se quedó con el link viejo: la proyección no toca una plataforma que ya estaba confirmada. ' +
+    'La publicación nueva ya soltó el vínculo anterior en platformvideos; Nube tiene que reflejarla -- ' +
+    'una sola vez, aunque el evento se repita.',
+  );
+  assert.deepEqual(await estadosEnNube(video._id), ['confirmed']);
+});
+
+/** Contrapeso: el nombre sigue sirviendo, pero solo como último recurso. */
+test('NUBE — sin id remoto ni contentId que coincida, el nombre sigue encontrando el video', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const soloPorNombre = await videoDeNube('solo por nombre.mp4');
+  const ID = '17900000000000004';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'solo por nombre.mp4', platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  assert.deepEqual(await linksEnNube(soloPorNombre._id), [ID]);
+});
+
+/** Contrapeso: el id remoto es de ESTA cuenta, o no es de nadie. */
+test('NUBE — un id remoto de otra cuenta no recibe el link', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const ajeno = await central.RemoteLibraryVideoModel.create({
+    userId: new mongoose.Types.ObjectId().toString(), fileName: 'ajeno.mp4',
+    storedFileName: 'stored.mp4', sizeBytes: 1, platforms: [], platformsDiscarded: [],
+  });
+  const ID = '17900000000000005';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'mio.mp4', remoteLibraryVideoId: String(ajeno._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  assert.deepEqual(await linksEnNube(ajeno._id), [], 'un video de otra cuenta no se toca');
+});
