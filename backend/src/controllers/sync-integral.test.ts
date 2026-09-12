@@ -6474,3 +6474,118 @@ test('NUBE — un unlink de Instagram no le retira a Nube el link de YouTube', a
     'plataforma, no del video entero.',
   );
 });
+
+// ---------------------------------------------------------------------------
+// NUBE — un video de Nube sin identidad la recibe al resolverse.
+//
+// `contentId` es opcional en RemoteLibraryVideoModel. `resolveOrCreateFile`
+// resuelve -- o genera -- el `content_id` del FileModel, pero no se lo pasaba al
+// video de Nube por el que resolvió. Y `applyPlatformTransition` proyecta sobre
+// Nube SOLO por `{ userId, contentId }`: ese video nunca recibía un unlink ni un
+// discard.
+// ---------------------------------------------------------------------------
+
+test('NUBE — un video de Nube sin identidad recibe la del archivo, y un unlink causal lo alcanza', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // 1. Un video de Nube sin `contentId`.
+  const sinIdentidad = await videoDeNube('sin identidad.mp4');
+  const ID = '17900000000000021';
+
+  // 2. Se publica por su id remoto.
+  const r = await publicarDesdeElTelefono({
+    fileName: 'sin identidad.mp4', remoteLibraryVideoId: String(sinIdentidad._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+  assert.deepEqual(await linksEnNube(sinIdentidad._id), [ID], 'precondición: Nube recibió la publicación');
+
+  // 3. La identidad que quedó resuelta en FileModel.
+  const archivo: any = await central.FileModel.findOne({ userId: USER_ID, file_name: 'sin identidad.mp4' }).lean();
+  assert.ok(archivo?.content_id, 'precondición: el archivo tiene identidad');
+
+  // 4. Es la MISMA en el video de Nube.
+  const nube: any = await central.RemoteLibraryVideoModel.findById(sinIdentidad._id).lean();
+  assert.equal(
+    nube?.contentId, archivo.content_id,
+    'El video de Nube quedó sin identidad: `resolveOrCreateFile` la generó solo en FileModel. Las ' +
+    'transiciones proyectan sobre Nube por `contentId`, así que ningún unlink ni discard lo alcanza.',
+  );
+
+  // 5. Un unlink causal por esa identidad...
+  const u = await postTransicion({
+    contentId: archivo.content_id, platform: PLATFORM, action: 'unlink', operationId: 'op-nube-sin-identidad',
+    baseVersion: await revisionDe(archivo.content_id),
+  });
+  assert.equal(u.status, 200, 'precondición: el unlink se aplicó');
+
+  // 6. ...deja a Nube sin plataforma, estado ni links.
+  const despues = await instagramEnNube(archivo.content_id);
+  assert.deepEqual(
+    [despues.publicada, despues.estados, despues.links], [false, [], []],
+    'el unlink tiene que llegar al video de Nube por su identidad',
+  );
+});
+
+/** Contrapeso: el backfill completa una identidad que falta, nunca pisa una que ya está. */
+test('NUBE — el backfill no pisa la identidad que el video de Nube ya tiene', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El video de Nube lleva X; FileModel no conoce X, y resuelve por nombre a un
+  // archivo con otra identidad, Y.
+  const X = '12121212-3434-5656-7878-909090909090';
+  const Y = '34343434-5656-7878-9090-121212121212';
+  const video = await videoDeNube('con identidad.mp4', { contentId: X });
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'otro nombre.mp4', file_path: 'otro nombre.mp4', content_id: Y,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const ID = '17900000000000022';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'otro nombre.mp4', remoteLibraryVideoId: String(video._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  const nube: any = await central.RemoteLibraryVideoModel.findById(video._id).lean();
+  assert.equal(
+    nube?.contentId, X,
+    'El backfill le pisó al video de Nube la identidad que ya tenía: tiene que completar una que falta, ' +
+    'nunca reemplazar una que está.',
+  );
+});
+
+/** Contrapeso: una colisión con el índice único no se resuelve pisando nada. */
+test('NUBE — si otro video de Nube ya tiene esa identidad, el backfill no pisa nada ni rompe la publicación', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const Y = '56565656-7878-9090-1212-343434343434';
+  const sinIdentidad = await videoDeNube('sin identidad 2.mp4');
+  const yaLaTiene = await videoDeNube('el que ya la tiene.mp4', { contentId: Y });
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'sin identidad 2.mp4', file_path: 'sin identidad 2.mp4', content_id: Y,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const ID = '17900000000000023';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'sin identidad 2.mp4', remoteLibraryVideoId: String(sinIdentidad._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(
+    r.status, 200,
+    'La colisión del índice único rompió la publicación: otro video de Nube ya tiene esa identidad, y el ' +
+    'backfill tiene que dejarlo así -- no es un error de la publicación.',
+  );
+
+  const a: any = await central.RemoteLibraryVideoModel.findById(sinIdentidad._id).lean();
+  const b: any = await central.RemoteLibraryVideoModel.findById(yaLaTiene._id).lean();
+  assert.deepEqual([a?.contentId ?? null, b?.contentId], [null, Y], 'ninguno de los dos cambió de identidad');
+});
