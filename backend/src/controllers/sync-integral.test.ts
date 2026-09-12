@@ -6192,3 +6192,132 @@ test('NUBE — un id remoto de otra cuenta no recibe el link', async (t) => {
 
   assert.deepEqual(await linksEnNube(ajeno._id), [], 'un video de otra cuenta no se toca');
 });
+
+// ---------------------------------------------------------------------------
+// NUBE — la proyección de un publish no resucita lo que una transición
+// posterior soltó, sobre la MISMA plataforma.
+//
+// El P0 de Nube de más arriba intercala una transición de OTRA plataforma: cubre
+// el lost update entre plataformas. Acá la transición es sobre la misma, y entra
+// después de que el publish ya movió FileModel.
+// ---------------------------------------------------------------------------
+
+/** El estado de Instagram en el video de Nube de ese contenido. */
+async function instagramEnNube(contentId: string) {
+  const doc: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  return {
+    publicada: (doc?.platforms ?? []).includes(PLATFORM),
+    links: (doc?.platformLinks ?? []).filter((l: any) => l.platform === PLATFORM).map((l: any) => l.platformId),
+    estados: (doc?.platformStates ?? []).filter((s: any) => s.platform === PLATFORM).map((s: any) => s.state),
+    rev: doc?.platformRev?.[PLATFORM],
+  };
+}
+
+/**
+ * Una publicación real con revisión propia -- un link NUEVO sobre un Instagram
+ * ya confirmado -- y, justo antes de UNA de sus escrituras en Nube, el usuario
+ * suelta el vínculo con la revisión que el publish acaba de ganar.
+ */
+async function publicarConUnlinkAntesDe(esEsta: (...args: any[]) => boolean, op: string) {
+  const { contentId } = await sembrarConfirmado();
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const NUEVO = '17900000000000011';
+  const revAntes = await revisionDe(contentId);
+
+  const espia = conIntercaladoCuando(central.RemoteLibraryVideoModel, 'updateOne', esEsta, async () => {
+    assert.ok((await revisionDe(contentId)) > revAntes, 'precondición: el publish ya ganó su revisión en FileModel');
+    const r = await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: await revisionDe(contentId),
+    });
+    assert.equal(r.status, 200, 'precondición: el unlink posterior se aplicó');
+  });
+  try {
+    const r = await publicarDesdeElTelefono({
+      fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+      platformId: NUEVO, platformUrl: `https://www.instagram.com/reel/${NUEVO}/`,
+    });
+    assert.equal(r.status, 200, 'precondición: la publicación se registró');
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink se intercaló de verdad');
+  return contentId;
+}
+
+const MENSAJE_RESUCITA =
+  'El publish volvió a poner en Nube el vínculo que un unlink POSTERIOR -- con una revisión mayor -- ' +
+  'acababa de soltar. Sus escrituras en Nube no tienen guard de revisión: la transición gana en FileModel ' +
+  'y en platformvideos, y Nube queda contradiciéndolos para siempre.';
+
+test('NUBE — un unlink posterior que entra antes de la primera escritura del publish en Nube gana', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await publicarConUnlinkAntesDe(
+    (_f: any, u: any) => u?.$addToSet?.platforms === PLATFORM, 'op-nube-carrera-1',
+  );
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.links, nube.estados], [false, [], []], MENSAJE_RESUCITA);
+  assert.equal(nube.rev, await revisionDe(contentId), 'y Nube queda sellada con la revisión del unlink');
+});
+
+test('NUBE — un unlink posterior que entra antes de la segunda escritura del publish en Nube gana', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await publicarConUnlinkAntesDe(
+    (_f: any, u: any) => !!u?.$addToSet?.platformLinks, 'op-nube-carrera-2',
+  );
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.links, nube.estados], [false, [], []], MENSAJE_RESUCITA);
+  assert.equal(nube.rev, await revisionDe(contentId), 'y Nube queda sellada con la revisión del unlink');
+});
+
+test('NUBE — un publish sin revisión nueva no reescribe Nube si el estado canónico ya no es el suyo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Instagram ya confirmado con PLATFORM_ID: repetir ESE publish no mueve la
+  // revisión (`revGanada` queda `undefined`).
+  const { contentId } = await sembrarConfirmado();
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const revAntes = await revisionDe(contentId);
+
+  // Justo antes de que la proyección busque el video de Nube -- la SEGUNDA
+  // búsqueda por id; la primera es la de `resolveOrCreateFile` --, el usuario
+  // suelta el vínculo. Con eso, la revisión que se leyera AHORA ya es la del
+  // unlink: solo el estado canónico dice que este publish dejó de ser el vigente.
+  let busquedas = 0;
+  const espia = conIntercaladoAntesDeLeer(
+    central.RemoteLibraryVideoModel, 'findOne', (f: any) => !!f?._id && ++busquedas === 2,
+    async () => {
+      assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
+      const r = await postTransicion({
+        contentId, platform: PLATFORM, action: 'unlink', operationId: 'op-nube-sin-rev', baseVersion: revAntes,
+      });
+      assert.equal(r.status, 200, 'precondición: el unlink se aplicó');
+    },
+  );
+  try {
+    const r = await publicarDesdeElTelefono({
+      fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
+      platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    });
+    assert.equal(r.status, 200, 'precondición: la publicación se registró');
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink se intercaló antes de la búsqueda en Nube');
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual(
+    [nube.publicada, nube.links, nube.estados], [false, [], []],
+    'Un publish que no ganó revisión reescribió Nube sin comprobar que el estado canónico siguiera siendo ' +
+    'el suyo. El guard solo no alcanza: la revisión que hay para comparar ya es la del unlink.',
+  );
+});
