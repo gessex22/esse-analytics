@@ -5,6 +5,7 @@ import { AuditEventModel, AuditEventType } from '../models/audit-event.model';
 const VALID_TYPES: AuditEventType[] = [
   'login', 'platform_connect', 'platform_disconnect',
   'publish_confirmed', 'calendar_config_updated', 'account_setting_changed',
+  'publish_conflict',
 ];
 
 // GET /api/audit-events?limit=30&offset=0&type=&platform=&installationId=

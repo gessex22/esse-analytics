@@ -20,7 +20,12 @@ export type AuditEventType =
   // Reasignación explícita de User.installId (Fase 0 de
   // docs/primary-install-implementation-plan-2026-08-14.md) -- distinto de
   // 'login': un login NO reasigna la primaria (antes sí, era el bug).
-  | 'primary_install_claimed';
+  | 'primary_install_claimed'
+  // Una publicación real que la central no pudo asentar porque su identidad es
+  // ambigua (ej. el video de Nube declarado no puede recibir la identidad del
+  // archivo: otro video de la cuenta ya la tiene). No se escribe nada en los
+  // documentos ambiguos; el evento conserva la intención para reconciliarla.
+  | 'publish_conflict';
 
 export interface IAuditEvent extends Document {
   userId: string;

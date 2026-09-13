@@ -746,9 +746,14 @@ export async function applyPlatformTransition(
         platforms: platform,
         platformStates: { platform },
         // El link real también se va: es lo que distingue esta acción de un
-        // simple cambio de badge. Acotado a los ids del alcance -- si entró una
-        // publicación nueva, su link no es de esta operación.
-        platformLinks: { platform, platformId: { $in: idsVinculados } },
+        // simple cambio de badge. En Nube se van TODOS los de esta plataforma,
+        // no solo los del alcance congelado: el estado negativo de una
+        // plataforma implica que no queda ningún link. Acotarlo dejaba huérfano
+        // el link que un publish reemplazaba cuando esta transición bloqueaba su
+        // proyección. Una publicación causalmente posterior no se pierde: sella
+        // Nube con una revisión mayor, y esta escritura no matchea (guard de
+        // abajo). El alcance sigue valiendo para platformvideos y los espejos.
+        platformLinks: { platform },
       };
     if (action === 'unlink') quitarDeNube.platformsDiscarded = platform;
 

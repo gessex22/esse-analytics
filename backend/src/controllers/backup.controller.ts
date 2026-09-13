@@ -1194,30 +1194,43 @@ export async function resolveOrCreateFile(
   let file = stableContentId
     ? await FileModel.findOne({ userId, content_id: stableContentId })
     : await FileModel.findOne({ userId, file_name: fileName });
+  // Con una identidad estable -- la que declaró el cliente o la del video de
+  // Nube --, el nombre solo puede ADOPTAR un archivo que todavía no tiene
+  // ninguna (un documento legado). Nunca uno con OTRA identidad: ese es otro
+  // video que comparte el nombre, y vincularlo le daría la publicación a él.
+  const adoptable = stableContentId ? { $or: [{ content_id: { $exists: false } }, { content_id: null }] } : {};
   if (!file) {
     const escaped = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    file = await FileModel.findOne({ userId, file_name: { $regex: `^${escaped}$`, $options: 'i' } });
+    file = await FileModel.findOne({ userId, file_name: { $regex: `^${escaped}$`, $options: 'i' }, ...adoptable });
   }
   // El nombre puede cambiar al clonar/importar el video en otro dispositivo;
   // el ID de Biblioteca remota/contentId es la identidad real.
   if (!file && remote?.fileName && remote.fileName !== fileName) {
-    file = await FileModel.findOne({ userId, file_name: remote.fileName });
+    file = await FileModel.findOne({ userId, file_name: remote.fileName, ...adoptable });
   }
-  // Si no hay ningún archivo local con ese nombre (ej. video publicado/
-  // descartado directo desde el celular, sin pasar antes por el catálogo),
-  // se crea un registro mínimo -- si no, Estadísticas/el pull del PC no
-  // tienen de dónde sacarlo y queda invisible hasta que alguien lo vincule a
-  // mano en Videos (escritorio).
-  if (!file) {
-    // content_id acá también: sin esto, un archivo creado desde una publicación
-    // móvil (sin catálogo previo en el escritorio) quedaba para siempre sin
-    // content_id aunque el caller lo hubiera mandado -- fuera del índice único
-    // parcial de identidad (H8 de la revisión independiente).
-    const setOnInsert: Record<string, unknown> = { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' };
-    if (stableContentId) setOnInsert.content_id = stableContentId;
+  // Si no hay ningún archivo local (ej. video publicado/descartado directo
+  // desde el celular, sin pasar antes por el catálogo), se crea un registro
+  // mínimo -- si no, Estadísticas/el pull del PC no tienen de dónde sacarlo y
+  // queda invisible hasta que alguien lo vincule a mano en Videos (escritorio).
+  if (!file && stableContentId) {
+    // Con identidad estable se crea POR ella: upsert por `content_id`, no por
+    // nombre -- por nombre, el upsert matchearía al homónimo. La ruta sale de
+    // la identidad: con el nombre chocaría contra el índice único de ruta
+    // cuando hay un homónimo.
+    file = await FileModel.findOneAndUpdate(
+      { userId, content_id: stableContentId },
+      {
+        $setOnInsert: {
+          userId, file_name: fileName, file_path: `id/${stableContentId}/${fileName}`,
+          status: 'PENDIENTE', content_id: stableContentId,
+        },
+      },
+      { upsert: true, new: true },
+    );
+  } else if (!file) {
     file = await FileModel.findOneAndUpdate(
       { userId, file_name: fileName },
-      { $setOnInsert: setOnInsert },
+      { $setOnInsert: { userId, file_name: fileName, file_path: fileName, status: 'PENDIENTE' } },
       { upsert: true, new: true },
     );
   }
@@ -1244,6 +1257,72 @@ export async function resolveOrCreateFile(
   }
 
   return file;
+}
+
+/**
+ * El video de Nube declarado y el archivo no pueden ser el mismo contenido. Es
+ * ambiguo -- ningún documento se puede elegir sin adivinar --, así que la
+ * publicación no escribe nada:
+ * - `colision`: el declarado no tiene identidad, y otro video de la cuenta ya
+ *   tiene la del archivo;
+ * - `identidad_distinta`: el declarado ya tiene OTRA identidad (ej. el cliente
+ *   declaró `contentId` Z y un id remoto cuyo video es X);
+ * - `inexistente`: el id declarado no es un video de esta cuenta.
+ */
+export class ConflictoDeIdentidadDeNube extends Error {
+  constructor(readonly detalle: {
+    kind: 'colision' | 'identidad_distinta' | 'inexistente';
+    remoteLibraryVideoId: string;
+    contentId: string;
+    remoteContentId: string | null;
+    conflictingRemoteLibraryVideoId: string | null;
+  }) {
+    super(
+      `el video de Nube ${detalle.remoteLibraryVideoId} no puede llevar la identidad ${detalle.contentId} ` +
+      `(${detalle.kind})`,
+    );
+  }
+}
+
+/**
+ * El video de Nube declarado lleva la MISMA identidad que el archivo: las
+ * transiciones lo proyectan solo por `{ userId, contentId }`, así que uno sin
+ * identidad nunca recibe un unlink ni un discard.
+ *
+ * Atómico y acotado a ESE documento de esta cuenta: si ya tiene otra
+ * identidad, el filtro no matchea y no se pisa. Si otro video de la cuenta ya
+ * lleva esta identidad, el índice único lo rechaza: conflicto -- nunca se
+ * resuelve por nombre en silencio, ni se sigue como si nada.
+ */
+async function asignarIdentidadAlVideoDeNube(userId: string, remoteLibraryVideoId: string, contentId: string) {
+  let asignado: any;
+  try {
+    asignado = await RemoteLibraryVideoModel.updateOne(
+      { _id: remoteLibraryVideoId, userId, $or: [{ contentId: { $exists: false } }, { contentId: null }] },
+      { $set: { contentId } },
+    );
+  } catch (err: any) {
+    if (err?.code !== 11000) throw err;
+    const otro: any = await RemoteLibraryVideoModel.findOne({ userId, contentId }).select('_id').lean();
+    throw new ConflictoDeIdentidadDeNube({
+      kind: 'colision', remoteLibraryVideoId: String(remoteLibraryVideoId), contentId, remoteContentId: null,
+      conflictingRemoteLibraryVideoId: otro ? String(otro._id) : null,
+    });
+  }
+  if ((asignado?.matchedCount ?? 0) > 0) return;
+
+  // No matcheó: el video ya tiene una identidad, o no es de esta cuenta. Solo
+  // es válido si ya es LA MISMA. Con otra, o sin video, es un conflicto: seguir
+  // escribiría la publicación en un archivo mientras Nube -- que el cliente
+  // declaró -- nunca la recibe, y con un 200 el cliente borra la intención.
+  const actual: any = await RemoteLibraryVideoModel.findOne({ _id: remoteLibraryVideoId, userId })
+    .select('contentId').lean();
+  if (actual && actual.contentId === contentId) return;
+  throw new ConflictoDeIdentidadDeNube({
+    kind: actual ? 'identidad_distinta' : 'inexistente',
+    remoteLibraryVideoId: String(remoteLibraryVideoId), contentId,
+    remoteContentId: actual?.contentId ?? null, conflictingRemoteLibraryVideoId: null,
+  });
 }
 
 // POST /api/sync/file-platforms — sincroniza el estado COMPLETO de
@@ -1420,6 +1499,12 @@ export async function applyPlatformPublish(userId: string, data: {
   if (fileName) {
     const file = await resolveOrCreateFile(userId, { fileName, contentId, remoteLibraryVideoId: data.remoteLibraryVideoId });
     if (file) {
+      // ANTES de escribir nada: si el video de Nube declarado no puede llevar
+      // la identidad del archivo, esto tira un conflicto y la publicación no
+      // toca ningún documento.
+      if (data.remoteLibraryVideoId && (file as any).content_id) {
+        await asignarIdentidadAlVideoDeNube(userId, data.remoteLibraryVideoId, (file as any).content_id);
+      }
       linkedFileId = file._id;
       contentIdDelArchivo = (file as any).content_id ?? contentIdDelArchivo;
       // BUG-2026-08-15-03: acá SIEMPRE hay un platformId real (se corta arriba
@@ -1669,27 +1754,54 @@ export async function applyPlatformPublish(userId: string, data: {
   // decisiones tomadas directamente en Nube). RemoteLibraryVideoModel no tiene
   // 'facebook' en su enum de plataformas (solo youtube/instagram/tiktok).
   //
-  // Se busca EL video, en este orden: el id remoto que mandó el cliente (de
-  // ESTA cuenta), el `contentId` ya resuelto por `resolveOrCreateFile`, y el
-  // nombre solo como último recurso -- el nombre no es identidad: el teléfono
-  // puede tener el archivo con otro, y otro video puede llamarse igual. Antes
-  // se buscaba por el `contentId` del request, que iOS no manda, y se caía al
-  // nombre.
+  // Se busca EL video de la MISMA identidad que el archivo: por el
+  // `contentId` ya resuelto -- si el cliente declaró un id remoto, ese video ya
+  // recibió esta identidad arriba, o la publicación terminó en conflicto -- y
+  // por nombre solo como último recurso, y solo un video que todavía no tiene
+  // identidad: el nombre no es identidad, y un video de Nube de OTRA identidad
+  // no recibe esta publicación ni por su id ni por llamarse igual.
   if (['youtube', 'instagram', 'tiktok'].includes(platform)) {
     try {
       const remote =
-        (data.remoteLibraryVideoId
-          ? await RemoteLibraryVideoModel.findOne({ _id: data.remoteLibraryVideoId, userId })
-          : null)
-        ?? (contentIdDelArchivo
+        (contentIdDelArchivo
           ? await RemoteLibraryVideoModel.findOne({ userId, contentId: contentIdDelArchivo })
           : null)
-        ?? (fileName ? await RemoteLibraryVideoModel.findOne({ userId, fileName }) : null);
-      // Siempre que haya video: una publicación real es la decisión vigente
-      // sobre esa plataforma -- en platformvideos ya soltó al vínculo anterior
-      // --, así que Nube la refleja aunque ya estuviera `confirmed` con otro
-      // link. Si ya tenía este mismo, reescribirlo deja el mismo estado.
-      if (remote) {
+        ?? (fileName
+          ? await RemoteLibraryVideoModel.findOne({
+            userId, fileName, $or: [{ contentId: { $exists: false } }, { contentId: null }],
+          })
+          : null);
+      // La revisión de ESTE publish. Si ganó una, es esa. Si no -- repetir un
+      // link que ya estaba confirmado no la mueve --, hay que DEMOSTRAR que el
+      // estado canónico sigue siendo el suyo antes de tocar Nube: la plataforma
+      // confirmada en el archivo, leída del mismo documento que la revisión, y
+      // este mismo vínculo puesto en él. Sin la prueba, la revisión leída ahora
+      // podría ser la de una transición posterior, y el guard la dejaría pasar.
+      let revDelPublish: number | undefined = revGanada;
+      if (revDelPublish === undefined && linkedFileId) {
+        const archivo: any = await FileModel.findById(linkedFileId)
+          .select('platforms platform_states platform_rev').lean();
+        const vinculo: any = await PlatformVideoModel.findOne({ userId, platform, platformId })
+          .select('linkedFileId').lean();
+        const confirmado = (archivo?.platforms ?? []).includes(platform)
+          && (archivo?.platform_states ?? []).some((s: any) => s.platform === platform && s.state === 'confirmed');
+        if (confirmado && vinculo && String(vinculo.linkedFileId) === String(linkedFileId)) {
+          revDelPublish = ((archivo.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0;
+        }
+      }
+
+      // Con esa revisión, Nube refleja la publicación aunque ya estuviera
+      // `confirmed` con otro link: en platformvideos ya soltó al anterior. Las
+      // dos escrituras van contra ella: si una transición POSTERIOR sobre esta
+      // misma plataforma ya dejó su revisión en Nube, no matchean, y el publish
+      // no resucita lo que ella soltó.
+      if (remote && revDelPublish !== undefined) {
+        const noEsMasNuevaQueEstePublish = {
+          $or: [
+            { ['platformRev.' + platform]: { $exists: false } },
+            { ['platformRev.' + platform]: { $lte: revDelPublish } },
+          ],
+        };
         // ESCRITURA ATÓMICA en dos pasos, igual que arriba para FileModel.
         // Antes esto calculaba `platformStates` y `platformLinks` completos
         // desde una FOTO previa (`upsertConfirmed` + filter) y los escribía con
@@ -1701,8 +1813,15 @@ export async function applyPlatformPublish(userId: string, data: {
         // intercalado FORZADO lo destapó ("transición y publish concurrentes
         // tampoco se pisan el estado en Nube"). Con `Promise.all` a secas el
         // caso pasaba sin probar nada.
+        //
+        // La primera escritura también SELLA la revisión de esta plataforma en
+        // Nube. Es lo que permite que una transición vieja (que reclamó una
+        // revisión anterior) no pueda pisar acá la publicación que acaba de
+        // entrar -- su guard compara contra este sello -- y lo que la segunda
+        // escritura exige: si entre las dos entró una transición posterior, el
+        // sello ya es el suyo y la segunda no matchea.
         await RemoteLibraryVideoModel.updateOne(
-          { _id: remote._id },
+          { _id: remote._id, ...noEsMasNuevaQueEstePublish },
           {
             $addToSet: { platforms: platform },
             $pull: {
@@ -1710,23 +1829,16 @@ export async function applyPlatformPublish(userId: string, data: {
               platformStates: { platform },
               platformLinks: { platform },
             },
+            $set: { ['platformRev.' + platform]: revDelPublish },
           },
         );
-        // Se sella la revisión de esta plataforma también en Nube, con el valor
-        // que quedó en FileModel. Es lo que permite que una transición vieja
-        // (que reclamó una revisión anterior) no pueda pisar acá la publicación
-        // que acaba de entrar: su guard compara contra este sello.
-        const revTrasPublish = revGanada;
         await RemoteLibraryVideoModel.updateOne(
-          { _id: remote._id },
+          { _id: remote._id, ['platformRev.' + platform]: revDelPublish },
           {
             $addToSet: {
               platformStates: { platform, state: 'confirmed' },
               platformLinks: { platform, platformId, platformUrl: platformUrl ?? '', publishedAt: publishedAtDate },
             },
-            ...(revTrasPublish !== undefined
-              ? { $set: { ['platformRev.' + platform]: revTrasPublish } }
-              : {}),
           },
         );
       }
@@ -1752,9 +1864,9 @@ export async function applyPlatformPublish(userId: string, data: {
 // youtube/instagram/tiktok-upload.controller.ts (ej. subidas desde el celular).
 // deviceId es opcional: iOS todavía no lo manda en record-publish.
 export async function recordUploadEvent(req: AuthRequest, res: Response): Promise<void> {
+  const userId = req.user!.id;
+  const { deviceId, deviceName, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt, operationId } = req.body ?? {};
   try {
-    const userId = req.user!.id;
-    const { deviceId, deviceName, source, platform, platformId, platformUrl, fileName, contentId, remoteLibraryVideoId, title, publishedAt, operationId } = req.body ?? {};
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
       return;
@@ -1815,6 +1927,20 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
 
     res.json({ ok: true });
   } catch (err: any) {
+    if (err instanceof ConflictoDeIdentidadDeNube) {
+      // La publicación ocurrió en la plataforma, pero la central no puede
+      // asentarla sin elegir entre documentos ambiguos: no escribió nada. La
+      // intención queda en el log append-only, para diagnóstico y
+      // reconciliación -- el cliente descarta un 4xx de su cola.
+      await recordAuditEvent({
+        userId, type: 'publish_conflict', platform,
+        installationId: deviceId, deviceName, source, operationId,
+        entity: { kind: 'platform_video', id: platformId, label: title || fileName || undefined },
+        detail: { reason: 'remote_identity_conflict', ...err.detalle, platformUrl: platformUrl ?? null },
+      });
+      res.status(409).json({ ok: false, reason: 'remote_identity_conflict', ...err.detalle });
+      return;
+    }
     res.status(500).json({ message: err.message });
   }
 }
