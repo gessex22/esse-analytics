@@ -6289,12 +6289,14 @@ test('NUBE — un publish sin revisión nueva no reescribe Nube si el estado can
   const revAntes = await revisionDe(contentId);
 
   // Justo antes de que la proyección busque el video de Nube -- la SEGUNDA
-  // búsqueda por id; la primera es la de `resolveOrCreateFile` --, el usuario
+  // búsqueda en Nube; la primera es la de `resolveOrCreateFile` --, el usuario
   // suelta el vínculo. Con eso, la revisión que se leyera AHORA ya es la del
   // unlink: solo el estado canónico dice que este publish dejó de ser el vigente.
+  // Se cuenta cualquier búsqueda, no por su filtro: la proyección puede buscar
+  // por id o por identidad, y el punto de intercalado es el mismo.
   let busquedas = 0;
   const espia = conIntercaladoAntesDeLeer(
-    central.RemoteLibraryVideoModel, 'findOne', (f: any) => !!f?._id && ++busquedas === 2,
+    central.RemoteLibraryVideoModel, 'findOne', () => ++busquedas === 2,
     async () => {
       assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
       const r = await postTransicion({
@@ -6335,10 +6337,11 @@ test('NUBE — un publish sin revisión nueva no pisa en Nube el link de otra pu
   // Antes de que su proyección busque el video de Nube, entra una publicación
   // REAL de otro link en la misma plataforma: el archivo sigue confirmado --
   // ahora con OTRO -- y PLATFORM_ID quedó suelto. Solo mirar el badge diría que
-  // el estado canónico sigue siendo el del primer publish.
+  // el estado canónico sigue siendo el del primer publish. (Segunda búsqueda
+  // en Nube, contada sin mirar el filtro: ver el caso anterior.)
   let busquedas = 0;
   const espia = conIntercaladoAntesDeLeer(
-    central.RemoteLibraryVideoModel, 'findOne', (f: any) => !!f?._id && ++busquedas === 2,
+    central.RemoteLibraryVideoModel, 'findOne', () => ++busquedas === 2,
     async () => {
       const r = await publicarDesdeElTelefono({
         fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
