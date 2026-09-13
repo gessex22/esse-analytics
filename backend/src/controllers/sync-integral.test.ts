@@ -6310,15 +6310,14 @@ test('NUBE — un publish sin revisión nueva no reescribe Nube si el estado can
   const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
   const revAntes = await revisionDe(contentId);
 
-  // Justo antes de que la proyección busque el video de Nube -- la SEGUNDA
-  // búsqueda en Nube; la primera es la de `resolveOrCreateFile` --, el usuario
-  // suelta el vínculo. Con eso, la revisión que se leyera AHORA ya es la del
-  // unlink: solo el estado canónico dice que este publish dejó de ser el vigente.
-  // Se cuenta cualquier búsqueda, no por su filtro: la proyección puede buscar
-  // por id o por identidad, y el punto de intercalado es el mismo.
-  let busquedas = 0;
-  const espia = conIntercaladoAntesDeLeer(
-    central.RemoteLibraryVideoModel, 'findOne', () => ++busquedas === 2,
+  // El publish ya decidió en FileModel -- sin revisión nueva -- y, justo antes
+  // de su escritura en el espejo, que es la última antes de proyectar a Nube, el
+  // usuario suelta el vínculo. Con eso, la revisión que se leyera AHORA ya es la
+  // del unlink: solo el estado canónico dice que este publish dejó de ser el
+  // vigente. (El punto se elige por la escritura del espejo -- un pipeline --, no
+  // contando lecturas de Nube: cualquier lectura nueva lo corría de lugar.)
+  const espia = conIntercaladoCuando(
+    central.BackupPlatformVideoModel, 'updateOne', (_f: any, u: any) => Array.isArray(u),
     async () => {
       assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
       const r = await postTransicion({
@@ -6336,7 +6335,7 @@ test('NUBE — un publish sin revisión nueva no reescribe Nube si el estado can
   } finally {
     espia.restore();
   }
-  assert.ok(espia.hecho, 'precondición: el unlink se intercaló antes de la búsqueda en Nube');
+  assert.ok(espia.hecho, 'precondición: el unlink se intercaló después de la decisión del publish y antes de proyectar a Nube');
 
   const nube = await instagramEnNube(contentId);
   assert.deepEqual(
@@ -6359,11 +6358,11 @@ test('NUBE — un publish sin revisión nueva no pisa en Nube el link de otra pu
   // Antes de que su proyección busque el video de Nube, entra una publicación
   // REAL de otro link en la misma plataforma: el archivo sigue confirmado --
   // ahora con OTRO -- y PLATFORM_ID quedó suelto. Solo mirar el badge diría que
-  // el estado canónico sigue siendo el del primer publish. (Segunda búsqueda
-  // en Nube, contada sin mirar el filtro: ver el caso anterior.)
-  let busquedas = 0;
-  const espia = conIntercaladoAntesDeLeer(
-    central.RemoteLibraryVideoModel, 'findOne', () => ++busquedas === 2,
+  // el estado canónico sigue siendo el del primer publish. (Entra justo antes
+  // de la escritura del publish repetido en el espejo, cuando ya decidió en
+  // FileModel: ver el caso anterior.)
+  const espia = conIntercaladoCuando(
+    central.BackupPlatformVideoModel, 'updateOne', (_f: any, u: any) => Array.isArray(u),
     async () => {
       const r = await publicarDesdeElTelefono({
         fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id),
@@ -6381,7 +6380,7 @@ test('NUBE — un publish sin revisión nueva no pisa en Nube el link de otra pu
   } finally {
     espia.restore();
   }
-  assert.ok(espia.hecho, 'precondición: la otra publicación se intercaló antes de la búsqueda en Nube');
+  assert.ok(espia.hecho, 'precondición: la otra publicación se intercaló después de la decisión del publish y antes de proyectar a Nube');
 
   const nube = await instagramEnNube(contentId);
   assert.deepEqual(
