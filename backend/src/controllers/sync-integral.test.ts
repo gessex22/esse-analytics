@@ -6834,3 +6834,353 @@ test('NUBE — si otro video de Nube ya tiene esa identidad, la publicación es 
   );
 });
 
+// ---------------------------------------------------------------------------
+// REPETIDO — un publish que no gana revisión (repetir un link ya confirmado)
+// decide con la foto de FileModel que leyó al principio. Si una transición
+// posterior entra antes de sus proyecciones del vínculo -- platformvideos y el
+// espejo, no solo Nube --, esas escrituras no pueden revivir lo que ella soltó.
+// Y un publish causalmente posterior sí tiene que poder volver a vincular.
+// ---------------------------------------------------------------------------
+
+/** Publica PLATFORM_ID (u otro link) desde el teléfono, sobre el archivo sembrado. */
+async function republicar(contentId: string, platformId = PLATFORM_ID, platformUrl = PLATFORM_URL) {
+  const video: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId }).lean();
+  const r = await publicarDesdeElTelefono({
+    fileName: 'video integral.mp4', remoteLibraryVideoId: String(video._id), platformId, platformUrl,
+  });
+  assert.equal(r.status, 200, `precondición: la publicación de ${platformId} se registró`);
+}
+
+async function unlinkConLaRevisionVigente(contentId: string, op: string) {
+  const r = await postTransicion({
+    contentId, platform: PLATFORM, action: 'unlink', operationId: op, baseVersion: await revisionDe(contentId),
+  });
+  assert.equal(r.status, 200, `precondición: el unlink ${op} se aplicó`);
+}
+
+/** Un link en platformvideos y en el espejo que leen las PCs y los teléfonos. */
+async function vinculoDe(platformId: string) {
+  const pv: any = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId }).lean();
+  const espejo: any = await espejoDe(platformId);
+  return {
+    archivo: pv?.linkedFileId ? String(pv.linkedFileId) : null,
+    linkVersion: pv?.linkVersion,
+    espejo: espejo?.link_state,
+    linkFileRev: espejo?.link_file_rev,
+  };
+}
+
+/**
+ * Siembra Instagram confirmado con PLATFORM_ID y lo vuelve a publicar -- sin
+ * revisión nueva --, con una operación intercalada en el punto que marca el espía.
+ */
+async function repetirConIntercalado(
+  espiar: (contentId: string, revAntes: number) => { restore: () => void; readonly hecho: boolean },
+  punto: string,
+) {
+  const { contentId } = await sembrarConfirmado();
+  const espia = espiar(contentId, await revisionDe(contentId));
+  try {
+    await republicar(contentId);
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, `precondición: la operación se intercaló ${punto}`);
+  return contentId;
+}
+
+/** El upsert del vínculo en platformvideos (no el que suelta a los reemplazados). */
+const esElUpsertDelVinculo = (f: any, u: any) => f?.platformId === PLATFORM_ID && u?.$set?.linkedFileId != null;
+
+async function sueltoEnTodasLasDemas(contentId: string) {
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.equal(v.espejo, 'unlinked', 'el espejo conserva la lápida');
+  const a = await archivoConPublicacion({ content_id: contentId });
+  assert.deepEqual([a?.publicada, a?.estados], [false, []], 'FileModel: sin badge ni estado');
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.links, nube.estados], [false, [], []], 'Nube: sin badge, estado ni link');
+}
+
+test('REPETIDO — un unlink que entra antes del upsert de platformvideos deja el vínculo suelto', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await repetirConIntercalado(
+    (contentId, revAntes) => conIntercaladoCuando(
+      central.PlatformVideoModel, 'updateOne', esElUpsertDelVinculo,
+      async () => {
+        assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
+        await unlinkConLaRevisionVigente(contentId, 'op-repetido-pv');
+      },
+    ),
+    'justo antes del upsert de platformvideos',
+  );
+
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.equal(
+    v.archivo, null,
+    'El publish repetido volvió a vincular en platformvideos lo que un unlink POSTERIOR acababa de soltar. ' +
+    'No ganó revisión, así que su upsert iba sin guard: decidió con la foto de FileModel que leyó al principio.',
+  );
+  assert.equal(v.linkVersion, await revisionDe(contentId), 'el vínculo conserva el sello del unlink');
+  await sueltoEnTodasLasDemas(contentId);
+});
+
+test('REPETIDO — un unlink que entra antes de la escritura del espejo deja la lápida', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await repetirConIntercalado(
+    (contentId, revAntes) => conIntercaladoCuando(
+      central.BackupPlatformVideoModel, 'updateOne', (_f: any, u: any) => Array.isArray(u),
+      async () => {
+        assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
+        await unlinkConLaRevisionVigente(contentId, 'op-repetido-espejo');
+      },
+    ),
+    'justo antes de la escritura del espejo',
+  );
+
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [v.espejo, v.linkFileRev], ['unlinked', await revisionDe(contentId)],
+    'El publish repetido pisó la lápida que un unlink POSTERIOR acababa de dejar en el espejo -- el que leen ' +
+    'las PCs y los teléfonos. Sin revisión nueva no le pasa ninguna al espejo, y su upsert va sin guard.',
+  );
+  assert.equal(v.archivo, null, 'platformvideos: suelto');
+  await sueltoEnTodasLasDemas(contentId);
+});
+
+/**
+ * Más temprano todavía: el unlink entra cuando el publish ya decidió -- leyó
+ * FileModel confirmado y no movió la revisión -- y antes de cualquier
+ * proyección del vínculo. (El punto es la lectura de los vínculos a reemplazar,
+ * que existe antes y después de la corrección.)
+ */
+test('REPETIDO — un unlink que entra después de la decisión y antes de toda proyección no queda pisado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await repetirConIntercalado(
+    (contentId, revAntes) => conIntercaladoAntesDeLeer(
+      central.PlatformVideoModel, 'find', (f: any) => f?.platformId?.$ne === PLATFORM_ID,
+      async () => {
+        assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
+        await unlinkConLaRevisionVigente(contentId, 'op-repetido-antes');
+      },
+    ),
+    'después de la decisión del publish y antes de sus proyecciones',
+  );
+
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.equal(
+    v.archivo, null,
+    'El publish repetido volvió a vincular lo que un unlink soltó después de que el publish decidiera y antes ' +
+    'de que proyectara: la prueba del estado canónico tiene que hacerse antes de TODAS las proyecciones del ' +
+    'vínculo, no solo antes de Nube.',
+  );
+  await sueltoEnTodasLasDemas(contentId);
+});
+
+/** Contrapeso: el guard no traba a una publicación causalmente posterior. */
+test('REPETIDO — contrapeso: una publicación posterior que entra en medio de un publish repetido sí vuelve a vincular', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const contentId = await repetirConIntercalado(
+    (contentId, revAntes) => conIntercaladoCuando(
+      central.PlatformVideoModel, 'updateOne', esElUpsertDelVinculo,
+      async () => {
+        assert.equal(await revisionDe(contentId), revAntes, 'precondición: el publish no ganó revisión');
+        await unlinkConLaRevisionVigente(contentId, 'op-repetido-contrapeso');
+        await republicar(contentId);
+        assert.equal(await revisionDe(contentId), revAntes + 2, 'precondición: el unlink y la publicación posterior');
+      },
+    ),
+    'justo antes del upsert de platformvideos',
+  );
+
+  const rev = await revisionDe(contentId);
+  const a = await archivoConPublicacion({ content_id: contentId });
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.deepEqual(
+    [v.archivo, v.linkVersion], [a?._id, rev],
+    'La publicación posterior no quedó vinculada con su revisión: el publish viejo la pisó, o el guard la trabó.',
+  );
+  assert.deepEqual([v.espejo, v.linkFileRev], ['linked', rev], 'el espejo: vinculado, con la revisión de la posterior');
+  assert.deepEqual([a?.publicada, a?.estados], [true, ['confirmed']], 'FileModel: confirmado');
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual(
+    [nube.publicada, nube.links, nube.estados, nube.rev], [true, [PLATFORM_ID], ['confirmed'], rev],
+    'Nube: la publicación posterior, sellada con su revisión',
+  );
+});
+
+/**
+ * Contrapeso: sin revisión nueva no es lo mismo que sin prueba. Una publicación
+ * asentada antes de 1c88855 -- la central proyectaba a Nube por nombre -- dejó
+ * el video de Nube sin su link. Con el estado canónico intacto, el reintento lo
+ * completa.
+ */
+test('REPETIDO — contrapeso: un reintento con el estado canónico demostrado completa la proyección que faltaba', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  await central.RemoteLibraryVideoModel.updateOne(
+    { userId: USER_ID, contentId },
+    { $pull: { platforms: PLATFORM, platformStates: { platform: PLATFORM }, platformLinks: { platform: PLATFORM } } },
+  );
+  await republicar(contentId);
+
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual(
+    [nube.publicada, nube.links, nube.estados], [true, [PLATFORM_ID], ['confirmed']],
+    'El reintento del mismo publish, con el estado canónico intacto -- confirmado, con este vínculo y sin ' +
+    'ninguna revisión posterior --, no completó en Nube el link que le faltaba.',
+  );
+  const a = await archivoConPublicacion({ content_id: contentId });
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.deepEqual([v.archivo, v.espejo], [a?._id, 'linked'], 'y el vínculo sigue puesto');
+});
+
+/**
+ * La prueba lee dos documentos: el vínculo y la revisión del archivo. Entre las
+ * dos lecturas entran un unlink y una publicación de OTRO link: el archivo
+ * vuelve a estar confirmado, con otro vínculo y una revisión que no es la del
+ * sello leído. (Hoy pasa: en el código actual esa lectura cae después de las
+ * escrituras. Fija que la prueba no combine un vínculo leído ANTES con una
+ * revisión leída DESPUÉS.)
+ */
+async function repetirConOtraPublicacionEntreLecturas(
+  contentId: string, platformId: string, platformUrl: string, op: string,
+) {
+  const archivo = await archivoConPublicacion({ content_id: contentId });
+  const OTRO = '17900000000000032';
+  const espia = conIntercaladoAntesDeLeer(
+    central.FileModel, 'findById', (f: any) => String(f) === archivo!._id,
+    async () => {
+      await unlinkConLaRevisionVigente(contentId, op);
+      await republicar(contentId, OTRO, `https://www.instagram.com/reel/${OTRO}/`);
+    },
+  );
+  try {
+    await republicar(contentId, platformId, platformUrl);
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink y la otra publicación entraron al leer el archivo');
+
+  const v = await vinculoDe(platformId);
+  assert.equal(
+    v.archivo, null,
+    'El publish repetido volvió a vincular un link que, entre las dos lecturas de su prueba, un unlink soltó y ' +
+    'otra publicación reemplazó. Tomó el vínculo como estaba ANTES y la revisión como quedó DESPUÉS: el sello ' +
+    'del vínculo no es de esa revisión, y la prueba no puede darla por suya.',
+  );
+  assert.equal(v.espejo, 'unlinked', 'el espejo conserva la lápida');
+  const otro = await vinculoDe(OTRO);
+  assert.deepEqual([otro.archivo, otro.espejo], [archivo!._id, 'linked'], 'la otra publicación queda vigente');
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.links, nube.estados], [true, [OTRO], ['confirmed']], 'Nube: solo el link vigente');
+}
+
+test('REPETIDO — la prueba no combina un vínculo leído antes con una revisión leída después (vínculo sellado)', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Un link que ya lleva sello: lo dejó la publicación que reemplazó a PLATFORM_ID.
+  const { contentId } = await sembrarConfirmado();
+  const NUEVO = '17900000000000031';
+  const URL_NUEVO = `https://www.instagram.com/reel/${NUEVO}/`;
+  await republicar(contentId, NUEVO, URL_NUEVO);
+  assert.equal((await vinculoDe(NUEVO)).linkVersion, await revisionDe(contentId), 'precondición: el vínculo está sellado');
+
+  await repetirConOtraPublicacionEntreLecturas(contentId, NUEVO, URL_NUEVO, 'op-entre-lecturas-sellado');
+});
+
+test('REPETIDO — la prueba no combina un vínculo leído antes con una revisión leída después (vínculo legado)', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // Un link de antes de los sellos, sobre una plataforma cuya revisión nunca se movió.
+  const { contentId } = await sembrarConfirmado();
+  assert.equal((await vinculoDe(PLATFORM_ID)).linkVersion, undefined, 'precondición: el vínculo no tiene sello');
+
+  await repetirConOtraPublicacionEntreLecturas(contentId, PLATFORM_ID, PLATFORM_URL, 'op-entre-lecturas-legado');
+});
+
+// ---------------------------------------------------------------------------
+// RECORD-PUBLISH — un id remoto sin nombre de archivo es un payload incompleto,
+// no una contradicción entre identidades: 422, no 409. Sin nombre, la central
+// no resuelve ningún archivo, y la publicación terminaba como un éxito
+// silencioso a medias.
+// ---------------------------------------------------------------------------
+
+test('RECORD-PUBLISH — un id remoto sin nombre de archivo responde 422 missing_file_name, sin efectos y con evidencia', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const video = await videoDeNube('en la nube.mp4');
+  const ID = '17900000000000041';
+  const URL = `https://www.instagram.com/reel/${ID}/`;
+
+  const r = await publicarDesdeElTelefono({ remoteLibraryVideoId: String(video._id), platformId: ID, platformUrl: URL });
+  assert.equal(
+    r.status, 422,
+    `Un record-publish con remoteLibraryVideoId y sin fileName respondió ${r.status}. Es un payload incompleto -- ` +
+    'no una contradicción entre identidades, así que tampoco 409 --: sin nombre no se resuelve ningún archivo, ' +
+    'y la publicación quedaba asentada a medias.',
+  );
+  assert.deepEqual([r.body?.ok, r.body?.reason], [false, 'missing_file_name'], 'con un motivo estable');
+
+  // Sin efectos parciales.
+  const doc: any = await central.RemoteLibraryVideoModel.findById(video._id).lean();
+  assert.deepEqual(
+    [(doc?.platforms ?? []).includes(PLATFORM), await estadosEnNube(video._id), await linksEnNube(video._id), doc?.contentId ?? null],
+    [false, [], [], null],
+    'Nube: sin badge, estado, link ni identidad asignada',
+  );
+  assert.equal(await central.FileModel.countDocuments({ userId: USER_ID }), 0, 'ningún archivo creado');
+  assert.equal(
+    await central.PlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platformId: ID }), 0,
+    'ni vínculo en platformvideos',
+  );
+  assert.equal(
+    await central.BackupPlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platform_id: ID }), 0,
+    'ni fila en el espejo',
+  );
+  const { UploadHistoryModel } = await import('../models/upload-history.model');
+  assert.equal(
+    await UploadHistoryModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platformId: ID }), 0,
+    'ni registro en Historial como publicación asentada',
+  );
+
+  // La evidencia de que la publicación ocurrió.
+  const { AuditEventModel } = await import('../models/audit-event.model');
+  assert.equal(
+    await AuditEventModel.countDocuments({ userId: USER_ID, type: 'publish_confirmed', 'entity.id': ID }), 0,
+    'ni evento de publicación asentada',
+  );
+  const evidencia: any = await AuditEventModel.findOne({ userId: USER_ID, type: 'publish_rejected', 'entity.id': ID }).lean();
+  assert.ok(
+    evidencia,
+    'La publicación rechazada no dejó evidencia: ocurrió en la plataforma, y la central tiene que conservarla ' +
+    'aunque no pueda asentarla.',
+  );
+  assert.deepEqual(
+    [evidencia.platform, evidencia.detail?.reason, evidencia.detail?.remoteLibraryVideoId, evidencia.detail?.platformUrl],
+    [PLATFORM, 'missing_file_name', String(video._id), URL],
+    'con lo necesario para reconciliarla',
+  );
+});
+
