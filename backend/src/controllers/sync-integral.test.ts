@@ -6529,6 +6529,129 @@ test('NUBE — un video de Nube sin identidad recibe la del archivo, y un unlink
   );
 });
 
+// ---------------------------------------------------------------------------
+// NUBE — una identidad estable no se cambia por un nombre.
+// ---------------------------------------------------------------------------
+
+/** El archivo de ese contenido, con lo que la publicación le dejó (o no). */
+async function archivoConPublicacion(filtro: Record<string, any>) {
+  const f: any = await central.FileModel.findOne({ userId: USER_ID, ...filtro }).lean();
+  return f && {
+    _id: String(f._id),
+    content_id: f.content_id,
+    publicada: (f.platforms ?? []).includes(PLATFORM),
+    estados: (f.platform_states ?? []).filter((s: any) => s.platform === PLATFORM).map((s: any) => s.state),
+  };
+}
+
+test('NUBE — un id remoto con identidad X no termina vinculado por nombre a un archivo con otra identidad', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El video de Nube es X. No hay File(X), pero hay un archivo HOMÓNIMO del
+  // nombre local, con otra identidad: Y.
+  const X = '78787878-9090-1212-3434-565656565656';
+  const Y = '90909090-1212-3434-5656-787878787878';
+  const video = await videoDeNube('en la nube.mp4', { contentId: X });
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'homonimo.mp4', file_path: 'homonimo.mp4', content_id: Y,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const ID = '17900000000000031';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'homonimo.mp4', remoteLibraryVideoId: String(video._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  const deX = await archivoConPublicacion({ content_id: X });
+  assert.ok(
+    deX,
+    'No hay File(X): la publicación se resolvió POR NOMBRE a otro archivo. El id remoto apunta a un video ' +
+    'con identidad X, y esa identidad es estable: si File(X) no existe, se crea por X.',
+  );
+  assert.deepEqual([deX.publicada, deX.estados], [true, ['confirmed']], 'y es File(X) el que recibe la publicación');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: ID }).lean();
+  assert.equal(String(pv?.linkedFileId), deX._id, 'con el vínculo en platformvideos');
+
+  const deY = await archivoConPublicacion({ content_id: Y });
+  assert.deepEqual(
+    [deY?.publicada, deY?.estados], [false, []],
+    'El homónimo Y recibió la publicación: comparte el nombre, no la identidad.',
+  );
+  assert.deepEqual(await linksEnNube(video._id), [ID], 'y Nube la recibe en el video X');
+});
+
+test('NUBE — ni por el nombre que el video tiene en Nube: una identidad estable no adopta un archivo con otra', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El video de Nube es X y se llama "nombre en nube.mp4". El teléfono tiene el
+  // archivo con otro nombre. Y hay un archivo que se llama como el video de
+  // Nube, con otra identidad: Y.
+  const X = '13131313-2424-3535-4646-575757575757';
+  const Y = '24242424-3535-4646-5757-686868686868';
+  const video = await videoDeNube('nombre en nube.mp4', { contentId: X });
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'nombre en nube.mp4', file_path: 'nombre en nube.mp4', content_id: Y,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const ID = '17900000000000033';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'nombre local.mp4', remoteLibraryVideoId: String(video._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  const deX = await archivoConPublicacion({ content_id: X });
+  assert.deepEqual(
+    [deX?.publicada, deX?.estados], [true, ['confirmed']],
+    'La publicación se resolvió por el nombre que el video tiene en Nube, a un archivo con otra identidad. ' +
+    'Si File(X) no existe, se crea por X.',
+  );
+  const deY = await archivoConPublicacion({ content_id: Y });
+  assert.deepEqual([deY?.publicada, deY?.estados], [false, []], 'y el archivo homónimo del nombre de Nube queda intacto');
+  assert.deepEqual(await linksEnNube(video._id), [ID], 'y Nube la recibe en el video X');
+});
+
+test('NUBE — la proyección no escribe en un video de Nube cuya identidad no es la del archivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El cliente declara el contenido Z, y a la vez un id remoto cuyo video es
+  // X: datos del cliente que no coinciden. La publicación va al archivo que el
+  // cliente declaró; el video de Nube de OTRA identidad no se toca -- ni por
+  // su id, ni porque se llame igual que el archivo.
+  const X = 'abababab-cdcd-efef-0101-232323232323';
+  const Z = 'cdcdcdcd-efef-0101-2323-454545454545';
+  const video = await videoDeNube('archivo Z.mp4', { contentId: X });
+  await central.FileModel.create({
+    userId: USER_ID, file_name: 'archivo Z.mp4', file_path: 'archivo Z.mp4', content_id: Z,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const ID = '17900000000000032';
+
+  const r = await publicarDesdeElTelefono({
+    fileName: 'archivo Z.mp4', contentId: Z, remoteLibraryVideoId: String(video._id),
+    platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
+  });
+  assert.equal(r.status, 200, 'precondición: la publicación se registró');
+
+  const deZ = await archivoConPublicacion({ content_id: Z });
+  assert.deepEqual([deZ?.publicada, deZ?.estados], [true, ['confirmed']], 'precondición: File(Z) recibió la publicación');
+  const nube: any = await central.RemoteLibraryVideoModel.findById(video._id).lean();
+  assert.deepEqual(
+    [nube?.contentId, await linksEnNube(video._id), await estadosEnNube(video._id)], [X, [], []],
+    'La proyección escribió la publicación de Z en el video de Nube X, solo porque el cliente mandó su id. ' +
+    'Nube se proyecta sobre el video de la MISMA identidad que el archivo.',
+  );
+});
+
 /** Contrapeso: el backfill completa una identidad que falta, nunca pisa una que ya está. */
 test('NUBE — el backfill no pisa la identidad que el video de Nube ya tiene', async (t) => {
   if (!(await conectarOSaltear(t))) return;
@@ -6560,8 +6683,15 @@ test('NUBE — el backfill no pisa la identidad que el video de Nube ya tiene', 
   );
 });
 
-/** Contrapeso: una colisión con el índice único no se resuelve pisando nada. */
-test('NUBE — si otro video de Nube ya tiene esa identidad, el backfill no pisa nada ni rompe la publicación', async (t) => {
+/**
+ * Una colisión con el índice único es un CONFLICTO, no una advertencia.
+ *
+ * Reemplaza al contrapeso de 9f41fb2, que afirmaba lo contrario: que la
+ * publicación seguía con 200 y el backfill solo se salteaba. Así, el link
+ * terminaba escrito en un video de Nube sin identidad -- que ninguna transición
+ * alcanza -- o en el otro, que no es el que el cliente declaró.
+ */
+test('NUBE — si otro video de Nube ya tiene esa identidad, la publicación es un conflicto: no escribe nada y conserva la intención', async (t) => {
   if (!(await conectarOSaltear(t))) return;
   await cargarCentral();
   await limpiarEstado();
@@ -6579,13 +6709,48 @@ test('NUBE — si otro video de Nube ya tiene esa identidad, el backfill no pisa
     fileName: 'sin identidad 2.mp4', remoteLibraryVideoId: String(sinIdentidad._id),
     platformId: ID, platformUrl: `https://www.instagram.com/reel/${ID}/`,
   });
-  assert.equal(
+  assert.notEqual(
     r.status, 200,
-    'La colisión del índice único rompió la publicación: otro video de Nube ya tiene esa identidad, y el ' +
-    'backfill tiene que dejarlo así -- no es un error de la publicación.',
+    'La publicación respondió 200 con dos videos de Nube reclamando la misma identidad: el del id declarado ' +
+    'no la puede recibir, y el que la tiene no es el que el cliente declaró. Es ambiguo: conflicto.',
+  );
+  assert.equal(r.status, 409, 'un conflicto estructurado');
+  assert.deepEqual(
+    [r.body?.reason, r.body?.remoteLibraryVideoId, r.body?.contentId, r.body?.conflictingRemoteLibraryVideoId],
+    ['remote_identity_conflict', String(sinIdentidad._id), Y, String(yaLaTiene._id)],
+    'que dice qué video, qué identidad y con cuál choca',
   );
 
+  // Nada escrito en ninguno de los documentos ambiguos.
+  for (const [nombre, id] of [['el del id declarado', sinIdentidad._id], ['el que ya tiene la identidad', yaLaTiene._id]] as const) {
+    const doc: any = await central.RemoteLibraryVideoModel.findById(id).lean();
+    assert.deepEqual(
+      [(doc?.platforms ?? []).includes(PLATFORM), await estadosEnNube(id), await linksEnNube(id)], [false, [], []],
+      `Nube (${nombre}): sin badge, sin estado y sin link`,
+    );
+  }
   const a: any = await central.RemoteLibraryVideoModel.findById(sinIdentidad._id).lean();
-  const b: any = await central.RemoteLibraryVideoModel.findById(yaLaTiene._id).lean();
-  assert.deepEqual([a?.contentId ?? null, b?.contentId], [null, Y], 'ninguno de los dos cambió de identidad');
+  assert.equal(a?.contentId ?? null, null, 'el del id declarado sigue sin identidad');
+  const deY = await archivoConPublicacion({ content_id: Y });
+  assert.deepEqual([deY?.publicada, deY?.estados], [false, []], 'File(Y): sin badge ni estado');
+  assert.equal(
+    await central.PlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platformId: ID }), 0,
+    'ni vínculo en platformvideos',
+  );
+  assert.equal(
+    await central.BackupPlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platform_id: ID }), 0,
+    'ni fila en el espejo que leen las PCs',
+  );
+
+  // La intención queda, para diagnóstico y reconciliación.
+  const { AuditEventModel } = await import('../models/audit-event.model');
+  const intencion: any = await AuditEventModel.findOne({ userId: USER_ID, type: 'publish_conflict', 'entity.id': ID }).lean();
+  assert.ok(intencion, 'La publicación en conflicto se perdió: tiene que quedar registrada la intención.');
+  assert.deepEqual(
+    [intencion.platform, intencion.detail?.remoteLibraryVideoId, intencion.detail?.contentId,
+      intencion.detail?.conflictingRemoteLibraryVideoId, intencion.detail?.platformUrl],
+    [PLATFORM, String(sinIdentidad._id), Y, String(yaLaTiene._id), `https://www.instagram.com/reel/${ID}/`],
+    'con lo necesario para reconciliarla',
+  );
 });
+
