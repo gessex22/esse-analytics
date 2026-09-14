@@ -1341,9 +1341,15 @@ async function asignarIdentidadAlVideoDeNube(userId: string, remoteLibraryVideoI
  *     plataforma cuya revisión nunca se movió (0): un vínculo de antes de los
  *     sellos, sobre el que todavía no hubo ninguna operación causal.
  *
- * El vínculo se lee ANTES que el archivo: si algo mueve la revisión entre las
- * dos lecturas, el sello leído ya no es el de la revisión leída, y la prueba
- * falla en vez de combinar dos momentos distintos.
+ * `linkVersionFileId` es una INVARIANTE DEFENSIVA que la mutación no cubre:
+ * `linkVersion` solo tiene sentido dentro del archivo que la produjo, y dos
+ * archivos pueden coincidir en el número de revisión; sin comparar el archivo,
+ * el sello de otro se aceptaría como propio. No se encontró un flujo que lo
+ * distinga por sí solo (el único, un confirmLink cortado que devuelve el link
+ * a este archivo, no pierde nada por bloquear), pero la regla se mantiene.
+ *
+ * El orden de las dos lecturas no aporta una garantía propia: si algo cambia
+ * entre ellas, lo detecta la condición del vínculo o la del sello.
  */
 async function revisionDemostradaDelVinculo(
   // any: el mismo `platform` de applyPlatformPublish, que ya llega validado por
@@ -1773,10 +1779,14 @@ export async function applyPlatformPublish(userId: string, data: {
   // Sellar acá no dice "este documento ya refleja la publicación": dice "nada
   // anterior a esta revisión se aplica más sobre esta plataforma", que es
   // verdad en TODAS las representaciones apenas la revisión se mueve.
-  if (contentId && revisionEfectiva !== undefined) {
+  //
+  // El documento es el de la identidad RESUELTA del archivo, no el del
+  // `contentId` del request: el teléfono no lo manda, y su publicación quedaba
+  // sin sellar acá hasta que alguien la reentregara con él.
+  if (contentIdDelArchivo && revisionEfectiva !== undefined) {
     await BackupFileModel.updateOne(
       {
-        userId, content_id: contentId,
+        userId, content_id: contentIdDelArchivo,
         $or: [
           { ['platform_rev.' + platform]: { $exists: false } },
           { ['platform_rev.' + platform]: { $lte: revisionEfectiva } },
