@@ -1325,6 +1325,46 @@ async function asignarIdentidadAlVideoDeNube(userId: string, remoteLibraryVideoI
   });
 }
 
+/**
+ * La revisión con la que un publish que NO ganó revisión -- repetir un link ya
+ * confirmado -- puede proyectar su vínculo, o `undefined` si no puede demostrar
+ * que el estado canónico sigue siendo el suyo.
+ *
+ * Ese publish decidió con una foto de FileModel leída al principio. Si desde
+ * entonces entró una transición, la revisión que se lea ahora es la de ELLA:
+ * usarla como guard dejaría pasar las escrituras que ella acaba de superar. Se
+ * da por suya solo si se demuestran las tres cosas juntas:
+ *   - el archivo sigue con la plataforma `confirmed`;
+ *   - este mismo platformId sigue vinculado a este archivo;
+ *   - el sello del vínculo (`linkVersion` + `linkVersionFileId`) es esa
+ *     revisión, de este archivo. Un vínculo sin sello solo es coherente con una
+ *     plataforma cuya revisión nunca se movió (0): un vínculo de antes de los
+ *     sellos, sobre el que todavía no hubo ninguna operación causal.
+ *
+ * El vínculo se lee ANTES que el archivo: si algo mueve la revisión entre las
+ * dos lecturas, el sello leído ya no es el de la revisión leída, y la prueba
+ * falla en vez de combinar dos momentos distintos.
+ */
+async function revisionDemostradaDelVinculo(
+  // any: el mismo `platform` de applyPlatformPublish, que ya llega validado por
+  // cada caller contra su propio union type (ver el comentario de allá).
+  userId: string, platform: any, platformId: string, linkedFileId: any,
+): Promise<number | undefined> {
+  const vinculo: any = await PlatformVideoModel.findOne({ userId, platform, platformId })
+    .select('linkedFileId linkVersion linkVersionFileId').lean();
+  const archivo: any = await FileModel.findById(linkedFileId)
+    .select('platforms platform_states platform_rev').lean();
+  if (!vinculo || !archivo) return undefined;
+  const rev = ((archivo.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0;
+  const confirmado = (archivo.platforms ?? []).includes(platform)
+    && (archivo.platform_states ?? []).some((s: any) => s.platform === platform && s.state === 'confirmed');
+  const vinculadoAEste = String(vinculo.linkedFileId) === String(linkedFileId);
+  const selloCoherente = typeof vinculo.linkVersion === 'number'
+    ? vinculo.linkVersion === rev && String(vinculo.linkVersionFileId) === String(linkedFileId)
+    : rev === 0;
+  return confirmado && vinculadoAEste && selloCoherente ? rev : undefined;
+}
+
 // POST /api/sync/file-platforms — sincroniza el estado COMPLETO de
 // publicado/descartado por plataforma de un archivo hacia la central. Manda
 // los arrays enteros (no un delta) -- mismo shape que ya usa
@@ -1655,6 +1695,22 @@ export async function applyPlatformPublish(userId: string, data: {
         }
       }
     }
+  }
+
+  // PRUEBA DEL ESTADO CANÓNICO, antes de TODAS las proyecciones del vínculo.
+  //
+  // Si este publish ganó una revisión, es la suya. Si no -- repetir un link que
+  // ya estaba confirmado no la mueve, y un reintento idéntico no debe moverla --,
+  // decidió con la foto de FileModel que leyó al principio, y una transición que
+  // entró desde entonces quedaría pisada por escrituras sin guard. Antes esta
+  // prueba se hacía solo para Nube: platformvideos y el espejo revivían lo que un
+  // unlink posterior acababa de soltar. Sin revisión propia ni demostrada, no se
+  // reescribe ninguna proyección del vínculo. (Sin archivo no hay estado causal
+  // que proteger: esas escrituras siguen como siempre.)
+  const revisionEfectiva = revGanada ?? (linkedFileId ? await revisionDemostradaDelVinculo(userId, platform, platformId, linkedFileId) : undefined);
+  const proyectar = !linkedFileId || revisionEfectiva !== undefined;
+
+  if (!numericSibling && proyectar) {
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
     // platform+platformId no debe volver a pisarse por una llamada repetida
     // (reintento de recordUploadEvent, outbox de local-backend reenviando un
@@ -1663,8 +1719,6 @@ export async function applyPlatformPublish(userId: string, data: {
     // siguiente llamada la vuelva a pisar con `new Date()`. Bug real: BUG-2026-08-15-06,
     // "clip - enemigos tiene.mp4" corregido a mano y vuelto a aparecer como
     // "recién publicado" horas después por un reintento con el mismo platformId.
-    const revDelVinculo = revGanada;
-
     // El sello del propio documento decide si esta escritura todavía vale.
     //
     // Capturar la revisión del `$inc` evita sellar con un número ajeno, pero no
@@ -1681,10 +1735,10 @@ export async function applyPlatformPublish(userId: string, data: {
         // El sello `linkVersion` es una revisión del archivo AL QUE PERTENECE:
         // solo se compara contra ese archivo. Contra otro, esto es una
         // reasignación, y el número de A no dice nada sobre B.
-        ...(revGanada !== undefined
+        ...(revisionEfectiva !== undefined
           ? { $or: [
               { linkVersion: { $exists: false } },
-              { linkVersion: { $lte: revGanada } },
+              { linkVersion: { $lte: revisionEfectiva } },
               { linkVersionFileId: { $exists: true, $ne: linkedFileId } },
               { linkVersionFileId: { $exists: false }, linkedFileId: { $ne: linkedFileId } },
             ] }
@@ -1698,7 +1752,7 @@ export async function applyPlatformPublish(userId: string, data: {
           linkedFileId,
           matchStatus,
           lastSyncedAt: new Date(),
-          ...(revDelVinculo !== undefined ? { linkVersion: revDelVinculo, linkVersionFileId: linkedFileId } : {}),
+          ...(revisionEfectiva !== undefined ? { linkVersion: revisionEfectiva, linkVersionFileId: linkedFileId } : {}),
         },
         $setOnInsert: { publishedAt: publishedAtDate },
       },
@@ -1711,8 +1765,6 @@ export async function applyPlatformPublish(userId: string, data: {
     }
   }
 
-  const revParaEspejoBackup = revGanada;
-
   // Y la misma revisión en `backup_files`. Es la proyección que el publish
   // NUNCA tocó -- su badge lo mantiene el push del escritorio -- y por eso su
   // guard de revisión comparaba contra un campo que nadie escribía y dejaba
@@ -1721,30 +1773,32 @@ export async function applyPlatformPublish(userId: string, data: {
   // Sellar acá no dice "este documento ya refleja la publicación": dice "nada
   // anterior a esta revisión se aplica más sobre esta plataforma", que es
   // verdad en TODAS las representaciones apenas la revisión se mueve.
-  if (contentId && revParaEspejoBackup !== undefined) {
+  if (contentId && revisionEfectiva !== undefined) {
     await BackupFileModel.updateOne(
       {
         userId, content_id: contentId,
         $or: [
           { ['platform_rev.' + platform]: { $exists: false } },
-          { ['platform_rev.' + platform]: { $lte: revParaEspejoBackup } },
+          { ['platform_rev.' + platform]: { $lte: revisionEfectiva } },
         ],
       },
-      { $set: { ['platform_rev.' + platform]: revParaEspejoBackup } },
+      { $set: { ['platform_rev.' + platform]: revisionEfectiva } },
     );
   }
 
   // Misma revisión para el espejo: sin sellarla, el guard del tombstone
   // (`link_version <= versionResultante`) compara contra un valor AUSENTE y
-  // deja pasar la lápida sobre un re-vínculo posterior.
-
-  await mirrorPlatformVideoToBackup(userId, {
-    platform, platformId, platformUrl, fileName, contentId: contentIdDelArchivo, title,
-    remoteLibraryVideoId: data.remoteLibraryVideoId,
-    deviceId: data.deviceId, source: data.source,
-    publishedAt: publishedAtDate, matchStatus,
-    revDelArchivo: revParaEspejoBackup,
-  });
+  // deja pasar la lápida sobre un re-vínculo posterior. Y la misma prueba: sin
+  // revisión propia ni demostrada, el espejo no se reescribe.
+  if (proyectar) {
+    await mirrorPlatformVideoToBackup(userId, {
+      platform, platformId, platformUrl, fileName, contentId: contentIdDelArchivo, title,
+      remoteLibraryVideoId: data.remoteLibraryVideoId,
+      deviceId: data.deviceId, source: data.source,
+      publishedAt: publishedAtDate, matchStatus,
+      revDelArchivo: revisionEfectiva,
+    });
+  }
 
   await syncCalendarAfterPublish(userId, platform, publishedFile, publishedAtDate);
 
@@ -1771,35 +1825,17 @@ export async function applyPlatformPublish(userId: string, data: {
             userId, fileName, $or: [{ contentId: { $exists: false } }, { contentId: null }],
           })
           : null);
-      // La revisión de ESTE publish. Si ganó una, es esa. Si no -- repetir un
-      // link que ya estaba confirmado no la mueve --, hay que DEMOSTRAR que el
-      // estado canónico sigue siendo el suyo antes de tocar Nube: la plataforma
-      // confirmada en el archivo, leída del mismo documento que la revisión, y
-      // este mismo vínculo puesto en él. Sin la prueba, la revisión leída ahora
-      // podría ser la de una transición posterior, y el guard la dejaría pasar.
-      let revDelPublish: number | undefined = revGanada;
-      if (revDelPublish === undefined && linkedFileId) {
-        const archivo: any = await FileModel.findById(linkedFileId)
-          .select('platforms platform_states platform_rev').lean();
-        const vinculo: any = await PlatformVideoModel.findOne({ userId, platform, platformId })
-          .select('linkedFileId').lean();
-        const confirmado = (archivo?.platforms ?? []).includes(platform)
-          && (archivo?.platform_states ?? []).some((s: any) => s.platform === platform && s.state === 'confirmed');
-        if (confirmado && vinculo && String(vinculo.linkedFileId) === String(linkedFileId)) {
-          revDelPublish = ((archivo.platform_rev ?? {}) as Record<string, number>)[platform] ?? 0;
-        }
-      }
-
-      // Con esa revisión, Nube refleja la publicación aunque ya estuviera
-      // `confirmed` con otro link: en platformvideos ya soltó al anterior. Las
-      // dos escrituras van contra ella: si una transición POSTERIOR sobre esta
-      // misma plataforma ya dejó su revisión en Nube, no matchean, y el publish
-      // no resucita lo que ella soltó.
-      if (remote && revDelPublish !== undefined) {
+      // Con la revisión de ESTE publish -- la que ganó, o la que demostró antes
+      // de proyectar el vínculo (ver `revisionDemostradaDelVinculo`) --, Nube
+      // refleja la publicación aunque ya estuviera `confirmed` con otro link: en
+      // platformvideos ya soltó al anterior. Las dos escrituras van contra ella:
+      // si una transición POSTERIOR sobre esta misma plataforma ya dejó su
+      // revisión en Nube, no matchean, y el publish no resucita lo que ella soltó.
+      if (remote && revisionEfectiva !== undefined) {
         const noEsMasNuevaQueEstePublish = {
           $or: [
             { ['platformRev.' + platform]: { $exists: false } },
-            { ['platformRev.' + platform]: { $lte: revDelPublish } },
+            { ['platformRev.' + platform]: { $lte: revisionEfectiva } },
           ],
         };
         // ESCRITURA ATÓMICA en dos pasos, igual que arriba para FileModel.
@@ -1829,11 +1865,11 @@ export async function applyPlatformPublish(userId: string, data: {
               platformStates: { platform },
               platformLinks: { platform },
             },
-            $set: { ['platformRev.' + platform]: revDelPublish },
+            $set: { ['platformRev.' + platform]: revisionEfectiva },
           },
         );
         await RemoteLibraryVideoModel.updateOne(
-          { _id: remote._id, ['platformRev.' + platform]: revDelPublish },
+          { _id: remote._id, ['platformRev.' + platform]: revisionEfectiva },
           {
             $addToSet: {
               platformStates: { platform, state: 'confirmed' },
@@ -1869,6 +1905,25 @@ export async function recordUploadEvent(req: AuthRequest, res: Response): Promis
   try {
     if (!platform || !platformId) {
       res.status(400).json({ message: 'platform y platformId son requeridos.' });
+      return;
+    }
+    // Un id remoto sin nombre de archivo es un payload INCOMPLETO, no una
+    // contradicción entre identidades (eso es el 409 de abajo): sin nombre no se
+    // resuelve ningún archivo, y la publicación quedaba asentada a medias -- un
+    // vínculo sin archivo y un 200. Se rechaza sin escribir nada, y la evidencia
+    // de que ocurrió queda en la auditoría. Aceptarla algún día exige resolverla
+    // explícitamente desde el documento remoto, nunca como éxito silencioso.
+    if (remoteLibraryVideoId && !fileName) {
+      await recordAuditEvent({
+        userId, type: 'publish_rejected', platform,
+        installationId: deviceId, deviceName, source, operationId,
+        entity: { kind: 'platform_video', id: platformId, label: title || undefined },
+        detail: {
+          reason: 'missing_file_name', remoteLibraryVideoId,
+          contentId: contentId ?? null, platformUrl: platformUrl ?? null,
+        },
+      });
+      res.status(422).json({ ok: false, reason: 'missing_file_name', remoteLibraryVideoId });
       return;
     }
     // OJO: NO defaultear acá a `new Date()`. Antes esta línea calculaba su

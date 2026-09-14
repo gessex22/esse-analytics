@@ -25,7 +25,12 @@ export type AuditEventType =
   // ambigua (ej. el video de Nube declarado no puede recibir la identidad del
   // archivo: otro video de la cuenta ya la tiene). No se escribe nada en los
   // documentos ambiguos; el evento conserva la intención para reconciliarla.
-  | 'publish_conflict';
+  | 'publish_conflict'
+  // Una publicación real que llegó con un payload incompleto (ej. el id de un
+  // video de Nube sin el nombre del archivo): no hay contradicción que
+  // reconciliar, pero tampoco con qué asentarla. Se rechaza sin escribir nada y
+  // el evento conserva la evidencia de que ocurrió.
+  | 'publish_rejected';
 
 export interface IAuditEvent extends Document {
   userId: string;
