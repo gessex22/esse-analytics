@@ -7184,3 +7184,168 @@ test('RECORD-PUBLISH — un id remoto sin nombre de archivo responde 422 missing
   );
 });
 
+// ---------------------------------------------------------------------------
+// REPETIDO — la revisión efectiva en cada proyección, y cada condición de su
+// prueba por separado.
+//
+// Dos de estas condiciones solo deciden solas cuando un vínculo quedó puesto
+// sin publicación: `confirmLink` (POST /api/sync/review/:pvId/link) vincula en
+// platformvideos ANTES de publicar, sin sellar, y si su publicación se cae el
+// vínculo queda así. Es un estado que el endpoint real deja, no uno fabricado.
+// ---------------------------------------------------------------------------
+
+/** `confirmLink` real, con su publicación caída: devuelve el status. */
+async function confirmarMatchConLaPublicacionCaida(pvId: string, fileId: string) {
+  const espia = conIntercaladoAntesDeLeer(
+    central.FileModel, 'findById', (f: any) => String(f) === fileId,
+    async () => { throw new Error('se cortó la conexión con Mongo'); },
+  );
+  try {
+    const { res, captured } = fakeRes();
+    await central.confirmLink(
+      { user: USER, headers: { authorization: AUTH }, params: { pvId }, query: {}, body: { fileId } } as any,
+      res as any,
+    );
+    return captured.status;
+  } finally {
+    espia.restore();
+  }
+}
+
+test('REPETIDO — un reintento demostrado sella el vínculo legado: la resolución de identidad lo declara coherente', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const resolver = async () => {
+    const r = await resolverIdentidad({
+      fileName: 'video integral.mp4', contentId, deviceId: 'iphone-1', clientFileId: 'local-V',
+    });
+    return ((r.body?.platformLinks ?? []) as any[]).find(l => l.platform === PLATFORM);
+  };
+  assert.equal((await resolver())?.coherente, false, 'precondición: un vínculo sin sello no se puede declarar coherente');
+
+  await republicar(contentId);
+
+  const ig = await resolver();
+  assert.deepEqual(
+    [ig?.platformId, ig?.coherente], [PLATFORM_ID, true],
+    'El reintento demostró que el vínculo es el vigente en la revisión de la plataforma, y no lo selló: la ' +
+    'resolución lo sigue declarando no coherente, y el cliente trata cualquier desvinculación sobre él como conflicto.',
+  );
+});
+
+test('REPETIDO — un reintento demostrado sella backup_files: una transición en vuelo no borra la publicación que entró en el medio', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  // Un unlink ya pasó su CAS y su chequeo de vigencia, y está por escribir en
+  // backup_files. En el medio: el teléfono vuelve a publicar -- sin contentId,
+  // así que esa publicación no sella backup_files -- y la PC reentrega el mismo
+  // publish desde su outbox, con contentId: no gana revisión, la demuestra.
+  const espia = conIntercaladoCuando(
+    central.BackupFileModel, 'updateOne', (_f: any, u: any) => u?.$pull?.platforms === PLATFORM,
+    async () => {
+      await republicar(contentId);
+      const rev = await revisionDe(contentId);
+      await central.applyPlatformPublish(USER_ID, {
+        contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+        fileName: 'video integral.mp4', matchStatus: 'manual', publishedAt: new Date(PUBLICADO_EL),
+      });
+      assert.equal(await revisionDe(contentId), rev, 'precondición: la reentrega no ganó revisión');
+    },
+  );
+  try {
+    await postTransicion({
+      contentId, platform: PLATFORM, action: 'unlink', operationId: 'op-backup-en-vuelo',
+      baseVersion: await revisionDe(contentId),
+    });
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la publicación y la reentrega entraron antes de la escritura del unlink en backup_files');
+
+  const a = await archivoConPublicacion({ content_id: contentId });
+  assert.deepEqual([a?.publicada, a?.estados], [true, ['confirmed']], 'precondición: la publicación del medio quedó vigente');
+  const bf: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.ok(
+    (bf?.platforms ?? []).includes(PLATFORM),
+    'El unlink viejo borró de backup_files la publicación que entró mientras estaba en vuelo. Nadie había ' +
+    'sellado ahí la revisión nueva: la publicación del teléfono no declara contentId, y la reentrega que sí lo ' +
+    'declara no ganó revisión -- y sin la efectiva no sella nada.',
+  );
+  assert.equal(bf?.platform_rev?.[PLATFORM], await revisionDe(contentId), 'backup_files queda sellado con la revisión vigente');
+});
+
+test('REPETIDO — un vínculo que vuelve a quedar puesto sin publicación no alcanza: el archivo tiene que seguir confirmado', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const a = await archivoConPublicacion({ content_id: contentId });
+  const pv: any = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+
+  // El publish repetido ya decidió. Antes de que proyecte: el usuario suelta el
+  // vínculo, y enseguida lo vuelve a confirmar a mano -- pero la publicación de
+  // confirmLink se cae. El vínculo queda puesto, con el sello del unlink, y el
+  // archivo sin confirmar.
+  const espia = conIntercaladoAntesDeLeer(
+    central.PlatformVideoModel, 'find', (f: any) => f?.platformId?.$ne === PLATFORM_ID,
+    async () => {
+      await unlinkConLaRevisionVigente(contentId, 'op-sin-publicacion');
+      assert.equal(await confirmarMatchConLaPublicacionCaida(String(pv._id), a!._id), 500, 'precondición: la publicación de confirmLink se cayó');
+      const v = await vinculoDe(PLATFORM_ID);
+      assert.deepEqual([v.archivo, v.linkVersion], [a!._id, await revisionDe(contentId)], 'precondición: el vínculo quedó puesto, con el sello del unlink');
+    },
+  );
+  try {
+    await republicar(contentId);
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: el unlink y el confirmLink cortado entraron antes de las proyecciones');
+
+  const v = await vinculoDe(PLATFORM_ID);
+  assert.equal(
+    v.espejo, 'unlinked',
+    'El publish repetido revivió el espejo con un vínculo que está puesto pero no respalda ninguna publicación: ' +
+    'el archivo ya no está confirmado. Que el vínculo y su sello coincidan con la revisión no alcanza.',
+  );
+  const nube = await instagramEnNube(contentId);
+  assert.deepEqual([nube.publicada, nube.links, nube.estados], [false, [], []], 'Nube: sin badge, estado ni link');
+  const despues = await archivoConPublicacion({ content_id: contentId });
+  assert.deepEqual([despues?.publicada, despues?.estados], [false, []], 'FileModel: sin confirmar');
+});
+
+test('REPETIDO — un publish viejo no deshace el vínculo que el usuario movió a mano a otro archivo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const B: any = await central.FileModel.create({
+    userId: USER_ID, file_name: 'el correcto.mp4', file_path: 'el correcto.mp4',
+    content_id: 'bbbbbbbb-1111-2222-3333-444444444444', status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const pv: any = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+
+  // El usuario mueve el link a B a mano; la publicación de confirmLink se cae.
+  assert.equal(await confirmarMatchConLaPublicacionCaida(String(pv._id), String(B._id)), 500, 'precondición: la publicación de confirmLink se cayó');
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(B._id), 'precondición: el vínculo quedó en B');
+
+  // Llega tarde, reintentado, el publish original de ese link sobre A.
+  await republicar(contentId);
+
+  assert.equal(
+    (await vinculoDe(PLATFORM_ID)).archivo, String(B._id),
+    'El publish viejo le devolvió a A un link que el usuario movió a mano a B. A sigue confirmado y el sello ' +
+    'es coherente con su revisión, pero el vínculo ya no es de A: sin mirar eso, la prueba lo da por suyo.',
+  );
+});
+
