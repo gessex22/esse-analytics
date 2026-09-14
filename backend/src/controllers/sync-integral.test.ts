@@ -7242,14 +7242,34 @@ test('REPETIDO — un reintento demostrado sella backup_files: una transición e
   await limpiarEstado();
 
   const { contentId } = await sembrarConfirmado();
+  // La PC todavía no subió este archivo a backup_files.
+  await central.BackupFileModel.deleteOne({ userId: USER_ID, content_id: contentId });
   // Un unlink ya pasó su CAS y su chequeo de vigencia, y está por escribir en
-  // backup_files. En el medio: el teléfono vuelve a publicar -- sin contentId,
-  // así que esa publicación no sella backup_files -- y la PC reentrega el mismo
-  // publish desde su outbox, con contentId: no gana revisión, la demuestra.
+  // backup_files. En el medio: el teléfono vuelve a publicar -- gana una
+  // revisión, pero backup_files todavía no tiene la fila, así que no hay qué
+  // sellar --; el push de la PC crea la fila, sin revisión; y la PC reentrega el
+  // mismo publish desde su outbox: no gana revisión, la demuestra, y es la única
+  // escritura que puede sellar esa fila.
   const espia = conIntercaladoCuando(
     central.BackupFileModel, 'updateOne', (_f: any, u: any) => u?.$pull?.platforms === PLATFORM,
     async () => {
       await republicar(contentId);
+      // El push real de la PC: POST /api/backup/files/bulk con su copia del archivo.
+      const push = await dispatch(central.bulkUpsertBackupFiles, {
+        body: {
+          files: [{
+            file_name: 'video integral.mp4', content_id: contentId,
+            platforms: [PLATFORM], platforms_discarded: [],
+            local_updated_at: new Date().toISOString(), platforms_updated_at: new Date().toISOString(),
+          }],
+        },
+      });
+      assert.equal(push.status, 200, 'precondición: la central aceptó el push');
+      const fila: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+      assert.deepEqual(
+        [(fila?.platforms ?? []).includes(PLATFORM), fila?.platform_rev?.[PLATFORM]], [true, undefined],
+        'precondición: el push creó la fila, con la publicación y sin revisión',
+      );
       const rev = await revisionDe(contentId);
       await central.applyPlatformPublish(USER_ID, {
         contentId, platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
@@ -7273,11 +7293,35 @@ test('REPETIDO — un reintento demostrado sella backup_files: una transición e
   const bf: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
   assert.ok(
     (bf?.platforms ?? []).includes(PLATFORM),
-    'El unlink viejo borró de backup_files la publicación que entró mientras estaba en vuelo. Nadie había ' +
-    'sellado ahí la revisión nueva: la publicación del teléfono no declara contentId, y la reentrega que sí lo ' +
-    'declara no ganó revisión -- y sin la efectiva no sella nada.',
+    'El unlink viejo borró de backup_files la publicación que entró mientras estaba en vuelo. La fila la creó ' +
+    'el push de la PC después de esa publicación, sin revisión; la reentrega que la demuestra es la única ' +
+    'escritura que puede sellarla, y sin la revisión efectiva no sella nada.',
   );
   assert.equal(bf?.platform_rev?.[PLATFORM], await revisionDe(contentId), 'backup_files queda sellado con la revisión vigente');
+});
+
+test('REPETIDO — una publicación del teléfono sella backup_files con la identidad resuelta, sin reentrega de la PC', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  // El teléfono publica UNA vez un link nuevo, con `remoteLibraryVideoId` y
+  // `fileName` y sin `contentId`: la central resuelve la identidad del archivo y
+  // la publicación gana una revisión. Nadie la reentrega después.
+  const { contentId } = await sembrarConfirmado();
+  const NUEVO = '17900000000000051';
+  const revAntes = await revisionDe(contentId);
+  await republicar(contentId, NUEVO, `https://www.instagram.com/reel/${NUEVO}/`);
+  const rev = await revisionDe(contentId);
+  assert.ok(rev > revAntes, 'precondición: la publicación ganó revisión');
+
+  const bf: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  assert.equal(
+    bf?.platform_rev?.[PLATFORM], rev,
+    'La publicación del teléfono no selló backup_files: el sello busca el documento por el `contentId` del ' +
+    'request -- que el teléfono no manda -- y no por la identidad que la central ya resolvió. Hasta que alguien ' +
+    'la reentregue con contentId, una transición vieja todavía puede pisar ahí esta publicación.',
+  );
 });
 
 test('REPETIDO — un vínculo que vuelve a quedar puesto sin publicación no alcanza: el archivo tiene que seguir confirmado', async (t) => {
