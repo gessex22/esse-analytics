@@ -10,11 +10,11 @@ import { PlatformVideoModel, SyncPlatform } from '../models/platform-video.model
 import { UploadHistoryModel } from '../models/upload-history.model';
 import { FileModel } from '../models/file.model';
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
-import { applyPlatformPublish } from './backup.controller';
 import { FileIdentityBindingModel } from '../models/file-identity-binding.model';
 import { applyPlatformTransition } from '../services/platform-transition.service';
 import { dispararReparacionOportunista } from '../services/transition-repair.scheduler';
 import { recordAuditEvent } from '../services/audit.service';
+import { applyManualPlatformLink } from '../services/manual-platform-link.service';
 
 export const triggerYouTubeSync = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -91,28 +91,37 @@ export const getReviewList = async (req: AuthRequest, res: Response): Promise<vo
 export const confirmLink = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { pvId } = req.params;
-    const { fileId } = req.body;
+    const { fileId, operationId } = req.body;
     const userId = req.user!.id;
-    if (!fileId) { res.status(400).json({ message: 'fileId requerido' }); return; }
+    if (!fileId || typeof operationId !== 'string' || operationId.trim() === '') {
+      res.status(400).json({ message: 'fileId y operationId requeridos' }); return;
+    }
 
-    const updated = await PlatformVideoModel.findOneAndUpdate({ _id: pvId, userId }, {
-      linkedFileId: new Types.ObjectId(fileId),
+    const video: any = await PlatformVideoModel.findOne({ _id: pvId, userId }).lean();
+    if (!video) { res.status(404).json({ message: 'No encontrado.' }); return; }
+
+    const resultado = await applyManualPlatformLink(userId, {
+      operationId,
+      targetFileId: fileId,
+      platform: video.platform,
+      platformId: video.platformId,
+      platformUrl: video.platformUrl,
+      title: video.title,
+      publishedAt: video.publishedAt,
       matchStatus: 'manual',
-      $unset: { matchCandidates: '' },
     });
-    if (!updated) { res.status(404).json({ message: 'No encontrado.' }); return; }
+    if (!resultado.ok) {
+      if (resultado.reason === 'in_progress') { res.status(202).json(resultado); return; }
+      if (resultado.reason === 'operation_mismatch') { res.status(422).json(resultado); return; }
+      if (resultado.reason === 'stale' || resultado.reason === 'missing_identity') { res.status(409).json(resultado); return; }
+      res.status(404).json(resultado); return;
+    }
 
-    // Confirmar el match acá solo tocaba PlatformVideoModel -- el badge (Videos),
-    // el link del pull del PC, el Calendario y Nube nunca se enteraban de este
-    // vínculo. Sin file_name no hay mucho que propagar (los otros stores
-    // matchean por nombre), pero best-effort igual si el archivo no lo tiene.
+    // El movimiento causal ya quedó cerrado por applyManualPlatformLink. Esta
+    // lectura solo completa el historial de publicación que consume el
+    // Dashboard; no vuelve a proyectar el vínculo ni infiere identidad por nombre.
     const linkedFile = await FileModel.findById(fileId).select('file_name content_id').lean();
     if (linkedFile) {
-      await applyPlatformPublish(userId, {
-        platform: updated.platform, platformId: updated.platformId, platformUrl: updated.platformUrl,
-        fileName: linkedFile.file_name,
-        title: updated.title, publishedAt: updated.publishedAt, matchStatus: 'manual',
-      });
       // BUG real encontrado 2026-08-15: confirmar un match a mano nunca
       // escribía en UploadHistoryModel (a diferencia de recordUploadEvent,
       // que sí) -- el Dashboard ("Último video publicado") depende
@@ -123,23 +132,61 @@ export const confirmLink = async (req: AuthRequest, res: Response): Promise<void
       // este camino (link a mano), así que UploadHistoryModel nunca tuvo ni
       // un solo registro. Ver docs/bug-reports.md.
       await UploadHistoryModel.updateOne(
-        { userId, platform: updated.platform, platformId: updated.platformId },
+        { userId, platform: video.platform, platformId: video.platformId },
         {
           $setOnInsert: {
-            userId, platform: updated.platform, platformId: updated.platformId,
+            userId, platform: video.platform, platformId: video.platformId,
             deviceId: 'confirm-link', source: 'confirm-link',
-            platformUrl: updated.platformUrl ?? null,
+            platformUrl: video.platformUrl ?? null,
             fileName: linkedFile.file_name,
             contentId: linkedFile.content_id ?? null,
-            title: updated.title ?? null,
-            publishedAt: updated.publishedAt ?? new Date(),
+            title: video.title ?? null,
+            publishedAt: video.publishedAt ?? new Date(),
           },
         },
         { upsert: true },
       ).catch(() => { /* best-effort -- un fallo acá no debe invalidar el link ya confirmado */ });
     }
 
-    res.json({ ok: true });
+    res.json(resultado);
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /api/sync/manual-platform-link — vínculo explícito desde un cliente
+// que conoce la identidad estable del archivo, pero no su ObjectId de Mongo.
+// La implementación se completa junto al caller de iOS.
+export const manualPlatformLinkEndpoint = async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.user!.id;
+    const { contentId, platform, platformId, platformUrl, title, publishedAt, operationId } = req.body ?? {};
+    if (!contentId || !platform || !platformId || typeof operationId !== 'string' || operationId.trim() === '') {
+      res.status(400).json({ message: 'contentId, platform, platformId y operationId son requeridos.' });
+      return;
+    }
+    if (!['youtube', 'instagram', 'tiktok'].includes(platform)) {
+      res.status(400).json({ message: 'Plataforma no válida' });
+      return;
+    }
+
+    const resultado = await applyManualPlatformLink(userId, {
+      operationId,
+      targetContentId: contentId,
+      platform,
+      platformId,
+      platformUrl,
+      title,
+      publishedAt: publishedAt ? new Date(publishedAt) : undefined,
+      matchStatus: 'manual',
+    });
+    if (!resultado.ok) {
+      if (resultado.reason === 'in_progress') { res.status(202).json(resultado); return; }
+      if (resultado.reason === 'operation_mismatch') { res.status(422).json(resultado); return; }
+      if (resultado.reason === 'stale' || resultado.reason === 'missing_identity') { res.status(409).json(resultado); return; }
+      res.status(404).json(resultado); return;
+    }
+    res.json(resultado);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
@@ -875,10 +922,10 @@ export const getCrossMatchCandidates = async (req: AuthRequest, res: Response): 
 export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.id;
-    const { fileId, platform, platformId, title, thumbnail, publishedAt, platformUrl, stats } = req.body ?? {};
+    const { fileId, platform, platformId, title, thumbnail, publishedAt, platformUrl, stats, operationId } = req.body ?? {};
 
-    if (!fileId || !platform || !platformId) {
-      res.status(400).json({ message: 'fileId, platform y platformId son requeridos.' });
+    if (!fileId || !platform || !platformId || typeof operationId !== 'string' || operationId.trim() === '') {
+      res.status(400).json({ message: 'fileId, platform, platformId y operationId son requeridos.' });
       return;
     }
     if (!['youtube', 'instagram', 'tiktok'].includes(platform)) {
@@ -894,58 +941,37 @@ export const resolveCrossMatchSlot = async (req: AuthRequest, res: Response): Pr
     const likes    = s.likes    ?? s.like_count     ?? 0;
     const comments = s.comments ?? s.comments_count ?? 0;
 
-    // Re-matchear (ej. un link que quedó apuntando a un video borrado/privado)
-    // dejaba el doc VIEJO todavía linkeado a este archivo, con otro platformId
-    // — group-stats terminaba con 2 registros "youtube" para el mismo archivo
-    // compitiendo por el mismo slot, y cuál ganaba dependía del orden en que
-    // Mongo los devolviera (el bug de "a veces sí, a veces no"). Se desvincula
-    // cualquier otro doc de esta plataforma que ya apuntara acá antes de crear
-    // el nuevo link, para que quede uno solo.
-    await PlatformVideoModel.updateMany(
-      { userId, platform, linkedFileId: new Types.ObjectId(fileId), platformId: { $ne: platformId } },
-      { $set: { linkedFileId: null, matchStatus: 'sin_match' } },
-    );
-
-    await PlatformVideoModel.findOneAndUpdate(
-      { userId, platform, platformId },
-      {
-        $set: {
-          userId, platform, platformId,
-          platformUrl:  platformUrl ?? '',
-          title:        title ?? '',
-          thumbnail:    thumbnail ?? '',
-          publishedAt:  publishedAt ? new Date(publishedAt) : new Date(),
-          linkedFileId: new Types.ObjectId(fileId),
-          matchStatus:  'manual',
-          views, likes, comments,
-          lastSyncedAt: new Date(),
-          // null explícito, no un `new Date()` -- `stats` viene del cliente
-          // (puede ser lo que ya tenía cacheado desde que se listaron los
-          // candidatos, no un fetch en vivo de ESTE instante), y encima este
-          // mismo update puede estar re-matcheando a un platformId distinto
-          // del anterior -- ni uno ni otro caso justifica heredar o inventar
-          // un statsSyncedAt "fresco". Queda `stale` de entrada, se refresca
-          // solo en el próximo getGroupStats/getFileStats real (Fase 5, ver
-          // platform-video.model.ts).
-          statsSyncedAt: null,
-        },
-      },
-      { upsert: true }
-    );
-
-    // Igual que confirmLink: resolver un slot acá solo tocaba PlatformVideoModel
-    // -- sin esto, un video recién matcheado desde Estadísticas/cross-match
-    // podía tener el link ahí y en ningún otro lado (badge, Calendario, Nube).
-    const linkedFile = await FileModel.findById(fileId).select('file_name').lean();
-    if (linkedFile) {
-      await applyPlatformPublish(userId, {
-        platform, platformId, platformUrl,
-        fileName: linkedFile.file_name,
-        title, publishedAt: publishedAt ? new Date(publishedAt) : new Date(), matchStatus: 'manual',
-      });
+    const resultado = await applyManualPlatformLink(userId, {
+      operationId,
+      targetFileId: fileId,
+      platform,
+      platformId,
+      platformUrl,
+      title,
+      publishedAt: publishedAt ? new Date(publishedAt) : new Date(),
+      matchStatus: 'manual',
+    });
+    if (!resultado.ok) {
+      if (resultado.reason === 'in_progress') { res.status(202).json(resultado); return; }
+      if (resultado.reason === 'operation_mismatch') { res.status(422).json(resultado); return; }
+      if (resultado.reason === 'stale' || resultado.reason === 'missing_identity') { res.status(409).json(resultado); return; }
+      res.status(404).json(resultado); return;
     }
 
-    res.json({ ok: true });
+    // Los metadatos/estadísticas pertenecen al video de plataforma y no al
+    // estado causal del vínculo. Se completan después de que la operación padre
+    // terminó; repetirlos es inocuo.
+    await PlatformVideoModel.updateOne(
+      { userId, platform, platformId, linkedFileId: new Types.ObjectId(fileId) },
+      {
+        $set: {
+          thumbnail: thumbnail ?? '', views, likes, comments,
+          lastSyncedAt: new Date(), statsSyncedAt: null,
+        },
+      },
+    );
+
+    res.json(resultado);
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }

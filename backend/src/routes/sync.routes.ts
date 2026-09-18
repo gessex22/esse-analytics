@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   triggerYouTubeSync, getYouTubeList, getSyncStats,
   getReviewList, confirmLink, markOrphan,
+  manualPlatformLinkEndpoint,
   getPlatformRecent, confirmCrossMatch,
   getCrossMatchCandidates, resolveCrossMatchSlot, getGroupStats, getFileStats, getStatsByIds, unlinkPlatform,
   applyPlatformTransitionEndpoint,
@@ -28,6 +29,10 @@ router.get ('/api/sync/platform-recent/:platform', verifyToken, requireRole('tod
 router.post('/api/sync/cross-match',               verifyToken, requireRole('todopoderoso'), confirmCrossMatch);
 router.get ('/api/sync/cross-match/candidates',     verifyToken, requireRole('todopoderoso'), getCrossMatchCandidates);
 router.post('/api/sync/cross-match/resolve',        verifyToken, requireRole('todopoderoso'), resolveCrossMatchSlot);
+// Vínculo explícito desde mobile: usa contentId porque el cliente no conoce
+// el ObjectId interno de FileModel. Comparte la operación durable de los dos
+// callers manuales del panel.
+router.post('/api/sync/manual-platform-link',       verifyToken, manualPlatformLinkEndpoint);
 // Estadísticas: liberado a cualquier usuario logueado (antes solo el dueño) --
 // ya viene scoped por userId en el controller, el requireRole era una
 // restricción extra sin motivo real de seguridad.

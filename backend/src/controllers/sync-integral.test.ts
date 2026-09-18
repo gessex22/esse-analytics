@@ -168,6 +168,9 @@ function routeToCentral(): Router {
         if (corte === 'tras-aplicar') throw new TypeError('fetch failed');
         return r;
       }
+      if (method === 'POST' && p === '/api/sync/manual-platform-link') {
+        return await dispatch(central.manualPlatformLinkEndpoint, { body });
+      }
       if (method === 'DELETE' && p.startsWith('/api/sync/platform-link/')) {
         const parts = p.split('/');
         return await dispatch(central.unlinkPlatform, {
@@ -263,6 +266,7 @@ async function construirIndices() {
     central.BackupPlatformVideoModel, central.RemoteLibraryVideoModel,
     (await import('../models/platform-transition-op.model')).PlatformTransitionOpModel,
     (await import('../models/file-identity-binding.model')).FileIdentityBindingModel,
+    (await import('../models/manual-link-op.model')).ManualLinkOpModel,
   ];
   // `init()` NO sirve acá: está memoizado por modelo, así que tras el primer
   // test no vuelve a construir nada y los índices se quedan caídos junto con la
@@ -3350,6 +3354,7 @@ test('P10 — las métricas reportan pendientes, fallidas y la edad de la más v
 
   const { contentId } = await sembrarConfirmado();
   const { PlatformTransitionOpModel } = await import('../models/platform-transition-op.model');
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
 
   const hace2h = new Date(Date.now() - 2 * 60 * 60 * 1000);
   await PlatformTransitionOpModel.create([
@@ -3368,12 +3373,20 @@ test('P10 — las métricas reportan pendientes, fallidas y la edad de la más v
   await PlatformTransitionOpModel.collection.updateOne(
     { operationId: 'm-vieja' }, { $set: { createdAt: hace2h } },
   );
+  await ManualLinkOpModel.create([
+    { userId: USER_ID, operationId: 'm-manual-pendiente', platform: PLATFORM, platformId: PLATFORM_ID,
+      targetFileId: new mongoose.Types.ObjectId().toString(), targetContentId: contentId,
+      targetFileName: 'video integral.mp4', status: 'pending', attempts: 0 },
+    { userId: USER_ID, operationId: 'm-manual-fallida', platform: PLATFORM, platformId: 'otro-id',
+      targetFileId: new mongoose.Types.ObjectId().toString(), targetContentId: contentId,
+      targetFileName: 'video integral.mp4', status: 'failed', attempts: 8 },
+  ]);
 
   const { metricasDeReparacion } = await import('../services/transition-repair.service');
   const m = await metricasDeReparacion();
 
-  assert.equal(m.pendientes, 2, 'una cola que no se puede medir no se puede operar');
-  assert.equal(m.fallidas, 1, 'y `failed` no se reintenta solo: si nadie lo mira, no existe');
+  assert.equal(m.pendientes, 3, 'las operaciones normales y los movimientos manuales pendientes son visibles');
+  assert.equal(m.fallidas, 2, 'los dead letters de ambas colas se cuentan: si nadie los mira, no existen');
   assert.ok(
     m.edadMaximaMs >= 2 * 60 * 60 * 1000 - 60_000,
     'la edad de la más vieja es la señal que distingue "hay cola" de "hay cola TRABADA"',
@@ -4164,6 +4177,7 @@ test('BOOTSTRAP — si el índice crítico no se puede crear, el arranque falla'
 
   const { asegurarIndicesCriticos } = await import('../services/indices-criticos.service');
   const { FileIdentityBindingModel } = await import('../models/file-identity-binding.model');
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
 
   // Con el índice sano, el gate pasa.
   await asegurarIndicesCriticos();
@@ -4179,6 +4193,18 @@ test('BOOTSTRAP — si el índice crítico no se puede crear, el arranque falla'
     );
   } finally {
     (FileIdentityBindingModel as any).createIndexes = original;
+  }
+
+  const originalManual = ManualLinkOpModel.createIndexes.bind(ManualLinkOpModel);
+  (ManualLinkOpModel as any).createIndexes = async () => { throw new Error('índice manual ausente'); };
+  try {
+    await assert.rejects(
+      () => asegurarIndicesCriticos(),
+      /manual_link_ops/,
+      'sin el índice de operationId un reintento puede reservar y aplicar dos operaciones padre',
+    );
+  } finally {
+    (ManualLinkOpModel as any).createIndexes = originalManual;
   }
 });
 
@@ -7188,29 +7214,10 @@ test('RECORD-PUBLISH — un id remoto sin nombre de archivo responde 422 missing
 // REPETIDO — la revisión efectiva en cada proyección, y cada condición de su
 // prueba por separado.
 //
-// Dos de estas condiciones solo deciden solas cuando un vínculo quedó puesto
-// sin publicación: `confirmLink` (POST /api/sync/review/:pvId/link) vincula en
-// platformvideos ANTES de publicar, sin sellar, y si su publicación se cae el
-// vínculo queda así. Es un estado que el endpoint real deja, no uno fabricado.
+// Dos de estas condiciones solo deciden solas ante un vínculo legado que quedó
+// puesto sin publicación. El endpoint manual nuevo ya no puede crear ese estado,
+// pero la central todavía tiene que tolerar filas históricas que sí lo contienen.
 // ---------------------------------------------------------------------------
-
-/** `confirmLink` real, con su publicación caída: devuelve el status. */
-async function confirmarMatchConLaPublicacionCaida(pvId: string, fileId: string) {
-  const espia = conIntercaladoAntesDeLeer(
-    central.FileModel, 'findById', (f: any) => String(f) === fileId,
-    async () => { throw new Error('se cortó la conexión con Mongo'); },
-  );
-  try {
-    const { res, captured } = fakeRes();
-    await central.confirmLink(
-      { user: USER, headers: { authorization: AUTH }, params: { pvId }, query: {}, body: { fileId } } as any,
-      res as any,
-    );
-    return captured.status;
-  } finally {
-    espia.restore();
-  }
-}
 
 test('REPETIDO — un reintento demostrado sella el vínculo legado: la resolución de identidad lo declara coherente', async (t) => {
   if (!(await conectarOSaltear(t))) return;
@@ -7334,17 +7341,20 @@ test('REPETIDO — un vínculo que vuelve a quedar puesto sin publicación no al
   const pv: any = await central.PlatformVideoModel
     .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
 
-  // El publish repetido ya decidió. Antes de que proyecte: el usuario suelta el
-  // vínculo, y enseguida lo vuelve a confirmar a mano -- pero la publicación de
-  // confirmLink se cae. El vínculo queda puesto, con el sello del unlink, y el
-  // archivo sin confirmar.
+  // El publish repetido ya decidió. Antes de que proyecte, el usuario suelta el
+  // vínculo. Luego aparece una fila histórica incoherente: el vínculo volvió a
+  // quedar puesto y sellado, pero el archivo siguió sin publicación.
   const espia = conIntercaladoAntesDeLeer(
     central.PlatformVideoModel, 'find', (f: any) => f?.platformId?.$ne === PLATFORM_ID,
     async () => {
       await unlinkConLaRevisionVigente(contentId, 'op-sin-publicacion');
-      assert.equal(await confirmarMatchConLaPublicacionCaida(String(pv._id), a!._id), 500, 'precondición: la publicación de confirmLink se cayó');
+      const rev = await revisionDe(contentId);
+      await central.PlatformVideoModel.updateOne(
+        { _id: pv._id },
+        { $set: { linkedFileId: a!._id, matchStatus: 'manual', linkVersion: rev, linkVersionFileId: a!._id } },
+      );
       const v = await vinculoDe(PLATFORM_ID);
-      assert.deepEqual([v.archivo, v.linkVersion], [a!._id, await revisionDe(contentId)], 'precondición: el vínculo quedó puesto, con el sello del unlink');
+      assert.deepEqual([v.archivo, v.linkVersion], [a!._id, rev], 'precondición: la fila legado quedó puesta con el sello del unlink');
     },
   );
   try {
@@ -7379,8 +7389,8 @@ test('REPETIDO — un publish viejo no deshace el vínculo que el usuario movió
   const pv: any = await central.PlatformVideoModel
     .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
 
-  // El usuario mueve el link a B a mano; la publicación de confirmLink se cae.
-  assert.equal(await confirmarMatchConLaPublicacionCaida(String(pv._id), String(B._id)), 500, 'precondición: la publicación de confirmLink se cayó');
+  // El usuario mueve el link a B a mano y la operación causal termina.
+  assert.equal((await llamarConfirmLink(String(pv._id), String(B._id))).status, 200, 'precondición: el vínculo manual llegó a B');
   assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(B._id), 'precondición: el vínculo quedó en B');
 
   // Llega tarde, reintentado, el publish original de ese link sobre A.
@@ -7393,3 +7403,742 @@ test('REPETIDO — un publish viejo no deshace el vínculo que el usuario movió
   );
 });
 
+// ---------------------------------------------------------------------------
+// VÍNCULO MANUAL CAUSAL — confirmLink y resolveCrossMatchSlot.
+//
+// Estos dos endpoints todavía escriben PlatformVideoModel ANTES de publicar el
+// cambio en las demás representaciones. Una caída deja una verdad partida. Y
+// cuando el mismo link pasa de B a A, publicar A no retira el `confirmed` de B.
+// Los casos fuerzan ambos bordes contra los handlers reales.
+// ---------------------------------------------------------------------------
+
+async function crearDestinoManual(fileName: string, contentId: string) {
+  const file: any = await central.FileModel.create({
+    userId: USER_ID, file_name: fileName, file_path: fileName, content_id: contentId,
+    status: 'PENDIENTE', platforms: [], platforms_discarded: [], platform_states: [],
+  });
+  await central.BackupFileModel.create({
+    userId: USER_ID, file_name: fileName, content_id: contentId,
+    platforms: [], platforms_discarded: [], local_updated_at: new Date(), platforms_updated_at: new Date(),
+  });
+  await central.RemoteLibraryVideoModel.create({
+    userId: USER_ID, fileName, contentId, storedFileName: `${contentId}.mp4`,
+    sizeBytes: 1, durationSeconds: 1, platforms: [], platformsDiscarded: [],
+    platformStates: [], platformLinks: [],
+  });
+  return file;
+}
+
+async function llamarConfirmLink(pvId: string, fileId: string, operationId?: string) {
+  const { res, captured } = fakeRes();
+  await central.confirmLink(
+    { user: USER, headers: { authorization: AUTH }, params: { pvId }, query: {}, body: {
+      fileId, operationId: operationId ?? new mongoose.Types.ObjectId().toString(),
+    } } as any,
+    res as any,
+  );
+  return captured;
+}
+
+async function llamarResolveCrossMatch(fileId: string, platformId = PLATFORM_ID, operationId?: string) {
+  const { res, captured } = fakeRes();
+  await central.resolveCrossMatchSlot(
+    {
+      user: USER, headers: { authorization: AUTH }, params: {}, query: {},
+      body: {
+        fileId, platform: PLATFORM, platformId, platformUrl: PLATFORM_URL,
+        title: 'match manual', publishedAt: PUBLICADO_EL, stats: {},
+        operationId: operationId ?? new mongoose.Types.ObjectId().toString(),
+      },
+    } as any,
+    res as any,
+  );
+  return captured;
+}
+
+test('MANUAL-LINK — confirmLink no deja el vínculo movido si la publicación falla', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const destino = await crearDestinoManual('destino confirm.mp4', '10101010-2020-3030-4040-505050505050');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const espia = conIntercaladoAntesDeLeer(
+    central.FileModel, 'findOne', (f: any) => String(f?._id) === String(destino._id),
+    async () => { throw new Error('caída antes de publicar el vínculo manual'); },
+  );
+  let respuesta: any;
+  try {
+    respuesta = await llamarConfirmLink(String(pv._id), String(destino._id));
+    assert.equal(respuesta.status, 500, 'precondición: la operación falló');
+  } finally {
+    espia.restore();
+  }
+  assert.equal(respuesta?.body?.message, 'caída antes de publicar el vínculo manual', 'precondición: la caída ocurrió en el punto esperado');
+  assert.equal(
+    (await vinculoDe(PLATFORM_ID)).archivo, String(origen._id),
+    'confirmLink movió PlatformVideoModel antes de tener una operación durable: el resto quedó en B y el vínculo en A.',
+  );
+});
+
+test('MANUAL-LINK — resolveCrossMatchSlot no deja dos medias verdades si la publicación falla', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const destino = await crearDestinoManual('destino cross.mp4', '20202020-3030-4040-5050-606060606060');
+  const NUEVO = '17900000000000071';
+  const espia = conIntercaladoAntesDeLeer(
+    central.FileModel, 'findOne', (f: any) => String(f?._id) === String(destino._id),
+    async () => { throw new Error('caída antes de publicar el cross-match'); },
+  );
+  let respuesta: any;
+  try {
+    respuesta = await llamarResolveCrossMatch(String(destino._id), NUEVO);
+    assert.equal(respuesta.status, 500, 'precondición: la operación falló');
+  } finally {
+    espia.restore();
+  }
+  assert.equal(respuesta?.body?.message, 'caída antes de publicar el cross-match', 'precondición: la caída ocurrió en el punto esperado');
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(origen._id), 'el vínculo anterior debe seguir en B');
+  assert.equal(
+    await central.PlatformVideoModel.countDocuments({ userId: USER_ID, platform: PLATFORM, platformId: NUEVO }), 0,
+    'resolveCrossMatchSlot creó el vínculo nuevo antes de poder completar la publicación.',
+  );
+});
+
+async function afirmarMovimientoManualCompleto(origenContentId: string, destinoContentId: string, destinoId: string) {
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: origenContentId }).lean();
+  const origenBackup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: origenContentId }).lean();
+  const origenNube: any = await central.RemoteLibraryVideoModel.findOne({ userId: USER_ID, contentId: origenContentId }).lean();
+  const destino = await archivoConPublicacion({ content_id: destinoContentId });
+  const destinoBackup: any = await central.BackupFileModel.findOne({ userId: USER_ID, content_id: destinoContentId }).lean();
+  const destinoNube = await instagramEnNube(destinoContentId);
+  const vinculo = await vinculoDe(PLATFORM_ID);
+
+  assert.deepEqual(
+    [(origen?.platforms ?? []).includes(PLATFORM), (origen?.platform_states ?? []).filter((s: any) => s.platform === PLATFORM)],
+    [false, []], 'B deja de estar confirmado en FileModel',
+  );
+  assert.equal((origenBackup?.platforms ?? []).includes(PLATFORM), false, 'B deja de estar publicado en backup_files');
+  assert.deepEqual(
+    [(origenNube?.platforms ?? []).includes(PLATFORM), (origenNube?.platformLinks ?? []).filter((l: any) => l.platform === PLATFORM)],
+    [false, []], 'B deja de estar publicado y vinculado en Nube',
+  );
+  assert.deepEqual([destino?.publicada, destino?.estados], [true, ['confirmed']], 'A queda confirmado en FileModel');
+  assert.equal((destinoBackup?.platforms ?? []).includes(PLATFORM), true, 'A queda publicado en backup_files');
+  assert.deepEqual([destinoNube.publicada, destinoNube.estados, destinoNube.links], [true, ['confirmed'], [PLATFORM_ID]], 'A queda confirmado y vinculado en Nube');
+  assert.equal(vinculo.archivo, destinoId, 'el vínculo canónico termina en A');
+}
+
+test('MANUAL-LINK — confirmLink mueve B → A causalmente y no toca YouTube', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: origenContentId } = await sembrarConfirmado();
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: origenContentId });
+  origen.platforms.addToSet('youtube');
+  origen.platform_states.push({ platform: 'youtube', state: 'badge_only' });
+  await origen.save();
+  const destinoContentId = '30303030-4040-5050-6060-707070707070';
+  const destino = await crearDestinoManual('destino causal confirm.mp4', destinoContentId);
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+
+  assert.equal((await llamarConfirmLink(String(pv._id), String(destino._id))).status, 200);
+  await afirmarMovimientoManualCompleto(origenContentId, destinoContentId, String(destino._id));
+  const origenDespues: any = await central.FileModel.findById(origen._id).lean();
+  assert.ok((origenDespues?.platforms ?? []).includes('youtube'), 'mover Instagram no toca YouTube');
+});
+
+test('MANUAL-LINK — resolveCrossMatchSlot mueve B → A con el mismo contrato causal', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: origenContentId } = await sembrarConfirmado();
+  const destinoContentId = '40404040-5050-6060-7070-808080808080';
+  const destino = await crearDestinoManual('destino causal cross.mp4', destinoContentId);
+
+  assert.equal((await llamarResolveCrossMatch(String(destino._id))).status, 200);
+  await afirmarMovimientoManualCompleto(origenContentId, destinoContentId, String(destino._id));
+});
+
+test('MANUAL-LINK — una operación vieja no recupera el vínculo después de una publicación posterior', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const A = await crearDestinoManual('destino viejo.mp4', '50505050-6060-7070-8080-909090909090');
+  const C = await crearDestinoManual('destino nuevo.mp4', '60606060-7070-8080-9090-101010101010');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const espia = conIntercaladoAntesDeLeer(
+    central.FileModel, 'findOne', (f: any) => String(f?._id) === String(A._id),
+    async () => {
+      await central.applyPlatformPublish(USER_ID, {
+        contentId: C.content_id, fileName: C.file_name, platform: PLATFORM,
+        platformId: PLATFORM_ID, platformUrl: PLATFORM_URL, matchStatus: 'manual', publishedAt: new Date(PUBLICADO_EL),
+      });
+    },
+  );
+  try {
+    await llamarConfirmLink(String(pv._id), String(A._id));
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: la publicación nueva entró mientras la operación vieja estaba en vuelo');
+  assert.equal(
+    (await vinculoDe(PLATFORM_ID)).archivo, String(C._id),
+    'La operación manual vieja volvió a llevar a A un vínculo que una publicación posterior ya había movido a C.',
+  );
+});
+
+test('MANUAL-LINK — una caída después de retirar B queda durable y el worker completa A', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: origenContentId } = await sembrarConfirmado();
+  const destinoContentId = '70707070-8080-9090-a0a0-b0b0b0b0b0b0';
+  const destino = await crearDestinoManual('destino durable.mp4', destinoContentId);
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const operationId = 'manual-durable-b-a';
+  const espia = conIntercaladoCuando(
+    central.BackupFileModel, 'updateOne',
+    (f: any, u: any) => f?.content_id === destinoContentId && u?.$addToSet?.platforms === PLATFORM,
+    async () => { throw new Error('caída después de publicar A y antes de cerrar la operación'); },
+  );
+  let respuesta: any;
+  try {
+    respuesta = await llamarConfirmLink(String(pv._id), String(destino._id), operationId);
+  } finally {
+    espia.restore();
+  }
+  assert.equal(respuesta.status, 500, 'precondición: la request se cortó a mitad del movimiento');
+  assert.ok(espia.hecho, 'precondición: la caída ocurrió después del unlink de B');
+
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
+  const pendiente: any = await ManualLinkOpModel.findOne({ userId: USER_ID, operationId }).lean();
+  assert.equal(pendiente?.status, 'pending', 'el destino congelado queda durable para reanudar');
+  const origenAntes: any = await central.FileModel.findOne({ userId: USER_ID, content_id: origenContentId }).lean();
+  assert.equal((origenAntes?.platforms ?? []).includes(PLATFORM), false, 'precondición: B ya fue retirado');
+
+  await ManualLinkOpModel.updateOne(
+    { userId: USER_ID, operationId },
+    { $set: { leaseUntil: new Date(Date.now() - 1000), nextAttemptAt: new Date(Date.now() - 1000) } },
+  );
+  const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+  await repararTransicionesPendientes();
+
+  await afirmarMovimientoManualCompleto(origenContentId, destinoContentId, String(destino._id));
+  assert.equal(
+    (await ManualLinkOpModel.findOne({ userId: USER_ID, operationId }).lean() as any)?.status,
+    'completed',
+    'el worker cierra la misma operación después de converger',
+  );
+});
+
+test('MANUAL-LINK — reintentar el mismo operationId no vuelve a mover revisiones', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const destinoContentId = '80808080-9090-a0a0-b0b0-c0c0c0c0c0c0';
+  const destino = await crearDestinoManual('destino deduplicado.mp4', destinoContentId);
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const operationId = 'manual-misma-operacion';
+
+  const primera = await llamarConfirmLink(String(pv._id), String(destino._id), operationId);
+  assert.equal(primera.status, 200);
+  const rev = await revisionDe(destinoContentId);
+  const segunda = await llamarConfirmLink(String(pv._id), String(destino._id), operationId);
+  assert.deepEqual([segunda.status, segunda.body?.deduplicated], [200, true]);
+  assert.equal(await revisionDe(destinoContentId), rev, 'el reintento no gana otra revisión');
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
+  assert.equal(await ManualLinkOpModel.countDocuments({ userId: USER_ID, operationId }), 1);
+});
+
+test('MANUAL-LINK — una publicación que entra durante el write del vínculo no queda pisada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const A = await crearDestinoManual('destino carrera A.mp4', '90909090-a0a0-b0b0-c0c0-d0d0d0d0d0d0');
+  const C = await crearDestinoManual('destino carrera C.mp4', 'a0a0a0a0-b0b0-c0c0-d0d0-e0e0e0e0e0e0');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const espia = await conIntercaladoEn(central.PlatformVideoModel, 'updateOne', async () => {
+    await central.applyPlatformPublish(USER_ID, {
+      contentId: C.content_id, fileName: C.file_name, platform: PLATFORM,
+      platformId: PLATFORM_ID, platformUrl: PLATFORM_URL, matchStatus: 'manual', publishedAt: new Date(PUBLICADO_EL),
+    });
+  });
+  try {
+    await llamarConfirmLink(String(pv._id), String(A._id), 'manual-intercalada-en-pv');
+  } finally {
+    espia.restore();
+  }
+  assert.ok(espia.hecho, 'precondición: C publicó dentro de la escritura del vínculo manual');
+  assert.equal(
+    (await vinculoDe(PLATFORM_ID)).archivo, String(C._id),
+    'la operación manual vieja recuperó el vínculo después de que C publicó',
+  );
+  const a = await archivoConPublicacion({ content_id: A.content_id });
+  const c = await archivoConPublicacion({ content_id: C.content_id });
+  assert.deepEqual([a?.publicada, a?.estados], [false, []], 'la compensación retira de A la publicación parcial');
+  assert.deepEqual([c?.publicada, c?.estados], [true, ['confirmed']], 'C conserva el estado canónico que ganó');
+  const nubeA = await instagramEnNube(A.content_id);
+  const nubeC = await instagramEnNube(C.content_id);
+  assert.deepEqual([nubeA.publicada, nubeA.links], [false, []], 'Nube tampoco conserva la media verdad de A');
+  assert.deepEqual([nubeC.publicada, nubeC.links], [true, [PLATFORM_ID]], 'Nube converge hacia C');
+});
+
+test('MANUAL-LINK — no acepta como destino un archivo de otra cuenta', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const ajeno: any = await central.FileModel.create({
+    userId: new mongoose.Types.ObjectId().toString(), file_name: 'ajeno.mp4', file_path: 'ajeno.mp4',
+    content_id: 'b0b0b0b0-c0c0-d0d0-e0e0-f0f0f0f0f0f0', status: 'PENDIENTE', platforms: [], platforms_discarded: [],
+  });
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+
+  assert.equal((await llamarConfirmLink(String(pv._id), String(ajeno._id), 'manual-destino-ajeno')).status, 404);
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(origen._id), 'el vínculo de la cuenta no se mueve al archivo ajeno');
+});
+
+test('MANUAL-LINK — un origen legado sin identidad se rechaza sin dejar una verdad partida', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const origen: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId });
+  origen.content_id = undefined;
+  await origen.save();
+  const destino = await crearDestinoManual('destino desde legado.mp4', 'c0c0c0c0-d0d0-e0e0-f0f0-010101010101');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+
+  const respuesta = await llamarConfirmLink(String(pv._id), String(destino._id), 'manual-origen-sin-identidad');
+  assert.deepEqual([respuesta.status, respuesta.body?.reason], [409, 'missing_identity']);
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(origen._id), 'el vínculo queda en el origen hasta poder hacer un unlink causal');
+  const destinoDespues = await archivoConPublicacion({ content_id: destino.content_id });
+  assert.deepEqual([destinoDespues?.publicada, destinoDespues?.estados], [false, []]);
+});
+
+test('MANUAL-LINK — reutilizar operationId con otro destino es terminal y no mueve nada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const A = await crearDestinoManual('destino op A.mp4', 'd0d0d0d0-e0e0-f0f0-0101-020202020202');
+  const C = await crearDestinoManual('destino op C.mp4', 'e0e0e0e0-f0f0-0101-0202-030303030303');
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const operationId = 'manual-payload-inmutable';
+  assert.equal((await llamarConfirmLink(String(pv._id), String(A._id), operationId)).status, 200);
+
+  const segunda = await llamarConfirmLink(String(pv._id), String(C._id), operationId);
+  assert.deepEqual([segunda.status, segunda.body?.reason], [422, 'operation_mismatch']);
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(A._id), 'el payload distinto no reutiliza la operación reservada');
+});
+
+test('MANUAL-LINK — ambos endpoints rechazan una acción sin operationId durable', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId } = await sembrarConfirmado();
+  const file: any = await central.FileModel.findOne({ userId: USER_ID, content_id: contentId }).lean();
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const confirm = await dispatch(central.confirmLink, { params: { pvId: String(pv._id) }, body: { fileId: String(file._id) } });
+  const cross = await dispatch(central.resolveCrossMatchSlot, {
+    body: { fileId: String(file._id), platform: PLATFORM, platformId: PLATFORM_ID },
+  });
+  assert.deepEqual([confirm.status, cross.status], [400, 400]);
+});
+
+test('MANUAL-LINK MOBILE — mueve B → A usando contentId, sin inferir por nombre', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: origenContentId } = await sembrarConfirmado();
+  const destinoContentId = 'f0f0f0f0-0101-0202-0303-040404040404';
+  const destino = await crearDestinoManual('destino móvil con nombre distinto.mp4', destinoContentId);
+
+  const respuesta = await dispatch(central.manualPlatformLinkEndpoint, {
+    body: {
+      contentId: destinoContentId,
+      platform: PLATFORM,
+      platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL,
+      operationId: 'manual-mobile-b-a',
+    },
+  });
+
+  assert.equal(respuesta.status, 200);
+  await afirmarMovimientoManualCompleto(origenContentId, destinoContentId, String(destino._id));
+});
+
+test('MANUAL-LINK MOBILE — exige operationId y no puede resolver una identidad de otra cuenta', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const ajenoContentId = 'abababab-cdcd-efef-0101-232323232323';
+  await central.FileModel.create({
+    userId: new mongoose.Types.ObjectId().toString(), file_name: 'móvil ajeno.mp4',
+    file_path: 'móvil ajeno.mp4', content_id: ajenoContentId, status: 'PENDIENTE',
+    platforms: [], platforms_discarded: [], platform_states: [],
+  });
+
+  const sinOperacion = await dispatch(central.manualPlatformLinkEndpoint, {
+    body: { contentId: ajenoContentId, platform: PLATFORM, platformId: PLATFORM_ID },
+  });
+  const ajeno = await dispatch(central.manualPlatformLinkEndpoint, {
+    body: {
+      contentId: ajenoContentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      operationId: 'manual-mobile-ajeno',
+    },
+  });
+  assert.deepEqual([sinOperacion.status, ajeno.status], [400, 404]);
+});
+
+test('MANUAL-LINK MOBILE — reintentar la misma operación devuelve la misma revisión', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const contentId = 'bcbcbcbc-dede-f0f0-1212-343434343434';
+  await crearDestinoManual('destino móvil deduplicado.mp4', contentId);
+  const body = {
+    contentId, platform: PLATFORM, platformId: PLATFORM_ID,
+    platformUrl: PLATFORM_URL, operationId: 'manual-mobile-dedup',
+  };
+  const primera = await dispatch(central.manualPlatformLinkEndpoint, { body });
+  const segunda = await dispatch(central.manualPlatformLinkEndpoint, { body });
+  const primeraBody: any = await primera.json();
+  const segundaBody: any = await segunda.json();
+  assert.equal(primera.status, 200);
+  assert.deepEqual(
+    [segunda.status, segundaBody.deduplicated, primeraBody.version],
+    [200, true, segundaBody.version],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// FENCING — cierre P0. `manualLinkClaim`/`ManualLinkOpModel` llevan un fence
+// monotónico: reclamar, cerrar, limpiar y el catch de error validan que el
+// fence propio sigue siendo el vigente antes de escribir nada.
+// ---------------------------------------------------------------------------
+
+test('MANUAL-LINK — fencing: un worker que perdió el lease no puede reclamar ni cerrar la operación que ya tomó un fence nuevo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const { contentId: origenContentId } = await sembrarConfirmado();
+  const destinoContentId = 'g1g1g1g1-1212-1313-1414-151515151515';
+  const destino = await crearDestinoManual('destino fence.mp4', destinoContentId);
+  const pv: any = await central.PlatformVideoModel.findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  const operationId = 'manual-fence-race';
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
+
+  // A ya reservó la operación (fence=1) y está por confirmar que sigue
+  // vigente cuando, en el medio, su lease vence de verdad y OTRO worker la
+  // retoma: gana un fence nuevo y completa el movimiento entero antes de que
+  // A vuelva a mirar la base.
+  const espia = conIntercaladoCuando(
+    ManualLinkOpModel, 'findOne',
+    (filtro: any) => filtro?.operationId === operationId && filtro?.status === 'pending',
+    async () => {
+      await ManualLinkOpModel.updateOne(
+        { userId: USER_ID, operationId },
+        { $set: { leaseUntil: new Date(Date.now() - 1000) } },
+      );
+      const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+      await repararTransicionesPendientes();
+    },
+  );
+
+  let respuesta: any;
+  try {
+    respuesta = await llamarConfirmLink(String(pv._id), String(destino._id), operationId);
+  } finally {
+    espia.restore();
+  }
+
+  assert.ok(espia.hecho, 'precondición: el worker con el fence nuevo corrió mientras A todavía creía tener la operación');
+  assert.deepEqual(
+    [respuesta.status, respuesta.body?.reason], [409, 'stale'],
+    'A pierde: la operación ya la cerró un fence más nuevo, ni reclama ni cierra nada',
+  );
+  await afirmarMovimientoManualCompleto(origenContentId, destinoContentId, String(destino._id));
+
+  const cerrada: any = await ManualLinkOpModel.findOne({ userId: USER_ID, operationId }).lean();
+  assert.deepEqual(
+    [cerrada?.status, cerrada?.fence, cerrada?.leaseOwner ?? null],
+    ['completed', 2, null],
+    'la operación quedó cerrada con el fence y el resultado del worker nuevo -- A no pudo sobreescribir nada',
+  );
+});
+
+test('MUT-REVIEW — una publicación concurrente al MISMO destino no puede ser compensada como media verdad vieja', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const destinoContentId = 'cdcdcdcd-efef-0101-2323-454545454545';
+  const destino = await crearDestinoManual('destino concurrente igual.mp4', destinoContentId);
+  const pv: any = await central.PlatformVideoModel.findOne({
+    userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID,
+  }).lean();
+
+  const espia = conIntercaladoCuando(
+    central.FileModel,
+    'findOneAndUpdate',
+    (f: any, u: any) => String(f?._id) === String(destino._id)
+      && u?.$inc?.[`platform_rev.${PLATFORM}`] === 1
+      && u?.$addToSet?.platforms === PLATFORM,
+    async () => {
+      await central.applyPlatformPublish(USER_ID, {
+        contentId: destino.content_id,
+        fileName: destino.file_name,
+        platform: PLATFORM,
+        platformId: PLATFORM_ID,
+        platformUrl: PLATFORM_URL,
+        matchStatus: 'manual',
+        publishedAt: new Date(PUBLICADO_EL),
+      });
+    },
+  );
+
+  try {
+    await llamarConfirmLink(String(pv._id), String(destino._id), 'manual-con-publish-mismo-destino');
+  } finally {
+    espia.restore();
+  }
+
+  assert.ok(espia.hecho, 'precondición: el publish posterior ganó dentro del write causal del destino');
+  const final = await archivoConPublicacion({ content_id: destinoContentId });
+  assert.deepEqual(
+    [final?.publicada, final?.estados], [true, ['confirmed']],
+    'la compensación de la operación manual retiró también el publish posterior del mismo destino',
+  );
+  assert.equal((await vinculoDe(PLATFORM_ID)).archivo, String(destino._id));
+});
+
+test('MANUAL-LINK — reutilizar operationId con otro payload conductual (destino, platform/id, URL, título, fecha, matchStatus) es terminal y no mueve nada', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const destino = await crearDestinoManual('destino payload conductual.mp4', 'h1h1h1h1-1616-1717-1818-191919191919');
+  const otroDestino = await crearDestinoManual('otro destino payload.mp4', 'h2h2h2h2-2020-2121-2222-232323232323');
+  const operationId = 'manual-payload-conductual';
+  // `manualPlatformLinkEndpoint`/`confirmLink`/`resolveCrossMatchSlot` fijan
+  // `matchStatus: 'manual'` del lado del servidor -- ninguno reenvía el que
+  // manda el cliente. Para poder ejercer ESE campo (pedido explícitamente:
+  // "matchStatus aplicable") hay que llamar al servicio directo, como
+  // permite el enunciado ("podés exportar helpers internos si hace falta").
+  const { applyManualPlatformLink } = await import('../services/manual-platform-link.service');
+  const inputBase = {
+    operationId, targetContentId: destino.content_id, platform: PLATFORM, platformId: PLATFORM_ID,
+    platformUrl: PLATFORM_URL, title: 'título original', publishedAt: new Date(PUBLICADO_EL),
+    matchStatus: 'manual',
+  };
+  const primera = await applyManualPlatformLink(USER_ID, inputBase as any);
+  assert.equal(primera.ok, true, 'precondición: la primera reserva la operación');
+
+  const variantes: Record<string, any>[] = [
+    { targetContentId: otroDestino.content_id },
+    { platformId: '17999999999999998' },
+    { platformUrl: 'https://www.instagram.com/reel/BBBBBBBBBBB/' },
+    { title: 'título cambiado' },
+    { publishedAt: new Date('2026-01-01T00:00:00.000Z') },
+    { matchStatus: 'auto_text' },
+  ];
+  for (const cambio of variantes) {
+    const segunda = await applyManualPlatformLink(USER_ID, { ...inputBase, ...cambio } as any);
+    assert.deepEqual(
+      [segunda.ok, segunda.reason], [false, 'operation_mismatch'],
+      `el cambio ${JSON.stringify(cambio)} debe rechazarse por reusar operationId con otro payload conductual`,
+    );
+  }
+  assert.equal(
+    (await vinculoDe(PLATFORM_ID)).archivo, String(destino._id),
+    'ningún payload distinto reutiliza la operación ya reservada',
+  );
+});
+
+test('MUT-REVIEW — applyPlatformPublish exige el fence exacto del claim manual, no solo operationId/leaseOwner', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const destinoContentId = 'fe0cfe0c-1111-2222-3333-444455556677';
+  const destino = await crearDestinoManual('destino fence guard publish.mp4', destinoContentId);
+  const operationId = 'manual-fence-guard-publish';
+  const leaseOwner = 'lease-fence-guard-publish';
+
+  // Un claim VIGENTE con fence=2 -- una re-adquisición real ya ocurrió y ESA
+  // es la dueña -- ya está escrito sobre este platformId.
+  await central.PlatformVideoModel.create({
+    userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID,
+    platformUrl: PLATFORM_URL, matchStatus: 'manual', publishedAt: new Date(PUBLICADO_EL),
+    manualLinkClaim: { operationId, targetFileId: destino._id, leaseOwner, fence: 2 },
+  });
+
+  // Mismo operationId y mismo leaseOwner, pero un fence VIEJO (1): es la
+  // ejecución que perdió la carrera de re-adquisición. Sin comparar `fence`
+  // en el filtro de applyPlatformPublish, operationId+leaseOwner alcanzan
+  // para que esta llamada proyecte igual sobre el claim de la ganadora.
+  const resultado = await central.applyPlatformPublish(USER_ID, {
+    platform: PLATFORM, platformId: PLATFORM_ID, platformUrl: PLATFORM_URL,
+    fileName: destino.file_name, contentId: destinoContentId, title: 'x',
+    publishedAt: new Date(PUBLICADO_EL), matchStatus: 'manual',
+    manualLink: true, manualOperationId: operationId, manualLeaseOwner: leaseOwner,
+    manualFence: 1,
+  });
+
+  assert.equal(resultado.projected, false, 'sin el fence exacto del claim vigente, no debe proyectar sobre él');
+  const vinculo: any = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(vinculo?.manualLinkClaim?.fence, 2, 'el claim vigente (fence 2) no se tocó');
+  assert.equal(vinculo?.linkedFileId ?? null, null, 'el vínculo no se movió al destino de la ejecución vieja');
+});
+
+test('MUT-REVIEW — sigueConLease exige el fence exacto, no solo leaseOwner/status, para compensar un publish manual perdido', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  await sembrarConfirmado();
+  const destinoContentId = 'aabbccdd-0011-2233-4455-667788990011';
+  const destino = await crearDestinoManual('destino sigue con lease.mp4', destinoContentId);
+  const operationId = 'manual-sigue-con-lease';
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
+
+  // applyPlatformPublish está por hacer su escritura gateada por el claim
+  // manual (operationId/leaseOwner/fence). Justo antes, se simula que otra
+  // ejecución avanzó el fence de la operación SIN tocar `leaseOwner` todavía
+  // -- la ventana exacta en la que "mismo leaseOwner" ya no alcanza para
+  // saber que esta ejecución sigue siendo la dueña -- y se corrompe el claim
+  // vigente para que la escritura gateada de applyPlatformPublish no matchee
+  // (`projected: false`, la rama que ejercita `sigueConLease`).
+  const espia = conIntercaladoCuando(
+    central.PlatformVideoModel, 'updateOne',
+    (filtro: any, update: any) => filtro?.['manualLinkClaim.operationId'] === operationId
+      && update?.$set?.matchStatus !== undefined,
+    async () => {
+      await central.PlatformVideoModel.updateOne(
+        { userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID },
+        { $set: { 'manualLinkClaim.operationId': 'otra-operacion-que-ganó' } },
+      );
+      await ManualLinkOpModel.updateOne({ userId: USER_ID, operationId }, { $inc: { fence: 1 } });
+    },
+  );
+
+  let respuesta: any;
+  try {
+    const { applyManualPlatformLink } = await import('../services/manual-platform-link.service');
+    respuesta = await applyManualPlatformLink(USER_ID, {
+      operationId, targetContentId: destinoContentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, matchStatus: 'manual',
+    } as any);
+  } finally {
+    espia.restore();
+  }
+
+  assert.ok(espia.hecho, 'precondición: el fence se adelantó justo antes de la escritura gateada del publish');
+  assert.deepEqual(
+    [respuesta.ok, respuesta.reason], [false, 'in_progress'],
+    'sin el fence exacto en sigueConLease, esta ejecución se creería con derecho a compensar',
+  );
+  const destinoTrasBug = await archivoConPublicacion({ content_id: destinoContentId });
+  assert.deepEqual(
+    [destinoTrasBug?.publicada, destinoTrasBug?.estados], [true, ['confirmed']],
+    'el destino recién confirmado no debe revertirse por una compensación que ya no es de esta ejecución',
+  );
+});
+
+test('MANUAL-LINK — fencing: la ventana entre releer pending y reclamar el vínculo no resucita una operación ya cerrada por un fence nuevo', async (t) => {
+  if (!(await conectarOSaltear(t))) return;
+  await cargarCentral();
+  await limpiarEstado();
+
+  const destinoContentId = '12341234-5656-7878-9090-121212121212';
+  const destino = await crearDestinoManual('destino ventana reclamo.mp4', destinoContentId);
+  const operationId = 'manual-ventana-reclamo';
+  // Sin origen: el platformId ya existe pero todavía sin vínculo. Así el
+  // resultado de la resurrección se ve DIRECTO en `applyPlatformPublish` (sin
+  // un CAS de una transición de origen de por medio que termine
+  // autocorrigiendo el resultado final por otro camino).
+  await central.PlatformVideoModel.create({
+    userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID,
+    platformUrl: PLATFORM_URL, matchStatus: 'sin_match', publishedAt: new Date(PUBLICADO_EL),
+  });
+  const { ManualLinkOpModel } = await import('../models/manual-link-op.model');
+
+  // El worker viejo (fence=1) ya releyó `opVigente` como pending/fence=1 y
+  // está por escribir su reclamo (`reclamarVinculo`). Justo antes de que esa
+  // escritura corra de verdad, su lease vence y OTRO worker retoma la MISMA
+  // operación entera: gana un fence nuevo (2), reclama, publica y CIERRA la
+  // operación -- incluido el `$unset` del claim que el worker viejo está por
+  // volver a escribir.
+  const espia = conIntercaladoAntesDeLeer(
+    central.PlatformVideoModel, 'findOneAndUpdate',
+    (f: any) => Array.isArray(f?.$and)
+      && f.$and?.[0]?.$or?.some((c: any) => c?.['manualLinkClaim.operationId'] === operationId),
+    async () => {
+      await ManualLinkOpModel.updateOne(
+        { userId: USER_ID, operationId },
+        { $set: { leaseUntil: new Date(Date.now() - 1000) } },
+      );
+      const { repararTransicionesPendientes } = await import('../services/transition-repair.service');
+      await repararTransicionesPendientes();
+    },
+  );
+
+  let respuesta: any;
+  try {
+    const { applyManualPlatformLink } = await import('../services/manual-platform-link.service');
+    respuesta = await applyManualPlatformLink(USER_ID, {
+      operationId, targetContentId: destinoContentId, platform: PLATFORM, platformId: PLATFORM_ID,
+      platformUrl: PLATFORM_URL, matchStatus: 'manual',
+    } as any);
+  } finally {
+    espia.restore();
+  }
+
+  assert.ok(espia.hecho, 'precondición: el worker con el fence nuevo cerró la operación entera mientras el viejo esperaba escribir su reclamo');
+  assert.deepEqual(
+    [respuesta.ok, respuesta.reason], [false, 'stale'],
+    'el worker viejo no puede resucitar una operación que otro fence ya cerró -- ni siquiera reportando éxito por error',
+  );
+
+  const cerrada: any = await ManualLinkOpModel.findOne({ userId: USER_ID, operationId }).lean();
+  assert.deepEqual(
+    [cerrada?.status, cerrada?.fence, cerrada?.leaseOwner ?? null],
+    ['completed', 2, null],
+    'el cierre legítimo del worker nuevo sigue intacto -- el viejo no lo pisó',
+  );
+  const vinculo: any = await central.PlatformVideoModel
+    .findOne({ userId: USER_ID, platform: PLATFORM, platformId: PLATFORM_ID }).lean();
+  assert.equal(vinculo?.manualLinkClaim ?? null, null, 'no debe quedar un claim resucitado sobre una operación ya cerrada');
+  assert.equal(vinculo?.linkedFileId ? String(vinculo.linkedFileId) : null, String(destino._id), 'el resultado legítimo del worker nuevo sigue en pie');
+});

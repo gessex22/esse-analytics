@@ -1463,8 +1463,40 @@ export async function applyPlatformPublish(userId: string, data: {
   title?: string | null;
   publishedAt?: Date;
   matchStatus?: string;
-}): Promise<{ linkedFileId: any | null; publishedAt: Date }> {
-  if (!data.platformId) return { linkedFileId: null, publishedAt: data.publishedAt ?? new Date() };
+  /**
+   * Una decisión manual explícita puede cambiar el vínculo aunque el badge ya
+   * esté `confirmed`. Los uploaders automáticos no pasan esta marca: repetir
+   * un publish viejo no adquiere autoridad para recuperar un vínculo movido.
+   */
+  manualLink?: boolean;
+  manualOperationId?: string;
+  manualLeaseOwner?: string;
+  /**
+   * El `fence` exacto que la operación manual tenía al llamar. Sin esto, el
+   * filtro de abajo solo comparaba `operationId`+`leaseOwner`: un worker que
+   * perdió el lease pero todavía comparte esos dos valores con la ejecución
+   * que lo reemplazó (mismo `operationId`, y `leaseOwner` reasignado tarde)
+   * podía proyectar sobre un claim que ya no era el suyo. El trío completo es
+   * la única prueba de que esta llamada sigue siendo la dueña vigente.
+   */
+  manualFence?: number;
+}): Promise<{
+  linkedFileId: any | null;
+  publishedAt: Date;
+  projected?: boolean;
+  /**
+   * La revisión de ESTA plataforma que ESTA llamada causó en FileModel (el
+   * mismo valor que `revGanada`), no la vigente al devolver. Un caller que
+   * necesite deshacer solo su propia escritura parcial (ver el `projected:
+   * false` de un `manualOperationId`, en manual-platform-link.service.ts) la
+   * necesita EXACTA: comparar contra la revisión vigente en ese momento
+   * mezclaría esta escritura con cualquier otra que haya entrado después, y
+   * borraría una publicación posterior legítima. `undefined` = esta llamada no
+   * causó ningún `$inc` (no hay nada propio que deshacer).
+   */
+  revision?: number;
+}> {
+  if (!data.platformId) return { linkedFileId: null, publishedAt: data.publishedAt ?? new Date(), projected: false };
   // any: llega de request bodies (recordUploadEvent, confirmLink, uploaders)
   // que ya validan el valor contra su propia lista de plataformas antes de
   // llegar acá -- este helper es compartido por varios callers con sus
@@ -1553,6 +1585,19 @@ export async function applyPlatformPublish(userId: string, data: {
       }
       linkedFileId = file._id;
       contentIdDelArchivo = (file as any).content_id ?? contentIdDelArchivo;
+      const vinculoAntes: any = await PlatformVideoModel.findOne({ userId, platform, platformId })
+        .select('linkedFileId linkAuthority manualLinkClaim').lean();
+      // Los writers automáticos no traen una base causal. Si el vínculo fue
+      // elegido manualmente para otro archivo, aceptar este publish lo haría
+      // retroceder por una reentrega vieja que la central no puede fechar.
+      // Una nueva acción manual sí tiene autoridad para cambiarlo.
+      if (!data.manualLink && vinculoAntes?.linkAuthority === 'manual'
+          && vinculoAntes.linkedFileId
+          && String(vinculoAntes.linkedFileId) !== String(file._id)) {
+        return { linkedFileId: vinculoAntes.linkedFileId, publishedAt: publishedAtDate, projected: false };
+      }
+      const cambiaVinculoManual = !!data.manualLink
+        && String(vinculoAntes?.linkedFileId ?? '') !== String(file._id);
       // BUG-2026-08-15-03: acá SIEMPRE hay un platformId real (se corta arriba
       // si no lo hay), así que esto es 'confirmed' -- incluso si `platform` ya
       // estaba en `file.platforms` como marca manual ('badge_only', ver
@@ -1560,7 +1605,7 @@ export async function applyPlatformPublish(userId: string, data: {
       // promoción no pasaba nunca porque el `if` de abajo solo miraba el
       // array plano, no el estado real detrás.
       const currentState = (file.platform_states ?? []).find((s) => s.platform === platform)?.state;
-      if (!file.platforms.includes(platform) || currentState !== 'confirmed') {
+      if (!file.platforms.includes(platform) || currentState !== 'confirmed' || cambiaVinculoManual) {
         // ESCRITURA ATÓMICA, en dos pasos. Antes esto calculaba el array
         // completo de `platform_states` con `upsertConfirmed` sobre una FOTO
         // previa y lo escribía con `$set`: read-modify-write del documento
@@ -1599,8 +1644,13 @@ export async function applyPlatformPublish(userId: string, data: {
             // atómico y no toca las otras plataformas.
             $inc: { [`platform_rev.${platform}`]: 1 },
           },
+          // Sin `.lean()` encadenado: solo se lee `platform_rev` (un Mixed,
+          // legible igual desde el documento hidratado), y encadenarlo acá
+          // rompía la interceptación del harness de tests -- un intercalado
+          // sobre ESTE `findOneAndUpdate` devuelve una promesa ya resuelta, no
+          // un Query, y `.lean()` sobre eso no existe.
           { new: true, projection: { platform_rev: 1 } },
-        ).lean();
+        );
         // `new: true` para quedarse con LA revisión que produjo este $inc.
         revGanada = ((tras?.platform_rev ?? {}) as Record<string, number>)[platform];
         await FileModel.updateOne(
@@ -1716,6 +1766,7 @@ export async function applyPlatformPublish(userId: string, data: {
   const revisionEfectiva = revGanada ?? (linkedFileId ? await revisionDemostradaDelVinculo(userId, platform, platformId, linkedFileId) : undefined);
   const proyectar = !linkedFileId || revisionEfectiva !== undefined;
 
+  let vinculoProyectado = !data.manualOperationId;
   if (!numericSibling && proyectar) {
     // publishedAt va en $setOnInsert, no en $set: una vez fijado para este
     // platform+platformId no debe volver a pisarse por una llamada repetida
@@ -1735,9 +1786,14 @@ export async function applyPlatformPublish(userId: string, data: {
     // prueba de que hay algo más nuevo que no hay que tocar (mismo criterio que
     // el upsert del tombstone en platform-transition.service.ts).
     try {
-      await PlatformVideoModel.updateOne(
+      const resultadoVinculo = await PlatformVideoModel.updateOne(
       {
         userId, platform, platformId,
+        ...(data.manualOperationId ? {
+          'manualLinkClaim.operationId': data.manualOperationId,
+          'manualLinkClaim.leaseOwner': data.manualLeaseOwner,
+          'manualLinkClaim.fence': data.manualFence,
+        } : {}),
         // El sello `linkVersion` es una revisión del archivo AL QUE PERTENECE:
         // solo se compara contra ese archivo. Contra otro, esto es una
         // reasignación, y el número de A no dice nada sobre B.
@@ -1757,18 +1813,28 @@ export async function applyPlatformPublish(userId: string, data: {
           title:        title ?? '',
           linkedFileId,
           matchStatus,
+          ...(data.manualLink ? { linkAuthority: 'manual' } : {}),
           lastSyncedAt: new Date(),
           ...(revisionEfectiva !== undefined ? { linkVersion: revisionEfectiva, linkVersionFileId: linkedFileId } : {}),
         },
+        ...(!data.manualOperationId ? { $unset: { manualLinkClaim: '' } } : {}),
         $setOnInsert: { publishedAt: publishedAtDate },
       },
       { upsert: true },
       );
+      vinculoProyectado = (resultadoVinculo.matchedCount ?? 0) > 0 || (resultadoVinculo.upsertedCount ?? 0) > 0;
     } catch (err: any) {
       // 11000 = ya hay una fila para ese platformId con una revisión posterior.
       // Se la deja como está, a propósito.
       if (err?.code !== 11000) throw err;
     }
+  }
+
+  // Una publicación posterior invalidó el claim mientras esta operación
+  // manual estaba en vuelo. No se proyecta su foto vieja a los demás stores;
+  // el coordinador compensará el cambio que ya alcanzó a hacer en FileModel.
+  if (data.manualOperationId && !vinculoProyectado) {
+    return { linkedFileId, publishedAt: publishedAtDate, projected: false, revision: revGanada };
   }
 
   // Y la misma revisión en `backup_files`. Es la proyección que el publish
@@ -1893,7 +1959,7 @@ export async function applyPlatformPublish(userId: string, data: {
     }
   }
 
-  return { linkedFileId, publishedAt: publishedAtDate };
+  return { linkedFileId, publishedAt: publishedAtDate, projected: true, revision: revGanada };
 }
 
 // POST /api/sync/history (alias: /api/sync/record-publish, ver sync.routes.ts) —

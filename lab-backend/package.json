@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "lab": "tsx src/server.ts"
+    "lab": "tsx src/server.ts",
+    "test": "node test-integration.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

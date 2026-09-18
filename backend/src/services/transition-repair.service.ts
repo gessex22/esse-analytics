@@ -6,6 +6,8 @@ import { BackupPlatformVideoModel, noEsMasNuevaEnEsteArchivo } from '../models/b
 import { RemoteLibraryVideoModel } from '../models/remote-library-video.model';
 import { PlatformTransitionOpModel } from '../models/platform-transition-op.model';
 import { applyPlatformTransition, TRANSITION_PLATFORMS } from './platform-transition.service';
+import { repararVinculosManualesPendientes } from './manual-platform-link.service';
+import { ManualLinkOpModel } from '../models/manual-link-op.model';
 
 // Reparación central de escrituras parciales — paso 9 de
 // docs/sync-convergence-plan-2026-09-08.md.
@@ -159,15 +161,23 @@ export interface MetricasReparacion {
  * distingue "hay cola" de "hay cola TRABADA".
  */
 export async function metricasDeReparacion(): Promise<MetricasReparacion> {
-  const [pendientes, fallidas, masVieja] = await Promise.all([
+  const [pendientes, fallidas, masVieja, manualesPendientes, manualesFallidas, manualMasVieja] = await Promise.all([
     PlatformTransitionOpModel.countDocuments({ status: 'pending' }),
     PlatformTransitionOpModel.countDocuments({ status: 'failed' }),
     PlatformTransitionOpModel.findOne({ status: { $in: ['pending', 'failed'] } })
       .sort({ createdAt: 1 }).select('createdAt').lean(),
+    ManualLinkOpModel.countDocuments({ status: 'pending' }),
+    ManualLinkOpModel.countDocuments({ status: 'failed' }),
+    ManualLinkOpModel.findOne({ status: { $in: ['pending', 'failed'] } })
+      .sort({ createdAt: 1 }).select('createdAt').lean(),
   ]);
-  const creada = (masVieja as any)?.createdAt ? new Date((masVieja as any).createdAt).getTime() : null;
+  const fechas = [masVieja, manualMasVieja]
+    .map((op: any) => op?.createdAt ? new Date(op.createdAt).getTime() : null)
+    .filter((fecha): fecha is number => fecha !== null);
+  const creada = fechas.length > 0 ? Math.min(...fechas) : null;
   return {
-    pendientes, fallidas,
+    pendientes: pendientes + manualesPendientes,
+    fallidas: fallidas + manualesFallidas,
     edadMaximaMs: creada ? Math.max(0, Date.now() - creada) : 0,
   };
 }
@@ -212,6 +222,11 @@ export async function repararTransicionesPendientes(limite = 50): Promise<Resume
       }
     }
   }
+
+  // Los movimientos manuales son operaciones padre: coordinan el unlink de B
+  // con la publicación de A. Comparten el disparador del worker central, pero
+  // conservan su propio protocolo de lease y reanudación.
+  await repararVinculosManualesPendientes(Math.max(1, Math.floor(limite / 2)));
 
   return resumen;
 }

@@ -3,6 +3,7 @@ import {
   getCalendarConfig, updateCalendarConfig, skipNextCalendarVideo,
   getGroupStats, getFileStats, getUploadHistory, recordUploadEvent,
   getPublishedCards, mirrorPublishedCards,
+  resolveIdentity, applyPlatformTransition, manualPlatformLink,
 } from '../controllers/sync.controller';
 import { verifyToken } from '../middleware/auth.middleware';
 
@@ -17,6 +18,9 @@ router.get('/api/sync/history', verifyToken, getUploadHistory);
 router.post('/api/sync/history', verifyToken, recordUploadEvent);
 // Alias -- iOS llama a este nombre (ver backend/src/routes/sync.routes.ts).
 router.post('/api/sync/record-publish', verifyToken, recordUploadEvent);
+router.post('/api/sync/resolve-identity', verifyToken, resolveIdentity);
+router.post('/api/sync/platform-transition', verifyToken, applyPlatformTransition);
+router.post('/api/sync/manual-platform-link', verifyToken, manualPlatformLink);
 
 router.get('/api/sync/calendar-config', verifyToken, getCalendarConfig);
 router.patch('/api/sync/calendar-config/:platform', verifyToken, updateCalendarConfig);

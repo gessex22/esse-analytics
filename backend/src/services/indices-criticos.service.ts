@@ -1,4 +1,5 @@
 import { FileIdentityBindingModel } from '../models/file-identity-binding.model';
+import { ManualLinkOpModel } from '../models/manual-link-op.model';
 
 /**
  * Índices sin los cuales una corrección de correctitud deja de funcionar.
@@ -11,6 +12,7 @@ import { FileIdentityBindingModel } from '../models/file-identity-binding.model'
  */
 const CRITICOS = [
   { nombre: 'file_identity_bindings (userId, deviceId, clientFileId)', modelo: FileIdentityBindingModel },
+  { nombre: 'manual_link_ops (userId, operationId)', modelo: ManualLinkOpModel },
 ];
 
 /**
@@ -33,8 +35,8 @@ export async function asegurarIndicesCriticos(): Promise<void> {
     } catch (err: any) {
       throw new Error(
         `No se pudo crear el índice crítico ${nombre}: ${err?.message ?? err}. ` +
-        `Sin él, dos resoluciones concurrentes pueden reservar identidades distintas ` +
-        `para el mismo archivo. El arranque se aborta a propósito.`,
+        `Sin él, una reserva causal puede duplicarse y aplicarse más de una vez. ` +
+        `El arranque se aborta a propósito.`,
       );
     }
   }

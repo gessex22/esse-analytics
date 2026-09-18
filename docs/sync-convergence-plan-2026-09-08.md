@@ -13,6 +13,27 @@ en un `if` distinto, y los bugs viven en los pares sin regla. En dos casos, dos
 reglas correctas por separado **se componen en un ciclo de reversión
 determinista**.
 
+## Estado verificado — 2026-09-14
+
+- Central: transiciones `discard` / `unlink` / `mark_published`, outbox de
+  reparación y movimiento manual B → A están implementados en la rama, todavía
+  sin merge ni despliegue. Los tres callers centrales de vínculo manual
+  (`confirmLink`, `resolveCrossMatchSlot` y mobile por `contentId`) comparten la
+  misma operación padre durable.
+- Laboratorio: ya expone `resolve-identity`, `platform-transition` y
+  `manual-platform-link` sobre su store JSON aislado, con pruebas que no tocan
+  `lab-data/lab.json`.
+- Verificación actual: backend **176/176**, 0 skips, contra Mongo real;
+  Laboratorio **4/4** y `tsc` limpio; backend mantiene sus **22** errores de
+  TypeScript preexistentes; frontend compila.
+- Pendiente antes del merge: migrar `LocalVideoDetailAdapter.writeLink` de iOS
+  al endpoint móvil y retirar su PATCH directo a Nube; después portar identidad,
+  revisiones y outbox causal a Android. Android todavía usa el snapshot legado
+  `PendingPlatformUpdate` y no tiene tests JVM en el repositorio.
+- Fuera de este alcance: miniaturas, matching visual/comparativo de las tres
+  plataformas y Calendario. Son problemas separados; esta entrega endurece la
+  sincronización que esos módulos consumen.
+
 ## Decisiones tomadas (cerradas, no volver a discutir sin dato nuevo)
 
 | Tema | Decisión | Por qué |

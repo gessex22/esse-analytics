@@ -60,6 +60,8 @@ export interface LabFile {
   createdAt: string;
   platforms: Platform[];
   platformsDiscarded: Platform[];
+  contentId?: string;
+  platformRev?: Partial<Record<Platform, number>>;
 }
 
 export interface LabPlatformVideo {
@@ -76,6 +78,34 @@ export interface LabPlatformVideo {
   comments: number;
   publishedAt: string;
   lastSyncedAt: string;
+  linkVersion?: number;
+  linkAuthority?: 'manual';
+}
+
+export interface LabIdentityBinding {
+  userId: string;
+  deviceId: string;
+  clientFileId: string;
+  contentId: string;
+}
+
+export interface LabTransitionOp {
+  userId: string;
+  operationId: string;
+  contentId: string;
+  platform: Platform;
+  action: 'discard' | 'unlink' | 'mark_published';
+  baseVersion: number;
+  resultVersion: number;
+}
+
+export interface LabManualLinkOp {
+  userId: string;
+  operationId: string;
+  contentId: string;
+  platform: Platform;
+  platformId: string;
+  resultVersion: number;
 }
 
 export interface LabUploadHistoryItem {
@@ -148,6 +178,9 @@ export interface LabDb {
   publishingStatus: LabPublishingStatusItem[];
   calendarConfigs: LabCalendarConfig[];
   publishJobs: LabPublishJob[];
+  identityBindings: LabIdentityBinding[];
+  transitionOps: LabTransitionOp[];
+  manualLinkOps: LabManualLinkOp[];
 }
 
 export const emptyDb = (): LabDb => ({
@@ -158,4 +191,7 @@ export const emptyDb = (): LabDb => ({
   publishingStatus: [],
   calendarConfigs: [],
   publishJobs: [],
+  identityBindings: [],
+  transitionOps: [],
+  manualLinkOps: [],
 });

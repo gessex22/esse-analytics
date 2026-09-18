@@ -739,7 +739,7 @@ export const syncService = {
     requestJson(`/api/sync/review/${pvId}/link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fileId }),
+      body: JSON.stringify({ fileId, operationId: crypto.randomUUID() }),
     }),
 
   markOrphan: (pvId: string): Promise<void> =>
@@ -803,7 +803,7 @@ export const syncService = {
     requestJson('/api/sync/cross-match/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, operationId: crypto.randomUUID() }),
     }),
 
   // Sin filtro compara videos matcheados en las 3 redes; con plataforma muestra

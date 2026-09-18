@@ -65,6 +65,8 @@ function seedFiles(userId: string, count: number): LabFile[] {
       createdAt: new Date(Date.now() - (count - i) * 86_400_000).toISOString(),
       platforms,
       platformsDiscarded: [],
+      contentId: newId(),
+      platformRev: {},
     };
     files.push(file);
     db.files.push(file);
@@ -85,6 +87,7 @@ function seedFiles(userId: string, count: number): LabFile[] {
         comments: Math.floor(Math.random() * 60),
         publishedAt: file.createdAt,
         lastSyncedAt: new Date().toISOString(),
+        linkVersion: 0,
       });
       db.uploadHistory.push({
         id: newId(),
@@ -150,6 +153,9 @@ export function applyScenario(key: string, username: string, password: string): 
     db.publishingStatus = db.publishingStatus.filter(p => p.userId !== previous.id);
     db.calendarConfigs = db.calendarConfigs.filter(c => c.userId !== previous.id);
     db.publishJobs = db.publishJobs.filter(j => j.userId !== previous.id);
+    db.identityBindings = db.identityBindings.filter(b => b.userId !== previous.id);
+    db.transitionOps = db.transitionOps.filter(o => o.userId !== previous.id);
+    db.manualLinkOps = db.manualLinkOps.filter(o => o.userId !== previous.id);
   }
   db.users = db.users.filter(u => u.username !== uname);
 

@@ -21,6 +21,15 @@ export function loadDb(): LabDb {
     try {
       const raw = fs.readFileSync(DB_PATH, 'utf-8');
       db = { ...emptyDb(), ...JSON.parse(raw) };
+      // Compatibilidad con lab.json anteriores a la sincronización causal.
+      db.identityBindings ??= [];
+      db.transitionOps ??= [];
+      db.manualLinkOps ??= [];
+      for (const file of db.files) {
+        file.contentId ??= file.id;
+        file.platformRev ??= {};
+      }
+      for (const video of db.platformVideos) video.linkVersion ??= 0;
       return db;
     } catch (err) {
       console.warn(`[lab-backend] lab.json corrupto o ilegible, se reinicia vacío: ${(err as Error).message}`);

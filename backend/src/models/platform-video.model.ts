@@ -38,6 +38,24 @@ export interface IPlatformVideo extends Document {
    * rechazaba la reasignación del vínculo a otro archivo.
    */
   linkVersionFileId?: Types.ObjectId;
+  /**
+   * Autoridad que eligió el archivo vigente. Un publish sin revisión causal no
+   * puede deshacer después una decisión manual y reasignar el mismo video a
+   * otro archivo; otra decisión manual sí puede hacerlo.
+   */
+  linkAuthority?: 'manual';
+  /** Claim durable de una operación manual en curso. Los publish normales lo
+   * invalidan al escribir; la operación vieja solo puede proyectar mientras
+   * conserve este token.
+   *
+   * `fence` es el mismo contador de `ManualLinkOpModel.fence` en el momento en
+   * que ESTE claim se escribió. Sin él, dos ejecuciones de la misma operación
+   * (una vieja, con el lease vencido, y la que la reemplazó) comparten
+   * `operationId` y nada distingue cuál sigue vigente -- la vieja podía
+   * reclamar/pisar el claim de la nueva con solo coincidir en el nombre de la
+   * operación. Reclamar exige `fence` mayor o igual al propio.
+   */
+  manualLinkClaim?: { operationId: string; targetFileId: Types.ObjectId; leaseOwner: string; fence: number } | null;
   matchStatus?: 'auto_duration' | 'auto_text' | 'auto_code' | 'manual' | 'revisar_manual' | 'sin_match' | 'remote';
   matchScore?: number;
   matchCandidates?: string[];  // IDs de archivos locales candidatos (guardados por el script Python)
@@ -82,6 +100,16 @@ const platformVideoSchema = new Schema<IPlatformVideo>({
   linkedFileId:   { type: Schema.Types.ObjectId, ref: 'File', default: null },
   linkVersion:    { type: Number },
   linkVersionFileId: { type: Schema.Types.ObjectId, default: undefined },
+  linkAuthority:   { type: String, enum: ['manual'], default: undefined },
+  manualLinkClaim: {
+    type: new Schema({
+      operationId: { type: String, required: true },
+      targetFileId: { type: Schema.Types.ObjectId, required: true },
+      leaseOwner: { type: String, required: true },
+      fence: { type: Number, required: true },
+    }, { _id: false }),
+    default: null,
+  },
   matchStatus:      { type: String, enum: ['auto_duration','auto_text','auto_code','manual','revisar_manual','sin_match','remote'] },
   matchScore:       { type: Number },
   matchCandidates:  { type: [String], default: undefined },

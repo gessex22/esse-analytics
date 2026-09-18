@@ -20,7 +20,7 @@ export function applyPlatformPublish(userId: string, data: {
 
   let file = data.fileName ? db.files.find(f => f.userId === userId && f.fileName === data.fileName) : undefined;
   if (!file && data.fileName) {
-    file = { id: newId(), userId, fileName: data.fileName, durationSeconds: 30, createdAt: publishedAt, platforms: [], platformsDiscarded: [] };
+    file = { id: newId(), userId, fileName: data.fileName, durationSeconds: 30, createdAt: publishedAt, platforms: [], platformsDiscarded: [], contentId: newId(), platformRev: {} };
     db.files.push(file);
   }
   if (file && !file.platforms.includes(data.platform)) {
@@ -40,7 +40,7 @@ export function applyPlatformPublish(userId: string, data: {
       platformUrl: data.platformUrl ?? mockPlatformUrl(data.platform, data.platformId),
       title: data.title ?? data.fileName ?? '', thumbnail: mockThumbnailUrl(data.fileName ?? data.platformId),
       linkedFileId: file?.id ?? null, views: 0, likes: 0, comments: 0,
-      publishedAt, lastSyncedAt: new Date().toISOString(),
+      publishedAt, lastSyncedAt: new Date().toISOString(), linkVersion: 0,
     });
   }
 

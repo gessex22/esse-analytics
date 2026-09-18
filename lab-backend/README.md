@@ -54,6 +54,10 @@ Cubre, con el mismo contrato de rutas que ya usan los clientes reales:
 - Calendario (`/api/sync/calendar-config*`).
 - Estadísticas (`/api/sync/group-stats`, `/api/sync/file-stats`).
 - Historial (`/api/sync/history`, alias `/api/sync/record-publish`).
+- Sincronización causal de badges y vínculos (`/api/sync/resolve-identity`,
+  `/api/sync/platform-transition`, `/api/sync/manual-platform-link`), con el
+  mismo contrato de identidad, revisión, CAS e idempotencia que consumen los
+  clientes. Todo queda en el JSON mock; nunca llama a la central real.
 - Estado de publicación (`/api/publishing-status*`).
 - Conexión por plataforma con el MISMO contrato que la central real (no un
   shape inventado): `GET /api/{platform}/{channel-info|account-info|

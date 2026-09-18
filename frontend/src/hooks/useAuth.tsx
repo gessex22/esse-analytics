@@ -1,19 +1,10 @@
-import { createContext, useContext, useState, useEffect, ReactNode, createElement } from "react";
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, ReactNode, createElement } from "react";
 import { applyTheme } from "./useTheme";
+import { API_BASE } from "../config";
+import { AuthSessionController, decodeJwtUser } from "./authSessionController";
+import type { AuthUser } from "./authSessionController";
 
-export type UserRole = "todopoderoso" | "editor" | "visitante";
-export type UserTier = "free" | "premium";
-
-interface AuthUser {
-  username: string;
-  role: UserRole;
-  tier: UserTier;
-  isOwner?: boolean;
-  theme?: string;
-  // Plan de storage en la nube, aparte de tier==='premium' -- ver
-  // requireCloudStorage en la central. Habilita la Biblioteca remota.
-  hasCloudStorage?: boolean;
-}
+export type { UserRole, UserTier, AuthUser } from "./authSessionController";
 
 // Aplica el tema guardado en la cuenta (si es válido) y lo deja en localStorage.
 function applyUserTheme(theme?: string) {
@@ -39,95 +30,41 @@ const AuthContext = createContext<AuthContextValue>({
   loading: false,
 });
 
-import { API_BASE } from "../config";
 const STORAGE_KEY = "esse_auth_token";
 
-function decodeJwtUser(token: string): AuthUser | null {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
-    if (!payload.username || !payload.role) return null;
-    return {
-      username: payload.username,
-      role: payload.role as UserRole,
-      tier: (payload.tier as UserTier) ?? "free",
-      isOwner: !!payload.isOwner,
-      hasCloudStorage: !!payload.hasCloudStorage,
-    };
-  } catch {
-    return null;
-  }
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? decodeJwtUser(saved) : null;
-  });
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem(STORAGE_KEY));
-  const [loading, setLoading] = useState(false);
-
-  // Revalidación: lee de DB para tener el tier siempre actualizado
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      // Sin token guardado en este navegador: si estamos hablando con un
-      // local-backend que ya tiene dueño vinculado (misma instalación, típico
-      // de otro dispositivo en la misma LAN), reusamos esa sesión en vez de
-      // exigir un login manual contra la central.
-      fetch(`${API_BASE}/api/local/session`)
-        .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((data) => {
-          const decoded = decodeJwtUser(data.token);
-          if (!decoded) return Promise.reject();
-          setToken(data.token);
-          setUser(decoded);
-          localStorage.setItem(STORAGE_KEY, data.token);
-        })
-        .catch(() => {});
-      return;
-    }
-
-    fetch(`${API_BASE}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${saved}` },
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((data) => {
-        setToken(saved);
-        setUser(data.user);
-        applyUserTheme(data.user?.theme);
-      })
-      .catch(() => {
-        localStorage.removeItem(STORAGE_KEY);
-        setToken(null);
-        setUser(null);
-      });
-  }, []);
-
-  const login = async (username: string, password: string) => {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+  // Una sola instancia por toda la vida del AuthProvider: el epoch de sesión
+  // que arbitra las carreras entre bootstrap/login/logout vive acá.
+  const controllerRef = useRef<AuthSessionController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = new AuthSessionController({
+      apiBase: API_BASE,
+      storageKey: STORAGE_KEY,
+      fetchImpl: (...args) => fetch(...args),
+      storage: window.localStorage,
+      decodeJwtUser,
+      applyUserTheme,
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || "Credenciales incorrectas.");
-    }
-    const data = await res.json();
-    setToken(data.token);
-    setUser(data.user);
-    localStorage.setItem(STORAGE_KEY, data.token);
-    applyUserTheme(data.user?.theme);
+  }
+  const controller = controllerRef.current;
+
+  const state = useSyncExternalStore(controller.subscribe, controller.getState, controller.getState);
+
+  // Revalidación de montaje: lee de DB para tener el tier siempre actualizado
+  // (o restaura una sesión local si no hay token guardado en este navegador).
+  useEffect(() => {
+    controller.bootstrap();
+  }, [controller]);
+
+  const value: AuthContextValue = {
+    user: state.user,
+    token: state.token,
+    loading: state.loading,
+    login: controller.login,
+    logout: controller.logout,
   };
 
-  const logout = () => {
-    setToken(null);
-    setUser(null);
-    localStorage.removeItem(STORAGE_KEY);
-  };
-
-  return createElement(AuthContext.Provider, { value: { user, token, login, logout, loading } }, children);
+  return createElement(AuthContext.Provider, { value }, children);
 }
 
 export function useAuth() {
