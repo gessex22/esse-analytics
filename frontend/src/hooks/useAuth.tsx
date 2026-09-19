@@ -3,6 +3,7 @@ import { applyTheme } from "./useTheme";
 import { API_BASE } from "../config";
 import { AuthSessionController, decodeJwtUser } from "./authSessionController";
 import type { AuthUser } from "./authSessionController";
+import { onUnauthorized } from "../services/sessionSignal";
 
 export type { UserRole, UserTier, AuthUser } from "./authSessionController";
 
@@ -54,6 +55,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // (o restaura una sesión local si no hay token guardado en este navegador).
   useEffect(() => {
     controller.bootstrap();
+  }, [controller]);
+
+  // Sesión central vencida con la app abierta: cualquier petición que reciba
+  // un 401 avisa acá con el token que usó, y el controlador decide (revalida
+  // contra /auth/me; un 401 de OAuth de plataforma no cierra la sesión).
+  useEffect(() => {
+    return onUnauthorized((token) => {
+      void controller.handleUnauthorized(token);
+    });
   }, [controller]);
 
   const value: AuthContextValue = {

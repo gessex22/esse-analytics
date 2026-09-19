@@ -1,6 +1,7 @@
 
 import { API_BASE as API_BASE_URL } from "../config";
 import { Upload as TusUpload } from "tus-js-client";
+import { notifyUnauthorized } from "./sessionSignal";
 
 // ==========================================
 // INTERFACES GENERALES DEL COMPONENTE TALLER
@@ -393,16 +394,29 @@ function getAuthHeader(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Token exacto que llevó ESTA petición (puede no ser el de localStorage si el
+// caller pasó su propio Authorization, o si la sesión cambió mientras la
+// petición estaba en vuelo).
+function bearerTokenOf(headers: Record<string, string>): string | null {
+  const value = headers.Authorization ?? headers.authorization;
+  if (!value || !value.startsWith("Bearer ")) return null;
+  return value.slice("Bearer ".length) || null;
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      ...getAuthHeader(),
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
+  const headers: Record<string, string> = {
+    ...getAuthHeader(),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
 
   if (!response.ok) {
+    // Un 401 puede ser de la sesión central vencida o del OAuth de una
+    // plataforma (YouTube/Instagram/TikTok). Acá solo avisamos con el token
+    // que usamos; quien maneja la sesión revalida contra /api/auth/me antes de
+    // decidir nada. El error para el caller no cambia.
+    if (response.status === 401) notifyUnauthorized(bearerTokenOf(headers));
     const error = await response.json().catch(() => null);
     throw new Error(error?.error || error?.message || `Error HTTP ${response.status}`);
   }

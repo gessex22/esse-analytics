@@ -42,6 +42,14 @@ export interface AuthSessionDeps {
   applyUserTheme?: (theme?: string) => void;
 }
 
+// Único par de estados con los que la central confirma que la credencial ya no
+// vale. Cualquier otra cosa (red caída, 5xx, 404 de una ruta mal escrita) es
+// ambigua y por sí sola NO es motivo para cerrar la sesión de un token aún
+// vigente (un token vencido/indecodificable se limpia aparte, sin red).
+function isUnauthorizedStatus(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
 export function decodeJwtUser(token: string): AuthUser | null {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
@@ -64,6 +72,9 @@ export class AuthSessionController {
   private state: AuthState;
   private listeners = new Set<() => void>();
   private epoch = 0;
+  // Revalidaciones de 401 en vuelo, por token: varios 401 simultáneos de la
+  // misma credencial comparten una sola llamada a /auth/me.
+  private unauthorizedChecks = new Map<string, Promise<void>>();
 
   constructor(deps: AuthSessionDeps) {
     this.deps = deps;
@@ -96,6 +107,36 @@ export class AuthSessionController {
     return generation === this.epoch;
   }
 
+  // Cierre de sesión por credencial inservible: confirmada inválida por la
+  // central (/auth/me 401/403) o localmente comprobable (JWT vencido o
+  // indecodificable). Doble defensa antes de tocar nada: el epoch debe seguir
+  // siendo el de quien pidió la limpieza (no hubo login/logout más nuevo) y el
+  // storage debe contener exactamente ese token (no se guardó otro mientras
+  // tanto). Al limpiar avanza el epoch, igual que logout(), para invalidar
+  // todo lo que quedó en vuelo.
+  private clearSessionIfStillExactly(token: string, generation: number): void {
+    if (!this.isCurrentEpoch(generation)) return;
+    if (this.deps.storage.getItem(this.deps.storageKey) !== token) return;
+    this.bumpEpoch();
+    this.deps.storage.removeItem(this.deps.storageKey);
+    this.setState({ token: null, user: null });
+  }
+
+  // Un JWT vencido o indecodificable no sirve con o sin red: no hace falta (ni
+  // conviene esperar a) la central para saberlo. Es la única causa de limpieza
+  // que no depende de un 401/403; red caída o 5xx por sí solos nunca limpian
+  // un token todavía válido.
+  private isTokenLocallyUnusable(token: string): boolean {
+    return this.deps.decodeJwtUser(token) === null;
+  }
+
+  // Cuando la central no confirmó nada (red caída, 5xx) conservamos la sesión,
+  // salvo que el propio token sea localmente inservible.
+  private clearIfTokenUnusable(token: string, generation: number): void {
+    if (!this.isTokenLocallyUnusable(token)) return;
+    this.clearSessionIfStillExactly(token, generation);
+  }
+
   // Revalidación de montaje: restaura sesión local si no hay token, o
   // refresca contra /auth/me si lo hay. Se llama una sola vez por
   // AuthProvider (nunca en paralelo consigo misma), pero sí puede solaparse
@@ -124,25 +165,85 @@ export class AuthSessionController {
       return;
     }
 
+    let res: Response;
     try {
-      const res = await this.deps.fetchImpl(`${this.deps.apiBase}/api/auth/me`, {
+      res = await this.deps.fetchImpl(`${this.deps.apiBase}/api/auth/me`, {
         headers: { Authorization: `Bearer ${saved}` },
       });
-      if (!res.ok) throw new Error("auth/me failed");
-      const data = await res.json();
-      if (!this.isCurrentEpoch(generation)) return; // login/logout más nuevo ya definió el estado vigente
-      this.setState({ token: saved, user: data.user });
-      this.deps.applyUserTheme?.(data.user?.theme);
     } catch {
-      if (!this.isCurrentEpoch(generation)) return; // login/logout más nuevo ya definió el estado vigente
-      // Solo borramos la credencial si sigue siendo exactamente la que esta
-      // petición validó -- si mientras tanto se guardó una nueva (por un
-      // login concurrente que ya pasó su propio epoch check), no la tocamos.
-      if (this.deps.storage.getItem(this.deps.storageKey) !== saved) return;
-      this.deps.storage.removeItem(this.deps.storageKey);
-      this.setState({ token: null, user: null });
+      // Red caída / central o túnel abajo: la central no confirmó nada.
+      // Arrancar Electron sin internet no debe desloguear a un token aún
+      // válido; uno vencido/indecodificable sí se limpia (no necesita red).
+      this.clearIfTokenUnusable(saved, generation);
+      return;
     }
+
+    if (!res.ok) {
+      // Del lado de la central, solo un 401/403 confirma que la credencial dejó
+      // de valer; un 5xx es un problema de la central, no de la sesión (y
+      // entonces solo limpia un token localmente inservible).
+      if (isUnauthorizedStatus(res.status)) this.clearSessionIfStillExactly(saved, generation);
+      else this.clearIfTokenUnusable(saved, generation);
+      return;
+    }
+
+    let data: { user?: AuthUser & { theme?: string } };
+    try {
+      data = await res.json();
+    } catch {
+      return; // 200 con cuerpo ilegible: ambiguo, conservamos la sesión
+    }
+    if (!this.isCurrentEpoch(generation)) return; // login/logout más nuevo ya definió el estado vigente
+    this.setState({ token: saved, user: data.user ?? null });
+    this.deps.applyUserTheme?.(data.user?.theme);
   };
+
+  // Un 401 llegó desde cualquier petición de la app (ver services/api.ts →
+  // sessionSignal). Conservador a propósito: ese 401 puede venir del OAuth de
+  // YouTube/Instagram/TikTok y no de la sesión central, así que nunca cerramos
+  // sesión por el 401 en sí. La sesión se cierra solo si (a) el JWT es
+  // localmente inservible (vencido/indecodificable: sin red) o (b) /auth/me
+  // confirma con 401/403 que la credencial ya no vale. Con un token aún
+  // vigente, red caída, 5xx o un 200 conservan la sesión.
+  handleUnauthorized = (token: string): Promise<void> => {
+    if (!token) return Promise.resolve();
+    // 401 de una credencial que ya no es la vigente (login/logout posterior):
+    // se descarta sin tocar la red.
+    if (this.deps.storage.getItem(this.deps.storageKey) !== token) return Promise.resolve();
+
+    const generation = this.epoch;
+
+    // Token ya comprobablemente muerto: invalidar sin red. Si la segunda
+    // revalidación fallara (túnel caído), el usuario quedaría atrapado con una
+    // credencial que no sirve.
+    if (this.isTokenLocallyUnusable(token)) {
+      this.clearSessionIfStillExactly(token, generation);
+      return Promise.resolve();
+    }
+
+    const inFlight = this.unauthorizedChecks.get(token);
+    if (inFlight) return inFlight; // una sola revalidación por token
+
+    const check = this.revalidateSession(token, generation).finally(() => {
+      this.unauthorizedChecks.delete(token);
+    });
+    this.unauthorizedChecks.set(token, check);
+    return check;
+  };
+
+  private async revalidateSession(token: string, generation: number): Promise<void> {
+    let res: Response;
+    try {
+      res = await this.deps.fetchImpl(`${this.deps.apiBase}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      return; // red caída: ambiguo, conservamos la sesión
+    }
+    if (res.ok) return; // la sesión central sigue viva: el 401 era de otra cosa
+    if (!isUnauthorizedStatus(res.status)) return; // 5xx u otro estado ambiguo: conservar
+    this.clearSessionIfStillExactly(token, generation);
+  }
 
   login = async (username: string, password: string): Promise<void> => {
     const generation = this.bumpEpoch(); // invalida cualquier bootstrap en vuelo desde este momento
